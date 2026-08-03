@@ -44,6 +44,9 @@ Metal is enabled automatically on Apple Silicon. For Vulkan (Linux/Windows):
 # Ubuntu/Debian
 sudo apt install build-essential cmake libvulkan-dev glslc libopenblas-dev
 
+# Fedora
+sudo dnf install vulkan-headers openblas-devel glslc spirv-headers-devel
+
 cmake -B build -DTRANSCRIBE_VULKAN=ON
 cmake --build build
 ```

@@ -862,10 +862,11 @@ int main(int argc, char ** argv) {
                     std::string        wav_err;
                     if (!transcribe_cli::load_wav_mono_16k(wav_paths[i], pcm, wav_err)) {
                         if (args.batch_jsonl) {
+                            const std::string file_esc = json_escape(wav_paths[i].c_str());
                             std::printf(
                                 "{\"file\":\"%s\",\"text\":\"\","
                                 "\"error\":\"wav: %s\"}\n",
-                                wav_paths[i].c_str(), wav_err.c_str());
+                                file_esc.c_str(), json_escape(wav_err.c_str()).c_str());
                         } else {
                             std::fprintf(stderr, "SKIP %s: %s\n", wav_paths[i].c_str(), wav_err.c_str());
                         }
@@ -891,10 +892,11 @@ int main(int argc, char ** argv) {
                     // error line per file in the group and continue.
                     for (size_t k = 0; k < src_index.size(); ++k) {
                         if (args.batch_jsonl) {
+                            const std::string file_esc = json_escape(wav_paths[src_index[k]].c_str());
                             std::printf(
                                 "{\"file\":\"%s\",\"text\":\"\","
                                 "\"error\":\"%s\"}\n",
-                                wav_paths[src_index[k]].c_str(), json_escape(transcribe_status_string(bst)).c_str());
+                                file_esc.c_str(), json_escape(transcribe_status_string(bst)).c_str());
                         }
                         ++n_fail;
                     }
@@ -943,12 +945,13 @@ int main(int argc, char ** argv) {
                         struct transcribe_timings tm;
                         transcribe_timings_init(&tm);
                         (void) transcribe_batch_get_timings(ctx, static_cast<int>(k), &tm);
+                        const std::string file_esc = json_escape(wav.c_str());
                         std::printf(
                             "{\"file\":\"%s\",\"text\":\"%s\"%s,"
                             "\"mel_ms\":%.1f,\"encode_ms\":%.1f,"
                             "\"decode_ms\":%.1f%s}\n",
-                            wav.c_str(), escaped.c_str(), segments.c_str(), (double) tm.mel_ms, (double) tm.encode_ms,
-                            (double) tm.decode_ms, err_field.c_str());
+                            file_esc.c_str(), escaped.c_str(), segments.c_str(), (double) tm.mel_ms,
+                            (double) tm.encode_ms, (double) tm.decode_ms, err_field.c_str());
                     } else {
                         std::printf("[%zu/%zu] %s", src_index[k] + 1, total, wav.c_str());
                         if (ust == TRANSCRIBE_OK) {
@@ -970,10 +973,11 @@ int main(int argc, char ** argv) {
                 std::string        wav_err;
                 if (!transcribe_cli::load_wav_mono_16k(wav, pcm, wav_err)) {
                     if (args.batch_jsonl) {
+                        const std::string file_esc = json_escape(wav.c_str());
                         std::printf(
                             "{\"file\":\"%s\",\"text\":\"\","
                             "\"error\":\"wav: %s\"}\n",
-                            wav.c_str(), wav_err.c_str());
+                            file_esc.c_str(), json_escape(wav_err.c_str()).c_str());
                     } else {
                         std::fprintf(stderr, "SKIP %s: %s\n", wav.c_str(), wav_err.c_str());
                     }
@@ -1081,11 +1085,12 @@ int main(int argc, char ** argv) {
                         err_field += json_escape(transcribe_status_string(run_st));
                         err_field += "\"";
                     }
+                    const std::string file_esc = json_escape(wav.c_str());
                     std::printf(
                         "{\"file\":\"%s\",\"text\":\"%s\"%s,"
                         "\"mel_ms\":%.1f,\"encode_ms\":%.1f,"
                         "\"decode_ms\":%.1f%s}\n",
-                        wav.c_str(), escaped.c_str(), segments.c_str(), (double) tm.mel_ms, (double) tm.encode_ms,
+                        file_esc.c_str(), escaped.c_str(), segments.c_str(), (double) tm.mel_ms, (double) tm.encode_ms,
                         (double) tm.decode_ms, err_field.c_str());
                 } else {
                     std::printf("[%zu/%zu] %s", i + 1, wav_paths.size(), wav.c_str());

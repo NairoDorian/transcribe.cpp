@@ -13,12 +13,12 @@
 //   1. The bundle loads and reports TRANSCRIBE_FEATURE_DIARIZATION.
 //   2. diarize=OFF: single-speaker semantics — a result with every
 //      segment's speaker_id == 0 and no speaker_segment rows.
-//   3. diarize=ON (masked mode, the default): >= 2 segments carrying at
-//      least two distinct 1-based speaker_ids, speaker_segment rows
-//      present, and each fixture voice's anchor phrase attributed to a
+//   3. diarize=ON with TRANSCRIBE_MULTITALKER_MODE=masked: >= 2 segments
+//      carrying at least two distinct 1-based speaker_ids, speaker_segment
+//      rows present, and each fixture voice's anchor phrase attributed to a
 //      single speaker ("fellow Americans" for the JFK track,
 //      "publication" for the Whole Earth track).
-//   4. Same invariants under TRANSCRIBE_MULTITALKER_MODE=kernel.
+//   4. Same invariants in the default kernel mode.
 
 #include "transcribe.h"
 #include "wav.h"
@@ -151,8 +151,9 @@ int main() {
         }
     }
 
-    // diarize=ON in both supervision modes.
-    unsetenv("TRANSCRIBE_MULTITALKER_MODE");
+    // diarize=ON in both supervision modes. Select each mode explicitly so
+    // a change to the runtime default cannot silently reduce test coverage.
+    setenv("TRANSCRIBE_MULTITALKER_MODE", "masked", /*overwrite=*/1);
     run_multitalker_checks(ctx, pcm, "masked");
     setenv("TRANSCRIBE_MULTITALKER_MODE", "kernel", /*overwrite=*/1);
     run_multitalker_checks(ctx, pcm, "kernel");

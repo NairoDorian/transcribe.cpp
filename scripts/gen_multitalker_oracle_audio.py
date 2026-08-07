@@ -1,4 +1,11 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#   "numpy>=1.26",
+#   "soundfile>=0.12",
+# ]
+# ///
 """Deterministically synthesize a 2-speaker ENGLISH multitalker oracle clip.
 
 The multitalker Parakeet + Sortformer pipeline needs an English
@@ -23,7 +30,7 @@ Run:
 
 from __future__ import annotations
 
-import subprocess
+import hashlib
 import sys
 from pathlib import Path
 
@@ -103,8 +110,8 @@ def main() -> int:
     dur = len(mix) / SR
     print(f"wrote {OUT_WAV.relative_to(REPO)} ({dur:.2f}s, 16kHz mono)")
     print(f"wrote {OUT_RTTM.relative_to(REPO)} ({len(lines)} turns, 2 speakers, overlap [5.0,5.5]s)")
-    sha = subprocess.run(["shasum", "-a", "256", str(OUT_WAV)], capture_output=True, text=True)
-    print("sha256:", sha.stdout.split()[0] if sha.returncode == 0 else "n/a")
+    sha256 = hashlib.sha256(OUT_WAV.read_bytes()).hexdigest()
+    print("sha256:", sha256)
     return 0
 
 

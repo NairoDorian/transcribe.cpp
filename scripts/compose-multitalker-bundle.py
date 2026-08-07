@@ -70,6 +70,13 @@ FRONTEND_AGREEMENT_KEYS = [
 # Keys the GGUFReader synthesizes (virtual) or the writer emits itself.
 SKIP_COPY_KEYS = {"general.architecture"}
 
+# Diarizer checkpoints the runtime's multitalker path is validated against.
+# run_multitalker pins the reference operating point (14-frame chunk
+# cadence, spkcache/FIFO/update 188, gating threshold 0.5, 2-chunk gating
+# buffer) measured on streaming Sortformer v2.1; composing an unvalidated
+# variant would silently run a foreign checkpoint at v2.1 settings.
+VALIDATED_DIARIZER_VARIANTS = {"diar_streaming_sortformer_4spk-v2.1"}
+
 
 def copy_kv(writer, field) -> None:
     vtype = field.types[0]
@@ -97,6 +104,24 @@ def main() -> int:
         return 1
     if "stt.parakeet.encoder.spk_kernel_layers" not in asr.fields:
         print("error: ASR input has no speaker-kernel tensors; not a multitalker checkpoint", file=sys.stderr)
+        return 1
+
+    diar_variant = diar.fields["stt.variant"].contents() if "stt.variant" in diar.fields else None
+    if diar_variant not in VALIDATED_DIARIZER_VARIANTS:
+        print(
+            f"error: diarizer variant {diar_variant!r} is not validated for the multitalker bundle "
+            f"(validated: {sorted(VALIDATED_DIARIZER_VARIANTS)}); the runtime pins the v2.1 operating point",
+            file=sys.stderr,
+        )
+        return 1
+
+    # The supervision hand-off maps diar frames 1:1 onto ASR encoder frames
+    # (same mel hop x same subsampling -> same 80 ms cadence). Frontend
+    # agreement below covers the hop; enforce the subsampling factor too.
+    a_sub = asr.fields["stt.parakeet.encoder.subsampling_factor"].contents()
+    d_sub = diar.fields["stt.sortformer.encoder.subsampling_factor"].contents()
+    if a_sub != d_sub:
+        print(f"error: subsampling mismatch: asr={a_sub} diar={d_sub} (frame cadences must agree)", file=sys.stderr)
         return 1
 
     # The bundle carries a single stt.frontend.* block (the ASR's). Refuse to

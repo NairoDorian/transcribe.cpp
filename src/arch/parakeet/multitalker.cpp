@@ -16,10 +16,10 @@
 //      (the offline analog of the reference's per-chunk cache gating,
 //      which tops-k by max over the last 2 chunks).
 //   3. One ASR decode pass per active speaker over the same audio, with
-//      that speaker's supervision: masked mode (NeMo masked_asr=True
-//      default) masks mel features; kernel mode (masked_asr=False,
-//      TRANSCRIBE_MULTITALKER_MODE=kernel) drives the layer-0
-//      speaker-kernel injection.
+//      that speaker's supervision: kernel mode (masked_asr=False, the
+//      default here) drives the layer-0 speaker-kernel injection; masked
+//      mode (masked_asr=True, the NeMo example default, selected via
+//      TRANSCRIBE_MULTITALKER_MODE=masked) masks mel features.
 //   4. Per-speaker results merge into one speaker-tagged result: segments
 //      ordered by start time with speaker_id set, words/tokens re-indexed
 //      under them, full_text joined in segment order (SegLST rendering),
@@ -63,17 +63,18 @@ struct SpeakerDecode {
 
 }  // namespace
 
-// ---- Streaming multitalker passes (bounded memory) ----
+// ---- Streaming multitalker passes (bounded per-speaker state) ----
 //
 // Chunk-faithful mirror of the reference loop (conformer_stream_step +
 // instance manager): one global 14-enc-frame chunk grid; per active
 // speaker a private streaming cache + decoder-state instance that only
-// advances on chunks where cache-gating selects that speaker. Memory is
-// O(1) in clip length (~5 MB per speaker + one chunk graph), unlike the
-// offline replay whose attention buffers grow quadratically. The
-// per-speaker instances are swapped into the session around each
-// emit_streaming_chunk call so the single-speaker streaming driver runs
-// unchanged.
+// advances on chunks where cache-gating selects that speaker. Per-speaker
+// encoder/decoder working state is O(1) in clip length (~5 MB per speaker
+// plus one chunk graph), unlike the offline replay's O(T^2) attention
+// buffers. The enclosing one-shot call still retains O(T) input, mel, and
+// diarizer-prediction buffers. Per-speaker instances are swapped into the
+// session around each emit_streaming_chunk call so the single-speaker
+// streaming driver runs unchanged.
 static transcribe_status run_streaming_passes(ParakeetSession *             pc,
                                               ParakeetModel *               pm,
                                               const float *                 pcm,
@@ -91,7 +92,8 @@ static transcribe_status run_streaming_passes(ParakeetSession *             pc,
     const auto & hp = pm->hparams;
 
     // ASR mel over the whole clip (row-major [n_mels, n_frames]; each
-    // mel row contiguous over frames). ~170 MB at 55 min — bounded.
+    // mel row contiguous over frames). This is O(T), about 170 MB at 55 min;
+    // unlike offline attention, no O(T^2) buffer is allocated.
     const int64_t      t_mel_start = ggml_time_us();
     std::vector<float> mel;
     int                n_mels = 0, n_frames = 0;
@@ -360,7 +362,7 @@ transcribe_status run_multitalker(ParakeetSession *             pc,
     transcribe::debug::init();
 
     // Supervision mode. Default is the checkpoint's trained speaker-kernel
-    // path: on ami-ihm-test it scores 19.35% cpWER vs masked's 24.61%
+    // path: on ami-ihm-test it scores 19.35% cpWER vs masked's 23.73%
     // (and vs the NeMo reference's own 21.39% kernel / 24.00% masked).
     // TRANSCRIBE_MULTITALKER_MODE=masked selects mel feature masking
     // (the NeMo example default) until the family run-ext grows a knob.

@@ -6,8 +6,7 @@ manifest and emit SegLST hypotheses for cpWER scoring.
 One transcribe-cli invocation per meeting (batch size 1: multitalker is a
 transcribe_run path), diarize=ON, --batch-jsonl output parsed into
 <out-dir>/<meeting>.seglst.json. Supervision mode is selected via
-TRANSCRIBE_MULTITALKER_MODE (masked default | kernel), forwarded from
---mode.
+TRANSCRIBE_MULTITALKER_MODE and forwarded verbatim from --mode.
 
 Usage:
     uv run scripts/diar/run_cpp_multitalker.py \
@@ -45,13 +44,12 @@ def main() -> int:
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir = REPO / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
     want = {m.strip() for m in args.meetings.split(",") if m.strip()}
 
     env = dict(os.environ)
-    if args.mode == "kernel":
-        env["TRANSCRIBE_MULTITALKER_MODE"] = "kernel"
-    else:
-        env.pop("TRANSCRIBE_MULTITALKER_MODE", None)
+    env["TRANSCRIBE_MULTITALKER_MODE"] = args.mode
 
     entries = [json.loads(l) for l in Path(args.manifest).read_text().splitlines() if l.strip()]
     n_ok = 0
@@ -63,7 +61,7 @@ def main() -> int:
         if not Path(audio).is_absolute():
             audio = str(REPO / audio)
 
-        with tempfile.NamedTemporaryFile("w", suffix=".list", delete=False) as bf:
+        with tempfile.NamedTemporaryFile("w", suffix=".list", delete=False, dir=tmp_dir) as bf:
             bf.write(audio + "\n")
             batch_list = bf.name
         cmd = [

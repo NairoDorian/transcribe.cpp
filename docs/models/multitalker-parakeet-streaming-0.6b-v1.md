@@ -52,6 +52,21 @@ The measured NeMo `single_speaker_mode` reference on the same split is
 2.19%, and NVIDIA's self-reported number is 2.19% (from the
 [HF model card](https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1)).
 
+### Multitalker bundles
+
+Bundle GGUFs embed the streaming Sortformer diarizer. The tier names the
+ASR half's dtype; the embedded diarizer is F32 for the F32 bundle, F16 for
+F16, and Q8_0 for all k-quant tiers.
+
+| Bundle | Download | Size |
+| --- | --- | ---: |
+| F32    | [bundle/multitalker-parakeet-streaming-0.6b-v1-F32.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-F32.gguf)       | 2.96 GB |
+| F16    | [bundle/multitalker-parakeet-streaming-0.6b-v1-F16.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-F16.gguf)       | 1.48 GB |
+| Q8_0   | [bundle/multitalker-parakeet-streaming-0.6b-v1-Q8_0.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-Q8_0.gguf)     | 873 MB  |
+| Q6_K   | [bundle/multitalker-parakeet-streaming-0.6b-v1-Q6_K.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-Q6_K.gguf)     | 743 MB  |
+| Q5_K_M | [bundle/multitalker-parakeet-streaming-0.6b-v1-Q5_K_M.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-Q5_K_M.gguf) | 681 MB  |
+| Q4_K_M | [bundle/multitalker-parakeet-streaming-0.6b-v1-Q4_K_M.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-Q4_K_M.gguf) | 617 MB  |
+
 ## Streaming parity
 
 Cache-aware streaming was validated tensor-by-tensor against NeMo's
@@ -84,9 +99,15 @@ uv run --project scripts/envs/parakeet scripts/validate_streaming.py \
 cmake -B build
 cmake --build build
 
+# Plain GGUF: single-speaker transcription.
 build/bin/transcribe-cli \
   -m models/multitalker-parakeet-streaming-0.6b-v1/multitalker-parakeet-streaming-0.6b-v1-Q8_0.gguf \
   samples/jfk.wav
+
+# Bundle GGUF: speaker-attributed transcription.
+build/bin/transcribe-cli --diarize \
+  -m models/multitalker-parakeet-streaming-0.6b-v1/bundle/multitalker-parakeet-streaming-0.6b-v1-Q8_0.gguf \
+  meeting.wav
 ```
 
 If your audio is not already 16 kHz mono WAV, convert it first:
@@ -171,13 +192,16 @@ length mixes, and full test-clean batch-8 WER equals batch-1 (2.19%).
 
 A **bundle GGUF** (composed by `scripts/compose-multitalker-bundle.py`)
 embeds the streaming Sortformer diarizer. Running it with `--diarize`
-produces a speaker-tagged transcript (speaker ids on segments/words; up to
-4 speakers): the embedded diarizer streams over the clip at the reference
-operating point (14-frame chunks, spkcache/FIFO 188), per-chunk cache
-gating selects which speakers are active, and each active speaker gets a
-private cache-aware streaming encoder+decoder instance fed only its active
-chunks — memory is O(1) in clip length (~5 MB per speaker), so hour-scale
-meetings run in bounded memory.
+produces a speaker-tagged transcript (speaker ids on segments, with words
+linked through their segment; up to 4 speakers): the embedded diarizer
+streams over the clip at the reference operating point (14-frame chunks,
+spkcache/FIFO 188), per-chunk cache gating selects which speakers are
+active, and each active speaker gets a private cache-aware streaming
+encoder+decoder instance fed only its active chunks. Encoder/decoder
+working state is constant in clip length (~5 MB per active speaker), while
+total call memory remains O(T) for the input audio, whole-clip mel, and
+accumulated diarizer predictions. It does not allocate the O(T²) attention
+buffers used by the optional offline replay.
 
 Two supervision modes, selected via `TRANSCRIBE_MULTITALKER_MODE`:
 

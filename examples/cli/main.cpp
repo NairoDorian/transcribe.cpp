@@ -204,13 +204,14 @@ struct cli_args {
     bool                       quiet        = false;
     bool                       list_devices = false;  // --list-devices: print devices and exit
     bool                       batch_jsonl  = false;  // --batch-jsonl: output JSONL
-    int                        repeat       = 1;
-    int                        n_threads    = 0;      // 0 = library default (all cores)
-    int                        n_ctx        = 0;      // 0 = model's true max; >0 lowers the cap
-    transcribe_kv_type         kv_type      = TRANSCRIBE_KV_TYPE_AUTO;
-    transcribe_backend_request backend      = TRANSCRIBE_BACKEND_AUTO;
-    int                        gpu_device   = 0;  // --device N: 0 = auto, >0 = registry index
-    transcribe_timestamp_kind  timestamps   = TRANSCRIBE_TIMESTAMPS_AUTO;
+    std::string                output_path;           // -o/--output: write raw text here
+    int                        repeat     = 1;
+    int                        n_threads  = 0;        // 0 = library default (all cores)
+    int                        n_ctx      = 0;        // 0 = model's true max; >0 lowers the cap
+    transcribe_kv_type         kv_type    = TRANSCRIBE_KV_TYPE_AUTO;
+    transcribe_backend_request backend    = TRANSCRIBE_BACKEND_AUTO;
+    int                        gpu_device = 0;  // --device N: 0 = auto, >0 = registry index
+    transcribe_timestamp_kind  timestamps = TRANSCRIBE_TIMESTAMPS_AUTO;
 
     // Whisper-family knobs. Ignored for non-Whisper models.
     std::string                              initial_prompt;                    // --initial-prompt TEXT
@@ -282,6 +283,7 @@ void print_usage(const char * argv0) {
                  "  --target-language ISO target language for translation (e.g. de, es, fr)\n"
                  "  -q, --quiet           suppress library log output\n"
                  "  -r, --repeat N        run N times per file (benchmark)\n"
+                 "  -o, --output PATH     write transcribed text to PATH (stdout unchanged)\n"
                  "  --threads N           CPU threads (default: all cores)\n"
                  "  --n-ctx N             session context/KV cap in tokens (bounds decoder\n"
                  "                        KV memory; cannot extend the model): 0 = model\n"
@@ -530,6 +532,12 @@ bool parse_args(int argc, char ** argv, cli_args & out) {
                 std::fprintf(stderr, "error: --batch-size must be >= 0\n");
                 return false;
             }
+        } else if (a == "-o" || a == "--output") {
+            const char * v = take_value(a.c_str());
+            if (!v) {
+                return false;
+            }
+            out.output_path = v;
         } else if (a == "--initial-prompt") {
             const char * v = take_value(a.c_str());
             if (!v) {
@@ -690,6 +698,23 @@ void log_cb(transcribe_log_level level, const char * msg, void * userdata) {
     std::fprintf(stderr, "%s %s%s", prefix, msg, (msg && *msg && msg[std::strlen(msg) - 1] == '\n') ? "" : "\n");
 }
 
+bool write_output_file(std::ofstream * output, const std::string & path, const char * text) {
+    if (output == nullptr) {
+        return true;
+    }
+    const char * value = text != nullptr ? text : "";
+    *output << value;
+    if (value[0] == '\0' || value[std::strlen(value) - 1] != '\n') {
+        *output << '\n';
+    }
+    output->flush();
+    if (!*output) {
+        std::fprintf(stderr, "error: cannot write %s\n", path.c_str());
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 int main(int argc, char ** argv) {
@@ -714,6 +739,18 @@ int main(int argc, char ** argv) {
     if (!args.quiet) {
         transcribe_log_set(log_cb, nullptr);
     }
+
+    std::ofstream   output_file;
+    std::ofstream * output = nullptr;
+    if (!args.output_path.empty()) {
+        output_file.open(args.output_path, std::ios::binary | std::ios::trunc);
+        if (!output_file) {
+            std::fprintf(stderr, "error: cannot open %s for writing\n", args.output_path.c_str());
+            return EXIT_FAILURE;
+        }
+        output = &output_file;
+    }
+    bool output_ok = true;
 
     // Batch mode: --batch reads a file list, one wav path per line. Loads
     // the model ONCE and reuses the context across all files. Outputs one
@@ -962,6 +999,7 @@ int main(int argc, char ** argv) {
                             std::printf("  ERROR: %s\n", transcribe_status_string(ust));
                         }
                     }
+                    output_ok = write_output_file(output, args.output_path, text) && output_ok;
                     std::fflush(stdout);
                 }
             }
@@ -1102,6 +1140,7 @@ int main(int argc, char ** argv) {
                         std::printf("  ERROR: %s\n", transcribe_status_string(run_st));
                     }
                 }
+                output_ok = write_output_file(output, args.output_path, text) && output_ok;
                 std::fflush(stdout);
             }
         }
@@ -1115,7 +1154,7 @@ int main(int argc, char ** argv) {
         transcribe_model_free(model);
         // OUTPUT_TRUNCATED is result-bearing and does not fail the batch, but
         // hard per-utterance failures must remain visible to automation.
-        return n_fail > 0 ? EXIT_FAILURE : EXIT_SUCCESS;
+        return n_fail > 0 || !output_ok ? EXIT_FAILURE : EXIT_SUCCESS;
     }
 
     // Single-file mode.
@@ -1348,6 +1387,7 @@ int main(int argc, char ** argv) {
         if (result_present) {
             const char * text = transcribe_full_text(ctx);
             std::printf("text: %s\n", (text && *text) ? text : "(empty)");
+            output_ok = write_output_file(output, args.output_path, text) && output_ok;
 
             // A truncated decode hit the model's context/output budget before
             // end-of-stream; the text above is incomplete.
@@ -1425,7 +1465,7 @@ int main(int argc, char ** argv) {
         transcribe_session_free(ctx);
         transcribe_model_free(model);
 
-        if (run_st != TRANSCRIBE_OK) {
+        if (run_st != TRANSCRIBE_OK || !output_ok) {
             return EXIT_FAILURE;
         }
     } else {

@@ -13,6 +13,7 @@
 #include "transcribe.h"
 #include "wav.h"
 
+#include <charconv>
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
@@ -23,6 +24,20 @@
 
 namespace {
 
+bool parse_device_index(const char * text, int & out) {
+    if (text == nullptr || text[0] == '\0') {
+        return false;
+    }
+    const char * end    = text + std::strlen(text);
+    int          parsed = 0;
+    const auto   result = std::from_chars(text, end, parsed);
+    if (result.ec != std::errc{} || result.ptr != end || parsed < 0) {
+        return false;
+    }
+    out = parsed;
+    return true;
+}
+
 struct bench_args {
     std::string                model_path;
     std::string                sample_path;
@@ -32,7 +47,7 @@ struct bench_args {
     int                        n_threads     = 0;
     bool                       quiet         = false;
     transcribe_backend_request backend       = TRANSCRIBE_BACKEND_AUTO;
-    int                        gpu_device    = 0;  // --device N: 0 = auto, >0 = index
+    int                        device_index  = -1;  // --device N: -1 = auto, >=0 = exact device
     // Passed through to transcribe_run_params::spec_k_drafts. -1 = family
     // default, 0 = spec decode off, > 0 = explicit draft length. Silently
     // ignored by families without supports_spec_decode. Set by
@@ -56,8 +71,8 @@ void print_usage(const char * argv0) {
                  "                     cpu is strict CPU (no GPU, no BLAS/AMX).\n"
                  "                     cpu_accel is CPU + host-memory accelerators\n"
                  "                       (BLAS/AMX) when the build includes them.\n"
-                 "  --device N         GPU device index: 0 = auto (first of kind),\n"
-                 "                       >0 selects that ggml registry index\n"
+                 "  --device N         exact device index from transcribe-cli --list-devices,\n"
+                 "                       including 0 (default: automatic selection)\n"
                  "  --spec-k-drafts N  speculative-decode draft length on the offline\n"
                  "                     path: -1 = family default, 0 = off, > 0 = K.\n"
                  "                     Ignored by families without spec support.\n"
@@ -190,9 +205,8 @@ bool parse_args(int argc, char ** argv, bench_args & out) {
             if (!v) {
                 return false;
             }
-            out.gpu_device = std::atoi(v);
-            if (out.gpu_device < 0) {
-                std::fprintf(stderr, "error: --device must be >= 0 (0 = auto)\n");
+            if (!parse_device_index(v, out.device_index)) {
+                std::fprintf(stderr, "error: --device must be an integer index >= 0\n");
                 return false;
             }
         } else {
@@ -316,8 +330,12 @@ int main(int argc, char ** argv) {
     }
     struct transcribe_model_load_params mp;
     transcribe_model_load_params_init(&mp);
-    mp.backend                      = args.backend;
-    mp.gpu_device                   = args.gpu_device;
+    mp.backend = args.backend;
+    mp.device  = args.device_index >= 0 ? transcribe_device_get(args.device_index) : nullptr;
+    if (args.device_index >= 0 && mp.device == nullptr) {
+        std::fprintf(stderr, "error: --device index %d is not available\n", args.device_index);
+        return EXIT_FAILURE;
+    }
     struct transcribe_model * model = nullptr;
     if (const transcribe_status st = transcribe_model_load_file(args.model_path.c_str(), &mp, &model);
         st != TRANSCRIBE_OK) {

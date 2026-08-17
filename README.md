@@ -8,7 +8,7 @@ C/C++ speech-to-text inference library. Runs diverse STT model families via [GGU
 
 | Family | Variants | Docs |
 | --- | --- | --- |
-| Parakeet | 10 variants: TDT, RNN-T, CTC, TDT+CTC (110M–1.1B) | [docs/models/parakeet.md](docs/models/parakeet.md) |
+| Parakeet | 11 variants: TDT, RNN-T, CTC, TDT+CTC (110M–1.1B), incl. German `parakeet-primeline` | [docs/models/parakeet.md](docs/models/parakeet.md) |
 | Canary | `canary-1b`, `canary-1b-v2`, `canary-1b-flash`, `canary-180m-flash` | [docs/models/canary.md](docs/models/canary.md) |
 | Canary-Qwen | `canary-qwen-2.5b` (FastConformer + Qwen3-1.7B SALM) | [docs/models/canary-qwen-2.5b.md](docs/models/canary-qwen-2.5b.md) |
 | Whisper | 12 variants (`tiny` through `large-v3-turbo`, plus `.en` siblings) | [docs/models/whisper.md](docs/models/whisper.md) |

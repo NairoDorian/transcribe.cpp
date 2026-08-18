@@ -84,6 +84,14 @@ fn main() {
         println!("cargo:rerun-if-changed={}", root.join(p).display());
     }
 
+    println!("cargo:rerun-if-env-changed=TRANSCRIBE_PREBUILT_DIR");
+    println!("cargo:rerun-if-env-changed=TRANSCRIBE_CACHE_DIR");
+    println!("cargo:rerun-if-env-changed=TRANSCRIBE_FORCE_REBUILD");
+
+    // Explicit escape hatch: skip the persistent cache and compile from source.
+    let force_rebuild = env::var_os("TRANSCRIBE_FORCE_REBUILD").is_some();
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
+
     // `dynamic-backends` (loadable backend modules) requires a shared library,
     // so it implies `shared`. The Cargo manifest already encodes that implication
     // (`dynamic-backends = ["shared"]`), but treat it as load-bearing here too.
@@ -94,6 +102,86 @@ fn main() {
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     let is_apple = matches!(target_os.as_str(), "macos" | "ios");
     let is_x86 = matches!(target_arch.as_str(), "x86" | "x86_64");
+
+    let mut active_features = Vec::new();
+    if shared {
+        active_features.push("shared");
+    }
+    if dynamic_backends {
+        active_features.push("dynamic-backends");
+    }
+    if feature("METAL") {
+        active_features.push("metal");
+    }
+    if feature("VULKAN") {
+        active_features.push("vulkan");
+    }
+    if feature("CUDA") {
+        active_features.push("cuda");
+    }
+    if feature("ROCM") {
+        active_features.push("rocm");
+    }
+    if feature("OPENMP") {
+        active_features.push("openmp");
+    }
+
+    // Cache key includes a source-tree fingerprint (max mtime across tracked
+    // source dirs) so the persistent cache invalidates automatically when
+    // transcribe.cpp sources change (git pull, local edit). Without this, a
+    // cache hit would silently reuse stale artifacts after a source change.
+    let cache_key = compute_cache_key(
+        &root,
+        &target_os,
+        &target_arch,
+        &target_env,
+        &active_features,
+    );
+    let cache_dir = get_cache_root().join(&cache_key);
+
+    // Check for explicit prebuilt or persistent cache hit. On a cache hit we
+    // copy the pre-built artifacts into OUT_DIR and skip CMake entirely — so
+    // `bun run tauri dev` only rebuilds transcribe.cpp when its sources moved
+    // (cache key differs → cache miss → CMake build).
+    if !force_rebuild {
+        if let Ok(prebuilt) = env::var("TRANSCRIBE_PREBUILT_DIR") {
+            let prebuilt_path = PathBuf::from(prebuilt);
+            if let Some(manifest) = find_manifest(&prebuilt_path) {
+                println!(
+                    "cargo:warning=transcribe-cpp-sys: [PREBUILT] Using prebuilt transcribe-cpp from {}",
+                    prebuilt_path.display()
+                );
+                let _ = copy_dir_all(&prebuilt_path, &out_dir);
+                emit_link_lines(&out_dir, &manifest);
+                return;
+            }
+        }
+
+        if let Some(manifest) = find_manifest(&cache_dir) {
+            println!(
+                "cargo:warning=transcribe-cpp-sys: [CACHE HIT] Using persistent cached build from {} (0s compile time)",
+                cache_dir.display()
+            );
+            let _ = copy_dir_all(&cache_dir, &out_dir);
+            emit_link_lines(&out_dir, &manifest);
+            return;
+        }
+
+        let fallback_prebuilt = get_cache_root().join("prebuilt");
+        if let Some(manifest) = find_manifest(&fallback_prebuilt) {
+            println!(
+                "cargo:warning=transcribe-cpp-sys: [CACHE HIT] Using prebuilt cache from {} (0s compile time)",
+                fallback_prebuilt.display()
+            );
+            let _ = copy_dir_all(&fallback_prebuilt, &out_dir);
+            emit_link_lines(&out_dir, &manifest);
+            return;
+        }
+    }
+
+    println!(
+        "cargo:warning=transcribe-cpp-sys: [CACHE MISS] Compiling transcribe-cpp via CMake..."
+    );
 
     let mut cfg = cmake::Config::new(&root);
     cfg.profile("Release") // a transcription library always wants an optimized native core
@@ -222,6 +310,20 @@ fn main() {
 
     let manifest = find_manifest(&prefix)
         .unwrap_or_else(|| panic!("transcribe-link.json not found under {}", prefix.display()));
+
+    // Cache build artifacts to persistent storage for all future builds.
+    if let Err(e) = copy_dir_all(&prefix, &cache_dir) {
+        println!(
+            "cargo:warning=transcribe-cpp-sys: failed to cache build to {}: {e}",
+            cache_dir.display()
+        );
+    } else {
+        println!(
+            "cargo:warning=transcribe-cpp-sys: [CACHE SAVED] Cached transcribe-cpp artifacts to {}",
+            cache_dir.display()
+        );
+    }
+
     emit_link_lines(&prefix, &manifest);
 }
 
@@ -527,4 +629,121 @@ fn stage_windows_dlls(prefix: &Path) {
     }
     // Re-stage when the built DLLs change.
     println!("cargo:rerun-if-changed={}", bin_dir.display());
+}
+
+/// Root directory for persistent out-of-tree transcribe.cpp build artifacts.
+fn get_cache_root() -> PathBuf {
+    if let Ok(dir) = env::var("TRANSCRIBE_PREBUILT_DIR") {
+        return PathBuf::from(dir);
+    }
+    if let Ok(dir) = env::var("TRANSCRIBE_CACHE_DIR") {
+        return PathBuf::from(dir);
+    }
+    let base = if cfg!(windows) {
+        env::var_os("LOCALAPPDATA")
+            .or_else(|| env::var_os("APPDATA"))
+            .or_else(|| env::var_os("USERPROFILE"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("C:\\ProgramData"))
+    } else {
+        env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+    };
+    base.join("handy").join("transcribe_cpp_cache")
+}
+
+/// Compute a unique cache key for the target platform, enabled features, and
+/// source tree fingerprint. The source fingerprint (max mtime across tracked
+/// source dirs) ensures the cache invalidates when any source file changes.
+fn compute_cache_key(
+    root: &Path,
+    target_os: &str,
+    target_arch: &str,
+    target_env: &str,
+    features: &[&str],
+) -> String {
+    let mut s = format!("{target_os}-{target_arch}-{target_env}-release-");
+    let mut sorted_features = features.to_vec();
+    sorted_features.sort();
+    for f in sorted_features {
+        s.push_str(f);
+        s.push('_');
+    }
+    s.push_str(&format!("src-{}", max_source_mtime(root)));
+    let mut hash: u64 = 0xcbf29ce484222325; // FNV-1a: stable across rustc versions
+    for b in s.bytes() {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{target_os}_{target_arch}_{target_env}_{hash:016x}")
+}
+
+/// Walk the source trees that participate in the native build and return the
+/// maximum file modification time as a hex string. When any source file changes
+/// (git pull, local edit) the max advances and the cache key changes, forcing a
+/// recompile. mtime-based (not content hash) for speed.
+fn max_source_mtime(root: &Path) -> String {
+    let mut max: Option<std::time::SystemTime> = None;
+    for p in [
+        "CMakeLists.txt",
+        "include",
+        "src",
+        "ggml",
+        "cmake",
+        "bindings/rust/sys",
+    ] {
+        walk_mtimes(&root.join(p), &mut max);
+    }
+    match max.and_then(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH)) {
+        Some(d) => format!("{:016x}", d.as_nanos()),
+        None => "0".to_string(),
+    }
+}
+
+fn walk_mtimes(path: &Path, max: &mut Option<std::time::SystemTime>) {
+    if path.is_file() {
+        if let Ok(meta) = path.metadata() {
+            if let Ok(mtime) = meta.modified() {
+                if max.map_or(true, |m| mtime > m) {
+                    *max = Some(mtime);
+                }
+            }
+        }
+    } else if path.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name == "."
+                    || name == ".."
+                    || name.starts_with('.')
+                    || matches!(name.as_str(), "target" | "build")
+                {
+                    continue;
+                }
+                walk_mtimes(&entry.path(), max);
+            }
+        }
+    }
+}
+
+/// Recursively copy a directory tree.
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if !src.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dst_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &dst_path)?
+        } else {
+            let _ = std::fs::copy(entry.path(), dst_path);
+        }
+    }
+    Ok(())
 }

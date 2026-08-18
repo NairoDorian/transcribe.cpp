@@ -696,7 +696,7 @@ fn max_source_mtime(root: &Path) -> String {
     ] {
         walk_mtimes(&root.join(p), &mut max);
     }
-    match max.and_then(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH)) {
+    match max.and_then(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH).ok()) {
         Some(d) => format!("{:016x}", d.as_nanos()),
         None => "0".to_string(),
     }
@@ -719,7 +719,8 @@ fn walk_mtimes(path: &Path, max: &mut Option<std::time::SystemTime>) {
                 if name == "."
                     || name == ".."
                     || name.starts_with('.')
-                    || matches!(name.as_str(), "target" | "build")
+                    || name == "target"
+                    || name == "build"
                 {
                     continue;
                 }

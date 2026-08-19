@@ -993,8 +993,8 @@ transcribe_status run(transcribe_session *          context,
         cc->compute_ctx = ggml_init(ip);
         if (cc->compute_ctx == nullptr) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
-                "canary_qwen run: prefill compute context allocation failed — "
-                "out of memory.");
+                                "canary_qwen run: prefill compute context allocation failed — "
+                                "out of memory.");
             cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
@@ -1012,10 +1012,10 @@ transcribe_status run(transcribe_session *          context,
     ggml_backend_sched_reset(cc->sched);
     if (!ggml_backend_sched_alloc_graph(cc->sched, pb.graph)) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
-            "canary_qwen run: prefill graph allocation failed (T_prompt=%d) — "
-            "out of memory. Lower transcribe_session_params.n_ctx or shorten "
-            "the audio.",
-            T_prompt);
+                            "canary_qwen run: prefill graph allocation failed (T_prompt=%d) — "
+                            "out of memory. Lower transcribe_session_params.n_ctx or shorten "
+                            "the audio.",
+                            T_prompt);
         cleanup_gpu();
         return TRANSCRIBE_ERR_OOM;
     }
@@ -1122,8 +1122,8 @@ transcribe_status run(transcribe_session *          context,
         cc->compute_ctx = ggml_init(ip);
         if (cc->compute_ctx == nullptr) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
-                "canary_qwen step: compute context allocation failed — "
-                "out of memory.");
+                                "canary_qwen step: compute context allocation failed — "
+                                "out of memory.");
             cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }

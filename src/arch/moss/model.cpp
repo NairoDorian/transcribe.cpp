@@ -844,7 +844,7 @@ transcribe_status run(transcribe_session *          session,
         }
         const bool   slice_last = !dumps_on;
         PrefillBuild pb         = build_prefill_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache, T_prompt,
-                                                       cc->decoder_use_flash, slice_last);
+                                                      cc->decoder_use_flash, slice_last);
         if (pb.graph == nullptr || pb.out == nullptr) {
             cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;

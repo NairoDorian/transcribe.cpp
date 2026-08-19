@@ -111,6 +111,23 @@ void GigaamMelFrontend::init(const GigaamHParams & hp, const GigaamWeights & w) 
     if (w.frontend_mel_filterbank != nullptr) {
         ggml_backend_tensor_get(w.frontend_mel_filterbank, mel_fb.data(), 0, mel_fb.size() * sizeof(float));
     }
+
+    // Per-band nonzero spans for the no-BLAS matmul (see mel.h).
+    fb_begin.assign(static_cast<size_t>(n_mels), 0);
+    fb_end.assign(static_cast<size_t>(n_mels), 0);
+    for (int m = 0; m < n_mels; ++m) {
+        const float * row = mel_fb.data() + static_cast<size_t>(m) * n_freq;
+        int           lo  = 0;
+        while (lo < n_freq && row[lo] == 0.0f) {
+            ++lo;
+        }
+        int hi = n_freq;
+        while (hi > lo && row[hi - 1] == 0.0f) {
+            --hi;
+        }
+        fb_begin[static_cast<size_t>(m)] = lo;
+        fb_end[static_cast<size_t>(m)]   = hi;
+    }
 }
 
 int GigaamMelFrontend::n_frames_for(size_t n_samples) const {
@@ -182,15 +199,34 @@ transcribe_status GigaamMelFrontend::compute(const float *        pcm,
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, n_mels, n_frames, n_freq, 1.0f, mel_fb.data(), n_freq,
                 power.data(), n_freq, 0.0f, out_mel.data(), n_frames);
 #else
-    for (int m = 0; m < n_mels; ++m) {
-        const float * filter = mel_fb.data() + static_cast<size_t>(m) * n_freq;
-        for (int t = 0; t < n_frames; ++t) {
-            const float * power_row = power.data() + static_cast<size_t>(t) * n_freq;
-            float         acc       = 0.0f;
-            for (int k = 0; k < n_freq; ++k) {
-                acc += filter[k] * power_row[k];
+    // No BLAS: reuse the FFT worker split (bands are independent, each writes
+    // its own row of out_mel) and walk only each band's nonzero span. Neither
+    // changes the arithmetic — see fb_begin in mel.h.
+    {
+        const int n_mm = std::max(1, std::min(n_mels, n_threads));
+        auto      mm   = [&](int worker_id) {
+            for (int m = worker_id; m < n_mels; m += n_mm) {
+                const float * filter = mel_fb.data() + static_cast<size_t>(m) * n_freq;
+                const int     k_lo   = fb_begin[static_cast<size_t>(m)];
+                const int     k_hi   = fb_end[static_cast<size_t>(m)];
+                for (int t = 0; t < n_frames; ++t) {
+                    const float * power_row = power.data() + static_cast<size_t>(t) * n_freq;
+                    float         acc       = 0.0f;
+                    for (int k = k_lo; k < k_hi; ++k) {
+                        acc += filter[k] * power_row[k];
+                    }
+                    out_mel[static_cast<size_t>(m) * n_frames + t] = acc;
+                }
             }
-            out_mel[static_cast<size_t>(m) * n_frames + t] = acc;
+        };
+        std::vector<std::thread> mm_workers;
+        mm_workers.reserve(n_mm > 0 ? static_cast<size_t>(n_mm - 1) : 0);
+        for (int worker_id = 1; worker_id < n_mm; ++worker_id) {
+            mm_workers.emplace_back(mm, worker_id);
+        }
+        mm(0);
+        for (auto & thread : mm_workers) {
+            thread.join();
         }
     }
 #endif

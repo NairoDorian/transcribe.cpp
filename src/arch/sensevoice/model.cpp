@@ -604,7 +604,8 @@ transcribe_status run(transcribe_session *          session,
     ggml_backend_tensor_get(eb.out, cc->logits_buf.data(), 0, cc->logits_buf.size() * sizeof(float));
 
     // ---------- Greedy CTC decode + public result --------------------
-    const transcribe_status st_decode = decode_and_populate(cc, cm, params, cc->logits_buf.data(), T_full, vocab, lang, n_samples);
+    const transcribe_status st_decode =
+        decode_and_populate(cc, cm, params, cc->logits_buf.data(), T_full, vocab, lang, n_samples);
     cleanup_gpu();
     return st_decode;
 }

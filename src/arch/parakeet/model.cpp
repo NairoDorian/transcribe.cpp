@@ -1268,7 +1268,7 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
     const int64_t t_enc_start = ggml_time_us();
     if (const ggml_status gs = ggml_backend_sched_graph_compute(pc->sched, eb.graph); gs != GGML_STATUS_SUCCESS) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet run: ggml_backend_sched_graph_compute failed (%d)",
-                 static_cast<int>(gs));
+                static_cast<int>(gs));
         cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
@@ -3046,8 +3046,39 @@ transcribe_status stream_feed(transcribe_session *       session,
     const int64_t t_mel_start  = ggml_time_us();
     int           mel_n_mels   = 0;
     int           mel_n_frames = 0;
-    if (const transcribe_status mst = pm->mel->compute(pc->stream_pcm_buffer.data(), pc->stream_pcm_buffer.size(),
-                                                       pc->mel_buf, mel_n_mels, mel_n_frames, pc->n_threads);
+
+    // Skip the mel outright on feeds that cannot emit a chunk.
+    //
+    // mel_buf is consumed only by the emit loop below (stream_finalize
+    // recomputes its own), and that loop's entry test is
+    //     avail - consumed >= chunk_advance + right_edge_margin
+    // where avail = pcm_start_frame + (frames compute() returned). The frame
+    // count is a pure function of the buffer length, and n_frames_for() is an
+    // exact upper bound on it: the per_feature and "none" normalizers return
+    // n_frames_for(), the whisper-mode ones (per_utterance / global) return
+    // one less. So when even the upper bound fails the test, the loop breaks
+    // on its first iteration and the entire mel is thrown away.
+    //
+    // Feeds arrive every stream-chunk-ms but a chunk is emitted only every
+    // few feeds, and each feed re-ran the mel over the WHOLE sliding buffer —
+    // which is why streaming mel cost ~9x the offline mel for the same audio.
+    //
+    // Bit-exact: when a chunk is emittable this computes exactly what it
+    // always did, over exactly the same buffer. When it is not, mel_n_frames
+    // stays 0, so avail == pcm_start_frame <= consumed (the trim never drops
+    // past the frames still needed) and the loop breaks as before.
+    const int margin_hops = (pm->hparams.fe_n_fft / 2 + pm->hparams.fe_hop_length - 1) / pm->hparams.fe_hop_length;
+    const int advance_needed =
+        pc->stream_caches.is_first_chunk ? pc->stream_caches.chunk_size_first : pc->stream_caches.chunk_size_subsequent;
+    const int64_t avail_upper = pc->stream_caches.pcm_start_sample / pm->hparams.fe_hop_length +
+                                static_cast<int64_t>(pm->mel->n_frames_for(pc->stream_pcm_buffer.size()));
+    const bool    mel_needed =
+        (avail_upper - pc->stream_caches.mel_frames_consumed) >= static_cast<int64_t>(advance_needed) + margin_hops;
+
+    if (const transcribe_status mst = mel_needed ?
+                                          pm->mel->compute(pc->stream_pcm_buffer.data(), pc->stream_pcm_buffer.size(),
+                                                           pc->mel_buf, mel_n_mels, mel_n_frames, pc->n_threads) :
+                                          TRANSCRIBE_OK;
         mst != TRANSCRIBE_OK) {
         // For very short buffers compute returns INVALID_ARG — "not
         // enough audio yet", a no-op feed, not a fatal error.

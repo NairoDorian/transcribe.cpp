@@ -795,6 +795,20 @@ transcribe_status run(transcribe_session *          session,
         cc->kv_cache.head = 0;
     }
 
+    // Free GPU buffers (KV cache + scheduler galloc buffers) after each
+    // transcription to prevent memory accumulation across repeated runs. The
+    // session is reused across calls (e.g. Multi-STT extra models with
+    // multi_stt_keep_extra_models_loaded), so releasing here lets the caching
+    // allocator reuse freed blocks on the next run() rather than growing the
+    // cache (GPU memory leak on Windows).
+    auto cleanup_gpu = [&]() {
+        cc->kv_cache.free();
+        if (cc->sched != nullptr) {
+            safe_sched_free(cc->sched);
+            cc->sched = nullptr;
+        }
+    };
+
     // Prefill. Prompts that fit in one chunk keep the original single-shot
     // graph verbatim — that is the graph every golden dump and tolerance was
     // recorded against. Longer prompts go chunk-by-chunk, which is the only
@@ -819,21 +833,25 @@ transcribe_status run(transcribe_session *          session,
         if (const transcribe_status st =
                 prefill_chunked(cc, cm, prompt_ids, audio_dense, keep_mask, chunk_size, logits);
             st != TRANSCRIBE_OK) {
+            cleanup_gpu();
             return st;
         }
         t_prefill_us = perf_debug ? (ggml_time_us() - t_pf0) : 0;
     } else {
         if (const transcribe_status st = reset_compute_ctx(cc, 16); st != TRANSCRIBE_OK) {
+            cleanup_gpu();
             return st;
         }
         const bool   slice_last = !dumps_on;
         PrefillBuild pb         = build_prefill_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache, T_prompt,
-                                                      cc->decoder_use_flash, slice_last);
+                                                       cc->decoder_use_flash, slice_last);
         if (pb.graph == nullptr || pb.out == nullptr) {
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
         ggml_backend_sched_reset(cc->sched);
         if (!ggml_backend_sched_alloc_graph(cc->sched, pb.graph)) {
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
 
@@ -856,6 +874,7 @@ transcribe_status run(transcribe_session *          session,
         const int64_t t_pf0 = perf_debug ? ggml_time_us() : 0;
         if (ggml_backend_sched_graph_compute(cc->sched, pb.graph) != GGML_STATUS_SUCCESS) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "moss run: prefill compute failed");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
         t_prefill_us      = perf_debug ? (ggml_time_us() - t_pf0) : 0;
@@ -899,15 +918,18 @@ transcribe_status run(transcribe_session *          session,
     }
 
     if (const transcribe_status st = reset_compute_ctx(cc, 8); st != TRANSCRIBE_OK) {
+        cleanup_gpu();
         return st;
     }
     StepBuild sb =
         build_step_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache, max_n_kv, cc->decoder_use_flash);
     if (sb.graph == nullptr || sb.out == nullptr) {
+        cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
     ggml_backend_sched_reset(cc->sched);
     if (!ggml_backend_sched_alloc_graph(cc->sched, sb.graph)) {
+        cleanup_gpu();
         return TRANSCRIBE_ERR_OOM;
     }
 
@@ -949,6 +971,7 @@ transcribe_status run(transcribe_session *          session,
 
         if (ggml_backend_sched_graph_compute(cc->sched, sb.graph) != GGML_STATUS_SUCCESS) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "moss step: graph compute failed");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
         if (perf_debug) {
@@ -978,6 +1001,7 @@ transcribe_status run(transcribe_session *          session,
         cc->kv_cache.n    = cur_past + 1;
         cc->kv_cache.head = cur_past + 1;
         if (cc->poll_abort()) {
+            cleanup_gpu();
             return TRANSCRIBE_ERR_ABORTED;
         }
     }
@@ -1031,6 +1055,7 @@ transcribe_status run(transcribe_session *          session,
     install_transcript(*cc, params, raw_text, audio_ms);
     cc->has_result = true;
 
+    cleanup_gpu();
     return cc->was_truncated ? TRANSCRIBE_ERR_OUTPUT_TRUNCATED : TRANSCRIBE_OK;
 }
 

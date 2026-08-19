@@ -782,6 +782,19 @@ transcribe_status run(transcribe_session *          session,
         cc->kv_cache.head = 0;
     }
 
+    // Free GPU buffers (scheduler galloc + KV cache) after each transcription to
+    // prevent memory accumulation across repeated runs. The session persists
+    // across calls (e.g. Multi-STT extra models with multi_stt_keep_extra_models_loaded),
+    // so releasing here lets CUDA's caching allocator reuse freed blocks on the
+    // next run() rather than growing the cache (GPU memory leak on Windows).
+    auto cleanup_gpu = [&]() {
+        cc->kv_cache.free();
+        if (cc->sched != nullptr) {
+            safe_sched_free(cc->sched);
+            cc->sched = nullptr;
+        }
+    };
+
     // Prefill graph. slice_last false: last block's FFN + final norm run on
     // every position (needed for dump parity). true: slice to just the final
     // position before the last FFN (llama.cpp's inp_out_ids trick, ~25 ms).
@@ -791,6 +804,7 @@ transcribe_status run(transcribe_session *          session,
                                           prefix_len, suffix_len,
                                           /*use_flash=*/cc->decoder_use_flash, slice_last);
     if (pb.graph == nullptr || pb.out == nullptr) {
+        cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
 
@@ -802,6 +816,7 @@ transcribe_status run(transcribe_session *          session,
                             "out of memory. Lower transcribe_session_params.n_ctx or shorten "
                             "the audio.",
                             T_prompt);
+        cleanup_gpu();
         return TRANSCRIBE_ERR_OOM;
     }
 
@@ -835,6 +850,7 @@ transcribe_status run(transcribe_session *          session,
     t_prefill_build_us                    = t_prefill_compute_start - t_prefill_build_start;
     if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, pb.graph); gs != GGML_STATUS_SUCCESS) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr run: prefill graph compute failed (%d)", static_cast<int>(gs));
+        cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
     t_prefill_compute_us = ggml_time_us() - t_prefill_compute_start;
@@ -908,12 +924,14 @@ transcribe_status run(transcribe_session *          session,
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "qwen3_asr step: compute context allocation failed — "
                                 "out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
     }
     StepBuild sb = build_step_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache, max_n_kv,
                                     /*use_flash=*/cc->decoder_use_flash);
     if (sb.graph == nullptr || sb.out == nullptr) {
+        cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
     ggml_backend_sched_reset(cc->sched);
@@ -921,6 +939,7 @@ transcribe_status run(transcribe_session *          session,
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "qwen3_asr step: decode graph allocation failed — out of memory. "
                             "Lower transcribe_session_params.n_ctx or shorten the audio.");
+        cleanup_gpu();
         return TRANSCRIBE_ERR_OOM;
     }
     const int64_t t_step_build_once_us = ggml_time_us() - t_step_build_start;
@@ -960,6 +979,7 @@ transcribe_status run(transcribe_session *          session,
 
         if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, sb.graph); gs != GGML_STATUS_SUCCESS) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr step: graph compute failed (%d)", static_cast<int>(gs));
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
         const int64_t t_comp1 = ggml_time_us();
@@ -1085,6 +1105,8 @@ transcribe_status run(transcribe_session *          session,
 
     // A truncated decode returns OUTPUT_TRUNCATED; the partial transcript above
     // stays readable (like an aborted run).
+    cleanup_gpu();
+
     return cc->was_truncated ? TRANSCRIBE_ERR_OUTPUT_TRUNCATED : TRANSCRIBE_OK;
 }
 

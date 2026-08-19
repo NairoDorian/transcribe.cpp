@@ -965,6 +965,20 @@ transcribe_status run(transcribe_session *          context,
         cc->kv_cache.head = 0;
     }
 
+    // Free GPU buffers (KV cache + scheduler galloc buffers) after each
+    // transcription to prevent memory accumulation across repeated runs. The
+    // session is reused across calls (e.g. Multi-STT extra models with
+    // multi_stt_keep_extra_models_loaded), so releasing here lets CUDA's
+    // caching allocator reuse freed blocks on the next run() rather than
+    // growing the cache (GPU memory leak on Windows).
+    auto cleanup_gpu = [&]() {
+        cc->kv_cache.free();
+        if (cc->sched != nullptr) {
+            safe_sched_free(cc->sched);
+            cc->sched = nullptr;
+        }
+    };
+
     const int64_t t_dec_start = ggml_time_us();
 
     if (cc->compute_ctx != nullptr) {
@@ -979,8 +993,9 @@ transcribe_status run(transcribe_session *          context,
         cc->compute_ctx = ggml_init(ip);
         if (cc->compute_ctx == nullptr) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
-                                "canary_qwen run: prefill compute context allocation failed — "
-                                "out of memory.");
+                "canary_qwen run: prefill compute context allocation failed — "
+                "out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
     }
@@ -990,16 +1005,18 @@ transcribe_status run(transcribe_session *          context,
     PrefillBuild pb = build_prefill_graph(cc->compute_ctx, cm->weights, hp, cc->kv_cache, T_prompt, T_enc, prefix_len,
                                           suffix_len, cc->decoder_use_flash, slice_last);
     if (pb.graph == nullptr || pb.out == nullptr) {
+        cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
 
     ggml_backend_sched_reset(cc->sched);
     if (!ggml_backend_sched_alloc_graph(cc->sched, pb.graph)) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
-                            "canary_qwen run: prefill graph allocation failed (T_prompt=%d) — "
-                            "out of memory. Lower transcribe_session_params.n_ctx or shorten "
-                            "the audio.",
-                            T_prompt);
+            "canary_qwen run: prefill graph allocation failed (T_prompt=%d) — "
+            "out of memory. Lower transcribe_session_params.n_ctx or shorten "
+            "the audio.",
+            T_prompt);
+        cleanup_gpu();
         return TRANSCRIBE_ERR_OOM;
     }
 
@@ -1033,6 +1050,7 @@ transcribe_status run(transcribe_session *          context,
         const int64_t t0 = ggml_time_us();
         if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, pb.graph); gs != GGML_STATUS_SUCCESS) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "canary_qwen run: prefill compute failed (%d)", static_cast<int>(gs));
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
         t_prefill_compute_us = ggml_time_us() - t0;
@@ -1104,8 +1122,9 @@ transcribe_status run(transcribe_session *          context,
         cc->compute_ctx = ggml_init(ip);
         if (cc->compute_ctx == nullptr) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
-                                "canary_qwen step: compute context allocation failed — "
-                                "out of memory.");
+                "canary_qwen step: compute context allocation failed — "
+                "out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
     }
@@ -1131,6 +1150,7 @@ transcribe_status run(transcribe_session *          context,
         }
     }
     if (sb.graph == nullptr || sb.out == nullptr) {
+        cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
 
@@ -1139,6 +1159,7 @@ transcribe_status run(transcribe_session *          context,
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "canary_qwen step: decode graph allocation failed — out of memory. "
                             "Lower transcribe_session_params.n_ctx or shorten the audio.");
+        cleanup_gpu();
         return TRANSCRIBE_ERR_OOM;
     }
 
@@ -1181,6 +1202,7 @@ transcribe_status run(transcribe_session *          context,
         const int64_t t_c0 = profile_decode ? ggml_time_us() : 0;
         if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, sb.graph); gs != GGML_STATUS_SUCCESS) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "canary_qwen run: step compute failed (%d)", static_cast<int>(gs));
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
         if (profile_decode) {
@@ -1268,6 +1290,8 @@ transcribe_status run(transcribe_session *          context,
 
     // A truncated decode returns OUTPUT_TRUNCATED; the partial transcript above
     // stays readable (like an aborted run).
+    cleanup_gpu();
+
     return cc->was_truncated ? TRANSCRIBE_ERR_OUTPUT_TRUNCATED : TRANSCRIBE_OK;
 }
 

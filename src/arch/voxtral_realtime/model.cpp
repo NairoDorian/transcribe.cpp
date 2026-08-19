@@ -544,6 +544,20 @@ transcribe_status forward_buffer(Session *     cc,
         }
     }
 
+    // Free GPU buffers (KV cache + scheduler galloc buffers) after each
+    // transcription to prevent memory accumulation across repeated runs. The
+    // session is reused across calls (e.g. Multi-STT extra models with
+    // multi_stt_keep_extra_models_loaded), so releasing here lets CUDA's
+    // caching allocator reuse freed blocks on the next run() rather than
+    // growing the cache (GPU memory leak on Windows).
+    auto cleanup_gpu = [&]() {
+        cc->kv_cache.free();
+        if (cc->sched != nullptr) {
+            safe_sched_free(cc->sched);
+            cc->sched = nullptr;
+        }
+    };
+
     const int     dec_h       = cm->hparams.dec_hidden;
     int           n_audio     = 0;
     const int64_t t_enc_start = ggml_time_us();
@@ -560,12 +574,14 @@ transcribe_status forward_buffer(Session *     cc,
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "voxtral_realtime: compute context allocation failed — "
                                 "out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
 
         EncoderBuild eb =
             build_encoder_graph(cc->compute_ctx, cm->weights, cm->hparams, mel_n_frames, cc->encoder_use_flash);
         if (eb.graph == nullptr || eb.out == nullptr) {
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
         n_audio = eb.n_audio;
@@ -575,6 +591,7 @@ transcribe_status forward_buffer(Session *     cc,
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "voxtral_realtime run: encoder graph allocation failed — "
                                 "out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
 
@@ -612,6 +629,7 @@ transcribe_status forward_buffer(Session *     cc,
         apply_threads(cc->sched, cc->n_threads);
         if (ggml_backend_sched_graph_compute(cc->sched, eb.graph) != GGML_STATUS_SUCCESS) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "voxtral_realtime run: encoder compute failed");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
 
@@ -639,6 +657,7 @@ transcribe_status forward_buffer(Session *     cc,
 
     // ----- Adaptive-norm scales for the active delay -----
     if (auto st = compute_ada_scales(cc, cm, num_delay); st != TRANSCRIBE_OK) {
+        cleanup_gpu();
         return st;
     }
 
@@ -654,6 +673,7 @@ transcribe_status forward_buffer(Session *     cc,
     if (T_prompt >= n_audio) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "voxtral_realtime run: prompt %d >= n_audio %d (clip too short)", T_prompt, n_audio);
+        cleanup_gpu();
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
 
@@ -666,6 +686,7 @@ transcribe_status forward_buffer(Session *     cc,
                             "voxtral_realtime run: clip needs %d positions > model max %d "
                             "(dec_max_position, ~2.9 h). See transcribe_capabilities.max_audio_ms.",
                             n_audio + 1, abs_cap);
+        cleanup_gpu();
         return TRANSCRIBE_ERR_INPUT_TOO_LONG;
     }
 
@@ -682,6 +703,7 @@ transcribe_status forward_buffer(Session *     cc,
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "voxtral_realtime run: KV cache allocation failed — "
                                 "out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
     }
@@ -722,6 +744,7 @@ transcribe_status forward_buffer(Session *     cc,
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "voxtral_realtime: compute context allocation failed — "
                                 "out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
 
@@ -729,6 +752,7 @@ transcribe_status forward_buffer(Session *     cc,
                                               cc->ada_scale_all, T_prompt, cc->decoder_use_flash,
                                               /*want_all_logits=*/false);
         if (pb.graph == nullptr || pb.out == nullptr) {
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
         ggml_backend_sched_reset(cc->sched);
@@ -736,6 +760,7 @@ transcribe_status forward_buffer(Session *     cc,
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "voxtral_realtime run: prefill graph allocation failed — "
                                 "out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
 
@@ -760,6 +785,7 @@ transcribe_status forward_buffer(Session *     cc,
         apply_threads(cc->sched, cc->n_threads);
         if (ggml_backend_sched_graph_compute(cc->sched, pb.graph) != GGML_STATUS_SUCCESS) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "voxtral_realtime run: prefill compute failed");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
         cc->kv_cache.n    = T_prompt;
@@ -790,6 +816,7 @@ transcribe_status forward_buffer(Session *     cc,
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "voxtral_realtime: compute context allocation failed — "
                                 "out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
 
@@ -803,6 +830,7 @@ transcribe_status forward_buffer(Session *     cc,
             StepBuild sb = build_step_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache, cc->ada_scale_all,
                                             max_n_kv, cc->decoder_use_flash);
             if (sb.graph == nullptr || sb.out == nullptr) {
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_GGUF;
             }
             ggml_backend_sched_reset(cc->sched);
@@ -810,6 +838,7 @@ transcribe_status forward_buffer(Session *     cc,
                 transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                     "voxtral_realtime run: step graph allocation failed — "
                                     "out of memory.");
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_OOM;
             }
             apply_threads(cc->sched, cc->n_threads);
@@ -817,6 +846,7 @@ transcribe_status forward_buffer(Session *     cc,
             std::vector<ggml_fp16_t> step_mask(max_n_kv, mn);
             while (next_tok != eos_id && cur_pos < n_audio) {
                 if (cc->poll_abort()) {
+                    cleanup_gpu();
                     return TRANSCRIBE_ERR_ABORTED;
                 }
                 ggml_backend_tensor_set(sb.input_id_in, &next_tok, 0, sizeof(int32_t));
@@ -835,6 +865,7 @@ transcribe_status forward_buffer(Session *     cc,
                                         static_cast<size_t>(max_n_kv) * sizeof(ggml_fp16_t));
                 if (ggml_backend_sched_graph_compute(cc->sched, sb.graph) != GGML_STATUS_SUCCESS) {
                     log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "voxtral_realtime run: step compute failed");
+                    cleanup_gpu();
                     return TRANSCRIBE_ERR_GGUF;
                 }
                 int32_t tok = 0;
@@ -861,6 +892,7 @@ transcribe_status forward_buffer(Session *     cc,
             VerifyBuild vb = build_verify_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache,
                                                 cc->ada_scale_all, T_verify, max_n_kv, cc->decoder_use_flash);
             if (vb.graph == nullptr || vb.out == nullptr) {
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_GGUF;
             }
             ggml_backend_sched_reset(cc->sched);
@@ -868,6 +900,7 @@ transcribe_status forward_buffer(Session *     cc,
                 transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                     "voxtral_realtime run: verify graph allocation failed — "
                                     "out of memory.");
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_OOM;
             }
             apply_threads(cc->sched, cc->n_threads);
@@ -896,6 +929,7 @@ transcribe_status forward_buffer(Session *     cc,
 
             while (next_tok != eos_id && cur_pos < n_audio) {
                 if (cc->poll_abort()) {
+                    cleanup_gpu();
                     return TRANSCRIBE_ERR_ABORTED;
                 }
 
@@ -946,6 +980,7 @@ transcribe_status forward_buffer(Session *     cc,
 
                 if (ggml_backend_sched_graph_compute(cc->sched, vb.graph) != GGML_STATUS_SUCCESS) {
                     log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "voxtral_realtime run: verify compute failed");
+                    cleanup_gpu();
                     return TRANSCRIBE_ERR_GGUF;
                 }
 
@@ -1037,6 +1072,7 @@ transcribe_status forward_buffer(Session *     cc,
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "voxtral_realtime: compute context allocation failed — "
                                 "out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
 
@@ -1044,6 +1080,7 @@ transcribe_status forward_buffer(Session *     cc,
                                               cc->ada_scale_all, n_audio, cc->decoder_use_flash,
                                               /*want_all_logits=*/true);
         if (tf.graph == nullptr || tf.out == nullptr) {
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
         ggml_backend_sched_reset(cc->sched);
@@ -1051,6 +1088,7 @@ transcribe_status forward_buffer(Session *     cc,
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "voxtral_realtime run: tail-forward graph allocation failed — "
                                 "out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
 
@@ -1074,6 +1112,7 @@ transcribe_status forward_buffer(Session *     cc,
         apply_threads(cc->sched, cc->n_threads);
         if (ggml_backend_sched_graph_compute(cc->sched, tf.graph) != GGML_STATUS_SUCCESS) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "voxtral_realtime run: teacher-forced dump compute failed");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
 
@@ -1138,6 +1177,7 @@ transcribe_status forward_buffer(Session *     cc,
     cc->raw_text = cm->tok.decode(generated_ids.data(), static_cast<int>(generated_ids.size()));
 
     out_text = std::move(text);
+    cleanup_gpu();
     return TRANSCRIBE_OK;
 }
 
@@ -2018,8 +2058,23 @@ transcribe_status stream_finalize(transcribe_session * session, transcribe_strea
         return TRANSCRIBE_ERR_ABORTED;
     }
 
+    // Free GPU buffers (KV cache + scheduler galloc + encoder KV) after
+    // streaming finalization to prevent memory accumulation across repeated
+    // runs. The session is reused across stream calls, so releasing here lets
+    // CUDA's caching allocator reuse freed blocks on the next stream rather
+    // than growing the cache (GPU memory leak on Windows).
+    auto cleanup_gpu = [&]() {
+        cc->kv_cache.free();
+        cc->enc_kv.free();
+        if (cc->sched != nullptr) {
+            safe_sched_free(cc->sched);
+            cc->sched = nullptr;
+        }
+    };
+
     bool changed = false;
     if (auto st = stream_process(cc, cm, /*is_final=*/true, &changed); st != TRANSCRIBE_OK) {
+        cleanup_gpu();
         return st;
     }
 
@@ -2032,11 +2087,17 @@ transcribe_status stream_finalize(transcribe_session * session, transcribe_strea
         update->audio_committed_ms = audio_ms;
         update->buffered_ms        = 0;
     }
+    cleanup_gpu();
     return TRANSCRIBE_OK;
 }
 
 void stream_reset(transcribe_session * session) {
     auto * cc = static_cast<Session *>(session);
+    if (cc->sched != nullptr) {
+        safe_sched_free(cc->sched);
+        cc->sched = nullptr;
+    }
+    cc->kv_cache.free();
     cc->stream_pcm.clear();
     cc->stream_last_decode_samples = 0;
     cc->stream_num_delay           = -1;

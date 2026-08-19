@@ -1053,6 +1053,18 @@ transcribe_status run(transcribe_session *          session,
         return mst;
     }
 
+    // Free GPU buffers (scheduler galloc) after each transcription to prevent
+    // memory accumulation across repeated runs. The session is reused across
+    // calls (e.g. Multi-STT extra models with multi_stt_keep_extra_models_loaded),
+    // so releasing here lets the caching allocator reuse freed blocks on the
+    // next run() rather than growing the cache (GPU memory leak on Windows).
+    auto cleanup_gpu = [&]() {
+        if (pc->sched != nullptr) {
+            safe_sched_free(pc->sched);
+            pc->sched = nullptr;
+        }
+    };
+
     const double ms_per_frame =
         1000.0 * static_cast<double>(pm->hparams.frame_hop) / static_cast<double>(pm->hparams.fe_sample_rate);
 
@@ -1063,6 +1075,7 @@ transcribe_status run(transcribe_session *          session,
     // dumping, to read diar.probs). The streaming path is always the product.
     if (transcribe::debug::enabled() && std::getenv("TRANSCRIBE_SORTFORMER_OFFLINE_DUMP") != nullptr) {
         if (const transcribe_status st = run_offline_forward(pc, pm, mel_n_frames); st != TRANSCRIBE_OK) {
+            cleanup_gpu();
             return st;
         }
     }
@@ -1070,11 +1083,13 @@ transcribe_status run(transcribe_session *          session,
     // Streaming AOSC/FIFO forward drives the product output + diar.probs.
     if (const transcribe_status st = run_streaming(pc, pm, mel_n_mels, mel_n_frames, ms_per_frame, preset);
         st != TRANSCRIBE_OK) {
+        cleanup_gpu();
         return st;
     }
 
     pc->result_kind = TRANSCRIBE_TIMESTAMPS_NONE;
     pc->has_result  = true;
+    cleanup_gpu();
     return TRANSCRIBE_OK;
 }
 

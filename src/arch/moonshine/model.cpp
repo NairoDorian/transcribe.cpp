@@ -468,27 +468,45 @@ transcribe_status run(transcribe_session *          session,
         }
     }
 
+    // Free GPU buffers (KV cache + scheduler galloc buffers) after each
+    // transcription to prevent memory accumulation across repeated runs. The
+    // session is reused across calls (e.g. Multi-STT extra models with
+    // multi_stt_keep_extra_models_loaded), so releasing here lets the caching
+    // allocator reuse freed blocks on the next run() rather than growing the
+    // cache (GPU memory leak on Windows).
+    auto cleanup_gpu = [&]() {
+        cc->kv_cache.free();
+        if (cc->sched != nullptr) {
+            safe_sched_free(cc->sched);
+            cc->sched = nullptr;
+        }
+    };
+
     // ----- Cross-KV precompute -----
     {
         if (!ensure_compute_ctx(cc, 4 * 1024 * 1024)) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "moonshine run: compute context allocation failed (cross_kv) — "
                                 "out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
         DecoderBuild cross_db = build_cross_kv_graph(cc->compute_ctx, cm->weights, hp, cc->kv_cache, T_enc);
         if (cross_db.graph == nullptr) {
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
         ggml_backend_sched_reset(cc->sched);
         if (!ggml_backend_sched_alloc_graph(cc->sched, cross_db.graph)) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "moonshine run: cross_kv graph allocation failed — out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
         ggml_backend_tensor_set(cross_db.encoder_out_in, cc->enc_host.data(), 0, cc->enc_host.size() * sizeof(float));
         if (ggml_backend_sched_graph_compute(cc->sched, cross_db.graph) != GGML_STATUS_SUCCESS) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "moonshine run: cross_kv compute failed");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
         cc->kv_cache.cross_populated = true;
@@ -617,6 +635,7 @@ transcribe_status run(transcribe_session *          session,
                            /*dump_prompt=*/true,
                            /*mid_gen_dump_name=*/nullptr);
         st != TRANSCRIBE_OK) {
+        cleanup_gpu();
         return st;
     }
     if (next_token != eos) {
@@ -656,18 +675,21 @@ transcribe_status run(transcribe_session *          session,
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "moonshine run: compute context allocation failed (step) — "
                                 "out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
         StepBuild sb =
             build_step_graph(cc->compute_ctx, cm->weights, hp, cc->kv_cache, max_n_kv, T_enc, cc->decoder_use_flash);
         if (sb.graph == nullptr || sb.argmax_out == nullptr) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "moonshine run: build_step_graph failed");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
         ggml_backend_sched_reset(cc->sched);
         if (!ggml_backend_sched_alloc_graph(cc->sched, sb.graph)) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "moonshine run: step graph allocation failed — out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
 
@@ -683,6 +705,7 @@ transcribe_status run(transcribe_session *          session,
 
         while (next_token != eos && n_past < max_pos) {
             if (cc->poll_abort()) {
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_ABORTED;
             }
             if (n_past + 1 > max_n_kv) {
@@ -703,6 +726,7 @@ transcribe_status run(transcribe_session *          session,
 
             if (ggml_backend_sched_graph_compute(cc->sched, sb.graph) != GGML_STATUS_SUCCESS) {
                 log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "moonshine run: step compute failed (n_past=%d)", n_past);
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_GGUF;
             }
 
@@ -722,6 +746,7 @@ transcribe_status run(transcribe_session *          session,
         // ---------- Dynamic-graph step path (CPU / debug) ----------
         while (next_token != eos && n_past < max_pos) {
             if (cc->poll_abort()) {
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_ABORTED;
             }
 
@@ -737,6 +762,7 @@ transcribe_status run(transcribe_session *          session,
                                    /*dump_prompt=*/false,
                                    /*mid_gen_dump_name=*/dump_name);
                 st != TRANSCRIBE_OK) {
+                cleanup_gpu();
                 return st;
             }
             if (next_token != eos) {
@@ -786,6 +812,7 @@ transcribe_status run(transcribe_session *          session,
     }
 
     // Truncation is a hard status; the partial transcript stays readable.
+    cleanup_gpu();
     return cc->was_truncated ? TRANSCRIBE_ERR_OUTPUT_TRUNCATED : TRANSCRIBE_OK;
 }
 

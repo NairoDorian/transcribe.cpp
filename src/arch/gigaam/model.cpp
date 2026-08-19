@@ -480,6 +480,19 @@ transcribe_status run(transcribe_session * session, const float * pcm, int n_sam
 
     gc->encoder_out = eb.out;
 
+    // Free GPU buffers (scheduler galloc buffers) after each transcription to
+    // prevent memory accumulation across repeated runs. The session is reused
+    // across calls (e.g. Multi-STT extra models with
+    // multi_stt_keep_extra_models_loaded), so releasing here lets CUDA's
+    // caching allocator reuse freed blocks on the next run() rather than
+    // growing the cache (GPU memory leak on Windows).
+    auto cleanup_gpu = [&]() {
+        if (gc->sched != nullptr) {
+            safe_sched_free(gc->sched);
+            gc->sched = nullptr;
+        }
+    };
+
     // Decoder (RNN-T or CTC greedy). Both heads consume the
     // pre-final-transpose encoder tensor (ne=[d_model, T_enc, 1]), named
     // `rnnt.encoded` on the graph. CTC variants skip the `rnnt.encoded` dump
@@ -488,6 +501,7 @@ transcribe_status run(transcribe_session * session, const float * pcm, int n_sam
         ggml_tensor * enc_t = eb.dumps.rnnt_encoded;
         if (enc_t == nullptr) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "gigaam: rnnt.encoded missing");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
         const int T_enc = static_cast<int>(enc_t->ne[1]);
@@ -504,10 +518,12 @@ transcribe_status run(transcribe_session * session, const float * pcm, int n_sam
 
         if (auto st = decode_and_populate(gc, gm, gc->enc_host.data(), T_enc, D, /*utt_index=*/-1);
             st != TRANSCRIBE_OK) {
+            cleanup_gpu();
             return st;
         }
     }
 
+    cleanup_gpu();
     return TRANSCRIBE_OK;
 }
 

@@ -903,6 +903,20 @@ transcribe_status run(transcribe_session *          session,
         }
     }
 
+    // Free GPU buffers (KV cache + scheduler galloc buffers) after each
+    // transcription to prevent memory accumulation across repeated runs. The
+    // session is reused across calls (e.g. Multi-STT extra models with
+    // multi_stt_keep_extra_models_loaded), so releasing here lets CUDA's
+    // caching allocator reuse freed blocks on the next run() rather than
+    // growing the cache (GPU memory leak on Windows).
+    auto cleanup_gpu = [&]() {
+        cc->kv_cache.free();
+        if (cc->sched != nullptr) {
+            safe_sched_free(cc->sched);
+            cc->sched = nullptr;
+        }
+    };
+
     // Fresh compute context. Null cc->encoder_out first: it was allocated in
     // the context being freed (its data is already in cc->enc_host), so the
     // stale pointer must not outlive the ggml_free.
@@ -937,12 +951,14 @@ transcribe_status run(transcribe_session *          session,
         if (!new_compute_ctx(4 * 1024 * 1024)) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "cohere run: ggml_init for cross_kv failed — out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
 
         DecoderBuild cross_db = build_cross_kv_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache, T_enc);
         if (cross_db.graph == nullptr) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "cohere run: build_cross_kv_graph failed");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
 
@@ -950,6 +966,7 @@ transcribe_status run(transcribe_session *          session,
         if (!ggml_backend_sched_alloc_graph(cc->sched, cross_db.graph)) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "cohere run: cross_kv graph allocation failed — out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
 
@@ -959,6 +976,7 @@ transcribe_status run(transcribe_session *          session,
         if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, cross_db.graph);
             gs != GGML_STATUS_SUCCESS) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "cohere run: cross_kv compute failed (%d)", static_cast<int>(gs));
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
         cc->kv_cache.cross_populated = true;
@@ -969,6 +987,7 @@ transcribe_status run(transcribe_session *          session,
         if (!new_compute_ctx(4 * 1024 * 1024)) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "cohere run: ggml_init for decoder prompt failed — out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
 
@@ -980,6 +999,7 @@ transcribe_status run(transcribe_session *          session,
                                                  /*skip_log_softmax=*/prompt_skip_softmax, cc->decoder_use_flash);
         if (db.out == nullptr || db.graph == nullptr) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "cohere run: build_decoder_graph_kv (prompt) failed");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
 
@@ -987,6 +1007,7 @@ transcribe_status run(transcribe_session *          session,
         if (!ggml_backend_sched_alloc_graph(cc->sched, db.graph)) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "cohere run: decoder prompt graph allocation failed — out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
 
@@ -1015,6 +1036,7 @@ transcribe_status run(transcribe_session *          session,
 
         if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, db.graph); gs != GGML_STATUS_SUCCESS) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "cohere run: decoder prompt compute failed (%d)", static_cast<int>(gs));
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
 
@@ -1141,6 +1163,7 @@ transcribe_status run(transcribe_session *          session,
                 transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                     "cohere run: new_compute_ctx failed (step) — out of memory.");
                 commit_result();
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_OOM;
             }
             StepBuild sb = build_step_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache, max_n_kv, T_enc,
@@ -1148,6 +1171,7 @@ transcribe_status run(transcribe_session *          session,
             if (sb.graph == nullptr || sb.argmax_out == nullptr) {
                 log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "cohere run: build_step_graph failed");
                 commit_result();
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_GGUF;
             }
             ggml_backend_sched_reset(cc->sched);
@@ -1155,6 +1179,7 @@ transcribe_status run(transcribe_session *          session,
                 transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                     "cohere run: step graph allocation failed — out of memory.");
                 commit_result();
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_OOM;
             }
 
@@ -1172,6 +1197,7 @@ transcribe_status run(transcribe_session *          session,
             for (int step = 1; step < max_tokens && next_token != eos_id; ++step) {
                 if (cc->poll_abort()) {
                     commit_result();
+                    cleanup_gpu();
                     return TRANSCRIBE_ERR_ABORTED;
                 }
                 if (n_past + 1 > max_n_kv) {
@@ -1202,6 +1228,7 @@ transcribe_status run(transcribe_session *          session,
                     log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "cohere run: step compute failed (%d, n_past=%d)",
                             static_cast<int>(gs), n_past);
                     commit_result();
+                    cleanup_gpu();
                     return TRANSCRIBE_ERR_GGUF;
                 }
 
@@ -1235,6 +1262,7 @@ transcribe_status run(transcribe_session *          session,
             for (int step = 1; step < max_tokens && next_token != eos_id; ++step) {
                 if (cc->poll_abort()) {
                     commit_result();
+                    cleanup_gpu();
                     return TRANSCRIBE_ERR_ABORTED;
                 }
 
@@ -1312,6 +1340,7 @@ transcribe_status run(transcribe_session *          session,
     // Output truncation is a hard status: the partial transcript is committed
     // and stays readable (like an aborted run), but we surface the truncation
     // rather than reporting a clean OK.
+    cleanup_gpu();
     return cc->was_truncated ? TRANSCRIBE_ERR_OUTPUT_TRUNCATED : TRANSCRIBE_OK;
 }
 

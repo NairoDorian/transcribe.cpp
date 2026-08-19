@@ -472,10 +472,24 @@ transcribe_status run(transcribe_session *          ctx_base,
             return TRANSCRIBE_ERR_GGUF;
         }
     }
+    // Free GPU buffers (scheduler galloc buffers) after each transcription to
+    // prevent memory accumulation across repeated runs. The session is reused
+    // across calls (e.g. Multi-STT extra models with
+    // multi_stt_keep_extra_models_loaded), so releasing here lets CUDA's
+    // caching allocator reuse freed blocks on the next run() rather than
+    // growing the cache (GPU memory leak on Windows).
+    auto cleanup_gpu = [&]() {
+        if (cc->sched != nullptr) {
+            safe_sched_free(cc->sched);
+            cc->sched = nullptr;
+        }
+    };
+
     ggml_backend_sched_reset(cc->sched);
     if (!ggml_backend_sched_alloc_graph(cc->sched, eb.graph)) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "granite_nar run: encoder graph allocation failed — out of memory.");
+        cleanup_gpu();
         return TRANSCRIBE_ERR_OOM;
     }
 
@@ -508,6 +522,7 @@ transcribe_status run(transcribe_session *          ctx_base,
     const int64_t t_enc_start = ggml_time_us();
     if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, eb.graph); gs != GGML_STATUS_SUCCESS) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite_nar run: encoder compute failed (%d)", static_cast<int>(gs));
+        cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
     cc->t_encode_us = ggml_time_us() - t_enc_start;
@@ -588,6 +603,7 @@ transcribe_status run(transcribe_session *          ctx_base,
         seg.t0_ms = 0;
         seg.t1_ms = static_cast<int64_t>(n_samples) * 1000 / static_cast<int64_t>(cm->hparams.fe_sample_rate);
         cc->segments.push_back(std::move(seg));
+        cleanup_gpu();
         return TRANSCRIBE_OK;
     }
 
@@ -602,12 +618,14 @@ transcribe_status run(transcribe_session *          ctx_base,
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "granite_nar run: projector compute context allocation failed "
                                 "— out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
     }
     ProjectorBuild pb = build_projector_graph(proj_ctx, cm->weights, cm->hparams, t_enc);
     if (pb.graph == nullptr || pb.out == nullptr) {
         ggml_free(proj_ctx);
+        cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
 
@@ -617,6 +635,7 @@ transcribe_status run(transcribe_session *          ctx_base,
                             "granite_nar run: projector graph allocation failed — "
                             "out of memory.");
         ggml_free(proj_ctx);
+        cleanup_gpu();
         return TRANSCRIBE_ERR_OOM;
     }
 
@@ -633,6 +652,7 @@ transcribe_status run(transcribe_session *          ctx_base,
     if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, pb.graph); gs != GGML_STATUS_SUCCESS) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite_nar run: projector compute failed (%d)", static_cast<int>(gs));
         ggml_free(proj_ctx);
+        cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
 
@@ -676,6 +696,7 @@ transcribe_status run(transcribe_session *          ctx_base,
                             "exceed the %d-token context. Shorten audio or see "
                             "transcribe_capabilities.max_audio_ms.",
                             cc->n_audio_tokens, n_text, ceiling);
+        cleanup_gpu();
         return TRANSCRIBE_ERR_INPUT_TOO_LONG;
     }
 
@@ -702,12 +723,14 @@ transcribe_status run(transcribe_session *          ctx_base,
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "granite_nar run: decoder compute context allocation failed — "
                                 "out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
     }
     ForwardBuild fb = build_forward_graph(dec_ctx, cm->weights, cm->hparams, cc->n_audio_tokens, n_text);
     if (fb.graph == nullptr || fb.out == nullptr) {
         ggml_free(dec_ctx);
+        cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
 
@@ -717,6 +740,7 @@ transcribe_status run(transcribe_session *          ctx_base,
                             "granite_nar run: decoder graph allocation failed — "
                             "out of memory.");
         ggml_free(dec_ctx);
+        cleanup_gpu();
         return TRANSCRIBE_ERR_OOM;
     }
 
@@ -734,6 +758,7 @@ transcribe_status run(transcribe_session *          ctx_base,
     if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, fb.graph); gs != GGML_STATUS_SUCCESS) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite_nar run: decoder compute failed (%d)", static_cast<int>(gs));
         ggml_free(dec_ctx);
+        cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
     cc->t_decode_us = ggml_time_us() - t_dec_start;
@@ -763,6 +788,7 @@ transcribe_status run(transcribe_session *          ctx_base,
     seg.t1_ms = static_cast<int64_t>(n_samples) * 1000 / static_cast<int64_t>(cm->hparams.fe_sample_rate);
     cc->segments.push_back(std::move(seg));
 
+    cleanup_gpu();
     return TRANSCRIBE_OK;
 }
 

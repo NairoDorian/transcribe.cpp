@@ -491,12 +491,26 @@ transcribe_status run(transcribe_session * session, const float * pcm, int n_sam
             return TRANSCRIBE_ERR_OOM;
         }
     }
+    // Free GPU buffers (scheduler galloc buffers) after each transcription to
+    // prevent memory accumulation across repeated runs. The session is reused
+    // across calls (e.g. Multi-STT extra models with
+    // multi_stt_keep_extra_models_loaded), so releasing here lets CUDA's
+    // caching allocator reuse freed blocks on the next run() rather than
+    // growing the cache (GPU memory leak on Windows).
+    auto cleanup_gpu = [&]() {
+        if (gc->sched != nullptr) {
+            safe_sched_free(gc->sched);
+            gc->sched = nullptr;
+        }
+    };
+
     ggml_backend_sched_reset(gc->sched);
     if (!ggml_backend_sched_alloc_graph(gc->sched, eb.graph)) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "medasr run: encoder graph allocation failed — out of memory. "
                             "Split long audio into shorter segments (see "
-                            "transcribe_capabilities.max_audio_ms).");
+                            "transcribe_capabilities.max_audio_ms.");
+        cleanup_gpu();
         return TRANSCRIBE_ERR_OOM;
     }
 
@@ -532,6 +546,7 @@ transcribe_status run(transcribe_session * session, const float * pcm, int n_sam
     const int64_t t_enc_start = ggml_time_us();
     if (ggml_backend_sched_graph_compute(gc->sched, eb.graph) != GGML_STATUS_SUCCESS) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "medasr: graph_compute failed");
+        cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
     gc->t_encode_us = ggml_time_us() - t_enc_start;
@@ -577,6 +592,7 @@ transcribe_status run(transcribe_session * session, const float * pcm, int n_sam
     const int64_t t_dec_start = ggml_time_us();
     ggml_tensor * logits_t    = eb.dumps.ctc_logits;
     if (logits_t == nullptr) {
+        cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
 
@@ -584,6 +600,7 @@ transcribe_status run(transcribe_session * session, const float * pcm, int n_sam
     const int T_enc = static_cast<int>(logits_t->ne[1]);
     if (vocab != gm->hparams.ctc_vocab_size || T_enc <= 0) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "medasr: ctc_logits shape mismatch (vocab=%d T_enc=%d)", vocab, T_enc);
+        cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
     gc->logits_buf.assign(static_cast<size_t>(vocab) * T_enc, 0.0f);
@@ -616,6 +633,7 @@ transcribe_status run(transcribe_session * session, const float * pcm, int n_sam
         gc->tokens.push_back(te);
     }
 
+    cleanup_gpu();
     return TRANSCRIBE_OK;
 }
 

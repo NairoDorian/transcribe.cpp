@@ -806,6 +806,20 @@ transcribe_status run(transcribe_session *          session,
     cc->kv_cache.n    = 0;
     cc->kv_cache.head = 0;
 
+    // Free GPU buffers (KV cache + scheduler galloc) after each transcription to
+    // prevent memory accumulation across repeated runs. The session is reused
+    // across calls (e.g. Multi-STT extra models with
+    // multi_stt_keep_extra_models_loaded), so releasing here lets the caching
+    // allocator reuse freed blocks on the next run() rather than growing the
+    // cache (GPU memory leak on Windows).
+    auto cleanup_gpu = [&]() {
+        cc->kv_cache.free();
+        if (cc->sched != nullptr) {
+            safe_sched_free(cc->sched);
+            cc->sched = nullptr;
+        }
+    };
+
     // ----- Prefill -----
     const bool dumps_on   = transcribe::debug::enabled();
     const bool slice_last = !dumps_on;
@@ -820,6 +834,7 @@ transcribe_status run(transcribe_session *          session,
         cc->compute_ctx = ggml_init(ip);
         if (cc->compute_ctx == nullptr) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "voxtral run: ggml_init (prefill) failed — out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
     }
@@ -839,23 +854,26 @@ transcribe_status run(transcribe_session *          session,
                                 T_prompt, chunk_size);
         }
         set_sched_threads(cc->sched, cc->n_threads);
-        if (const transcribe_status st =
-                prefill_chunked(cc, cm, prompt_ids, prefix_len, n_audio_total, chunk_size, logits);
-            st != TRANSCRIBE_OK) {
+            if (const transcribe_status st =
+                    prefill_chunked(cc, cm, prompt_ids, prefix_len, n_audio_total, chunk_size, logits);
+                st != TRANSCRIBE_OK) {
+            cleanup_gpu();
             return st;
         }
     } else {
         PrefillBuild pb = build_prefill_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache, T_prompt,
                                               n_audio_total, prefix_len, suffix_len, cc->decoder_use_flash, slice_last);
         if (pb.graph == nullptr || pb.out == nullptr) {
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
 
         ggml_backend_sched_reset(cc->sched);
         if (!ggml_backend_sched_alloc_graph(cc->sched, pb.graph)) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
-                                "voxtral run: prefill graph allocation failed — out of memory. "
-                                "Lower transcribe_session_params.n_ctx or shorten the audio.");
+                                 "voxtral run: prefill graph allocation failed — out of memory. "
+                                 "Lower transcribe_session_params.n_ctx or shorten the audio.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
 
@@ -877,6 +895,7 @@ transcribe_status run(transcribe_session *          session,
 
         if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, pb.graph); gs != GGML_STATUS_SUCCESS) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "voxtral run: prefill compute failed (%d)", static_cast<int>(gs));
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
         cc->kv_cache.n    = T_prompt;
@@ -946,19 +965,22 @@ transcribe_status run(transcribe_session *          session,
         cc->compute_ctx = ggml_init(ip);
         if (cc->compute_ctx == nullptr) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "voxtral run: ggml_init (step) failed — out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
     }
     StepBuild sb =
         build_step_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache, max_n_kv, cc->decoder_use_flash);
     if (sb.graph == nullptr || sb.out == nullptr) {
+        cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
     ggml_backend_sched_reset(cc->sched);
     if (!ggml_backend_sched_alloc_graph(cc->sched, sb.graph)) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
-                            "voxtral run: step graph allocation failed — out of memory. "
-                            "Lower transcribe_session_params.n_ctx or shorten the audio.");
+                             "voxtral run: step graph allocation failed — out of memory. "
+                             "Lower transcribe_session_params.n_ctx or shorten the audio.");
+        cleanup_gpu();
         return TRANSCRIBE_ERR_OOM;
     }
     set_sched_threads(cc->sched, cc->n_threads);
@@ -968,6 +990,7 @@ transcribe_status run(transcribe_session *          session,
     std::vector<ggml_fp16_t> step_mask(max_n_kv, mn);
     while (next_tok != eos_id && static_cast<int32_t>(generated_ids.size()) < max_new && cur_past + 1 <= max_n_kv) {
         if (cc->poll_abort()) {
+            cleanup_gpu();
             return TRANSCRIBE_ERR_ABORTED;
         }
         ggml_backend_tensor_set(sb.input_id_in, &next_tok, 0, sizeof(int32_t));
@@ -984,6 +1007,7 @@ transcribe_status run(transcribe_session *          session,
 
         if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, sb.graph); gs != GGML_STATUS_SUCCESS) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "voxtral run: step compute failed (%d)", static_cast<int>(gs));
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
         // Mid-generation logits dump: the step at cur_past == T_prompt + 7 is
@@ -1041,6 +1065,7 @@ transcribe_status run(transcribe_session *          session,
 
     // Output truncation is a hard status: the partial transcript stays readable
     // (like an aborted run) but the caller is told, not given a clean OK.
+    cleanup_gpu();
     return cc->was_truncated ? TRANSCRIBE_ERR_OUTPUT_TRUNCATED : TRANSCRIBE_OK;
 }
 

@@ -1087,11 +1087,26 @@ transcribe_status run(transcribe_session *          ctx_base,
             return TRANSCRIBE_ERR_OOM;
         }
     }
+    // Free GPU buffers (KV cache + scheduler galloc buffers) after each
+    // transcription to prevent memory accumulation across repeated runs. The
+    // session is reused across calls (e.g. Multi-STT extra models with
+    // multi_stt_keep_extra_models_loaded), so releasing here lets CUDA's
+    // caching allocator reuse freed blocks on the next run() rather than
+    // growing the cache (GPU memory leak on Windows).
+    auto cleanup_gpu = [&]() {
+        cc->kv.free();
+        if (cc->sched != nullptr) {
+            safe_sched_free(cc->sched);
+            cc->sched = nullptr;
+        }
+    };
+
     // After the gate + dynamic sizing this should be unreachable; keep as a
     // belt-and-braces invariant check.
     if (T_prompt > cc->kv.n_ctx) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite run: T_prompt=%d exceeds kv.n_ctx=%d", T_prompt,
                             cc->kv.n_ctx);
+        cleanup_gpu();
         return TRANSCRIBE_ERR_INPUT_TOO_LONG;
     }
 
@@ -1107,6 +1122,7 @@ transcribe_status run(transcribe_session *          ctx_base,
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "granite run: decoder compute context allocation failed — "
                                 "out of memory.");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
     }
@@ -1114,6 +1130,7 @@ transcribe_status run(transcribe_session *          ctx_base,
                                            prefix_len, suffix_len, cc->decoder_use_flash, /*slice_last=*/false);
     if (dec.graph == nullptr || dec.out == nullptr) {
         ggml_free(dec_ctx);
+        cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
 
@@ -1123,6 +1140,7 @@ transcribe_status run(transcribe_session *          ctx_base,
                             "granite run: decoder prefill graph allocation failed — "
                             "out of memory.");
         ggml_free(dec_ctx);
+        cleanup_gpu();
         return TRANSCRIBE_ERR_OOM;
     }
 
@@ -1157,6 +1175,7 @@ transcribe_status run(transcribe_session *          ctx_base,
     if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, dec.graph); gs != GGML_STATUS_SUCCESS) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite run: decoder prefill compute failed (%d)", static_cast<int>(gs));
         ggml_free(dec_ctx);
+        cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
     cc->t_decode_us = ggml_time_us() - t_dec_start;
@@ -1220,6 +1239,7 @@ transcribe_status run(transcribe_session *          ctx_base,
     StepBuild step = build_step_graph(step_ctx, cm->weights, cm->hparams, cc->kv, max_n_kv, cc->decoder_use_flash);
     if (step.graph == nullptr) {
         ggml_free(step_ctx);
+        cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
     ggml_backend_sched_reset(cc->sched);
@@ -1228,6 +1248,7 @@ transcribe_status run(transcribe_session *          ctx_base,
                             "granite run: decode step graph allocation failed — "
                             "out of memory.");
         ggml_free(step_ctx);
+        cleanup_gpu();
         return TRANSCRIBE_ERR_OOM;
     }
 
@@ -1264,6 +1285,7 @@ transcribe_status run(transcribe_session *          ctx_base,
         if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, step.graph); gs != GGML_STATUS_SUCCESS) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite run: step compute failed (%d)", static_cast<int>(gs));
             ggml_free(step_ctx);
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
 
@@ -1302,6 +1324,7 @@ transcribe_status run(transcribe_session *          ctx_base,
     // before EOS) is a hard status, not a silent success: surface it so the
     // caller can distinguish a complete transcript from one cut short. The
     // partial transcript is still attached above for inspection.
+    cleanup_gpu();
     return cc->was_truncated ? TRANSCRIBE_ERR_OUTPUT_TRUNCATED : TRANSCRIBE_OK;
 }
 

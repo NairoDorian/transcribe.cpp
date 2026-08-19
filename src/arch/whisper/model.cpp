@@ -1469,6 +1469,21 @@ transcribe_status whisper_run(transcribe_session *          session,
         }
     };
 
+    // Free GPU buffers (KV cache + enc_out + scheduler galloc buffers) after
+    // each transcription to prevent memory accumulation across repeated runs.
+    // The session is reused across calls (e.g. Multi-STT extra models with
+    // multi_stt_keep_extra_models_loaded), so releasing here lets CUDA's
+    // caching allocator reuse freed blocks on the next run() rather than
+    // growing the cache (GPU memory leak on Windows).
+    auto cleanup_gpu = [&]() {
+        cc->kv_cache.free();
+        cc->enc_out.free();
+        if (cc->sched != nullptr) {
+            safe_sched_free(cc->sched);
+            cc->sched = nullptr;
+        }
+    };
+
     // Run-scoped Whisper run-ext pointer + RNG.
     //
     // The whisper knobs live on a kind-tagged family extension reached via
@@ -1627,6 +1642,7 @@ transcribe_status whisper_run(transcribe_session *          session,
     while (seek < total_mel_frames) {
         if (cc->poll_abort()) {
             commit_result();
+            cleanup_gpu();
             return TRANSCRIBE_ERR_ABORTED;
         }
         cc->perf.chunks += 1;
@@ -1648,8 +1664,9 @@ transcribe_status whisper_run(transcribe_session *          session,
         const int64_t t_enc_start = ggml_time_us();
         if (const transcribe_status st =
                 run_whisper_encoder_on_window(cc, cm, chunk_mel.data(), n_mels, n_mel_frames_per_chunk,
-                                              /*allow_dumps=*/is_first_chunk, T_enc_local);
+                                            /*allow_dumps=*/is_first_chunk, T_enc_local);
             st != TRANSCRIBE_OK) {
+            cleanup_gpu();
             return st;
         }
         if (is_first_chunk) {
@@ -1670,15 +1687,18 @@ transcribe_status whisper_run(transcribe_session *          session,
             ggml_backend_tensor_get(cc->enc_out.tensor, cc->enc_host.data(), 0, cc->enc_host.size() * sizeof(float));
 
             if (!new_compute_ctx(16 * 1024 * 1024)) {
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_GGUF;
             }
             DecoderBuild det_db = build_decoder_prefill_graph(cc->compute_ctx, cm->weights, cm->hparams,
                                                               /*seq_len=*/1, T_enc_local, cc->decoder_use_flash);
             if (det_db.out == nullptr || det_db.graph == nullptr) {
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_GGUF;
             }
             ggml_backend_sched_reset(cc->sched);
             if (!ggml_backend_sched_alloc_graph(cc->sched, det_db.graph)) {
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_GGUF;
             }
             const int32_t sot = cm->hparams.decoder_start_token_id;
@@ -1689,6 +1709,7 @@ transcribe_status whisper_run(transcribe_session *          session,
                 ggml_backend_tensor_set(det_db.causal_mask_in, &zero, 0, sizeof(float));
             }
             if (ggml_backend_sched_graph_compute(cc->sched, det_db.graph) != GGML_STATUS_SUCCESS) {
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_GGUF;
             }
             const size_t row_bytes = static_cast<size_t>(vocab_size) * sizeof(float);
@@ -1717,6 +1738,7 @@ transcribe_status whisper_run(transcribe_session *          session,
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                     "whisper run: could not resolve a decoder language "
                     "token");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
 
@@ -1785,6 +1807,7 @@ transcribe_status whisper_run(transcribe_session *          session,
                     "whisper run: prefix length %d exceeds decoder "
                     "context %lld",
                     seq_len, static_cast<long long>(n_ctx_decoder));
+            cleanup_gpu();
             return TRANSCRIBE_ERR_INVALID_ARG;
         }
 
@@ -1893,6 +1916,7 @@ transcribe_status whisper_run(transcribe_session *          session,
             if (!kv_cache_init(cc->kv_cache, cm->plan.primary, static_cast<int>(n_ctx_decoder), T_enc_local,
                                cm->hparams.dec_d_model, n_layers, kv_type_g)) {
                 log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "whisper run: KV cache init failed");
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_BACKEND;
             }
         }
@@ -1905,11 +1929,13 @@ transcribe_status whisper_run(transcribe_session *          session,
             const int64_t t_cross_build_start = ggml_time_us();
             if (!new_compute_ctx(8 * 1024 * 1024)) {
                 log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "whisper run: ggml_init for cross_kv failed");
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_GGUF;
             }
             DecoderBuild cross_db = build_cross_kv_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache,
                                                          cc->enc_out.tensor, T_enc_local);
             if (cross_db.graph == nullptr) {
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_GGUF;
             }
             cc->perf.cross_build.add(ggml_time_us() - t_cross_build_start);
@@ -1918,6 +1944,7 @@ transcribe_status whisper_run(transcribe_session *          session,
             ggml_backend_sched_reset(cc->sched);
             if (!ggml_backend_sched_alloc_graph(cc->sched, cross_db.graph)) {
                 log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "whisper run: alloc_graph failed (cross_kv)");
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_GGUF;
             }
             // No tensor_set: cross-KV reads cc->enc_out.tensor via
@@ -1929,6 +1956,7 @@ transcribe_status whisper_run(transcribe_session *          session,
             if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, cross_db.graph);
                 gs != GGML_STATUS_SUCCESS) {
                 log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "whisper run: cross_kv compute failed (%d)", static_cast<int>(gs));
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_GGUF;
             }
             cc->perf.cross_compute.add(ggml_time_us() - t_cross_compute_start);
@@ -1963,14 +1991,16 @@ transcribe_status whisper_run(transcribe_session *          session,
             {
                 const int64_t t_prompt_build_start = ggml_time_us();
                 if (!new_compute_ctx(16 * 1024 * 1024)) {
+                    cleanup_gpu();
                     return TRANSCRIBE_ERR_GGUF;
                 }
                 const int    kv_pad = kv_pad_self_attn(cm->plan.primary_kind, cc->decoder_use_flash);
                 DecoderBuild db     = build_decoder_graph_kv(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache,
-                                                             /*n_tokens=*/seq_len, /*n_past=*/0, T_enc_local,
-                                                             /*kv_pad=*/kv_pad,
-                                                             /*skip_log_softmax=*/false, cc->decoder_use_flash);
+                                                           /*n_tokens=*/seq_len, /*n_past=*/0, T_enc_local,
+                                                           /*kv_pad=*/kv_pad,
+                                                           /*skip_log_softmax=*/false, cc->decoder_use_flash);
                 if (db.out == nullptr || db.graph == nullptr) {
+                    cleanup_gpu();
                     return TRANSCRIBE_ERR_GGUF;
                 }
                 cc->perf.prompt_build.add(ggml_time_us() - t_prompt_build_start);
@@ -1979,6 +2009,7 @@ transcribe_status whisper_run(transcribe_session *          session,
                 ggml_backend_sched_reset(cc->sched);
                 if (!ggml_backend_sched_alloc_graph(cc->sched, db.graph)) {
                     log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "whisper run: alloc_graph failed (prompt)");
+                    cleanup_gpu();
                     return TRANSCRIBE_ERR_GGUF;
                 }
 
@@ -2024,6 +2055,7 @@ transcribe_status whisper_run(transcribe_session *          session,
                 const int64_t t_prompt_compute_start = ggml_time_us();
                 if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, db.graph);
                     gs != GGML_STATUS_SUCCESS) {
+                    cleanup_gpu();
                     return TRANSCRIBE_ERR_GGUF;
                 }
                 cc->perf.prompt_compute.add(ggml_time_us() - t_prompt_compute_start);
@@ -2154,17 +2186,20 @@ transcribe_status whisper_run(transcribe_session *          session,
 
             if (use_step_graph) {
                 if (!new_compute_ctx(8 * 1024 * 1024)) {
+                    cleanup_gpu();
                     return TRANSCRIBE_ERR_GGUF;
                 }
                 sb = build_step_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache, max_n_kv, T_enc_local,
                                       cc->decoder_use_flash);
                 if (sb.graph == nullptr || sb.logits_out == nullptr) {
                     log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "whisper run: build_step_graph failed");
+                    cleanup_gpu();
                     return TRANSCRIBE_ERR_GGUF;
                 }
                 ggml_backend_sched_reset(cc->sched);
                 if (!ggml_backend_sched_alloc_graph(cc->sched, sb.graph)) {
                     log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "whisper run: sched_alloc_graph failed (step)");
+                    cleanup_gpu();
                     return TRANSCRIBE_ERR_GGUF;
                 }
 
@@ -2195,6 +2230,7 @@ transcribe_status whisper_run(transcribe_session *          session,
                 }
                 if (cc->poll_abort()) {
                     commit_result();
+                    cleanup_gpu();
                     return TRANSCRIBE_ERR_ABORTED;
                 }
                 consume_generated_token(next_id);
@@ -2226,6 +2262,7 @@ transcribe_status whisper_run(transcribe_session *          session,
                     const int64_t t_step_compute_start = ggml_time_us();
                     if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, sb.graph);
                         gs != GGML_STATUS_SUCCESS) {
+                        cleanup_gpu();
                         return TRANSCRIBE_ERR_GGUF;
                     }
                     cc->perf.step_compute.add(ggml_time_us() - t_step_compute_start);
@@ -2240,6 +2277,7 @@ transcribe_status whisper_run(transcribe_session *          session,
                 } else {
                     const int64_t t_step_build_start = ggml_time_us();
                     if (!new_compute_ctx(4 * 1024 * 1024)) {
+                        cleanup_gpu();
                         return TRANSCRIBE_ERR_GGUF;
                     }
                     const int    kv_pad = kv_pad_self_attn(cm->plan.primary_kind, cc->decoder_use_flash);
@@ -2249,6 +2287,7 @@ transcribe_status whisper_run(transcribe_session *          session,
                                                /*kv_pad=*/kv_pad,
                                                /*skip_log_softmax=*/true, cc->decoder_use_flash);
                     if (step_db.out == nullptr) {
+                        cleanup_gpu();
                         return TRANSCRIBE_ERR_GGUF;
                     }
                     cc->perf.step_build.add(ggml_time_us() - t_step_build_start);
@@ -2256,6 +2295,7 @@ transcribe_status whisper_run(transcribe_session *          session,
                     const int64_t t_step_alloc_start = ggml_time_us();
                     ggml_backend_sched_reset(cc->sched);
                     if (!ggml_backend_sched_alloc_graph(cc->sched, step_db.graph)) {
+                        cleanup_gpu();
                         return TRANSCRIBE_ERR_GGUF;
                     }
 
@@ -2290,6 +2330,7 @@ transcribe_status whisper_run(transcribe_session *          session,
                     const int64_t t_step_compute_start = ggml_time_us();
                     if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, step_db.graph);
                         gs != GGML_STATUS_SUCCESS) {
+                        cleanup_gpu();
                         return TRANSCRIBE_ERR_GGUF;
                     }
                     cc->perf.step_compute.add(ggml_time_us() - t_step_compute_start);
@@ -2472,6 +2513,11 @@ transcribe_status whisper_run(transcribe_session *          session,
     }
 
     commit_result();
+
+    // Free GPU buffers (KV cache + enc_out + scheduler galloc buffers) to
+    // prevent memory accumulation across repeated runs; see cleanup_gpu
+    // defined above.
+    cleanup_gpu();
 
     return TRANSCRIBE_OK;
 }
@@ -2695,6 +2741,21 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
             static_cast<int>(std::floor(static_cast<double>(wp->max_initial_timestamp) / 0.02)) :
             -1;
 
+    // Free GPU buffers (KV cache + enc_out + scheduler galloc buffers) after
+    // transcribe_run_batch to prevent memory accumulation across repeated runs.
+    // The session is reused across calls (e.g. Multi-STT extra models with
+    // multi_stt_keep_extra_models_loaded), so releasing here lets CUDA's
+    // caching allocator reuse freed blocks on the next run() rather than
+    // growing the cache (GPU memory leak on Windows).
+    auto cleanup_gpu = [&]() {
+        cc->kv_cache.free();
+        cc->enc_out.free();
+        if (cc->sched != nullptr) {
+            safe_sched_free(cc->sched);
+            cc->sched = nullptr;
+        }
+    };
+
     // Per-utterance result slots, filled in input order, pushed at the end.
     std::vector<transcribe_session::ResultSet> results(static_cast<size_t>(n));
     std::vector<char>                          have_result(static_cast<size_t>(n), 0);
@@ -2763,6 +2824,7 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
             continue;
         }
         if (cc->poll_abort()) {
+            cleanup_gpu();
             return TRANSCRIBE_ERR_ABORTED;
         }
         int           T_enc_local = 0;
@@ -2787,15 +2849,18 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
             cc->enc_host.resize(enc_hosts[b].size());
             std::memcpy(cc->enc_host.data(), enc_hosts[b].data(), enc_hosts[b].size() * sizeof(float));
             if (!ensure_compute_ctx(cc, 16 * 1024 * 1024)) {
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_GGUF;
             }
             DecoderBuild det = build_decoder_prefill_graph(cc->compute_ctx, cm->weights, hp, /*seq_len=*/1, T_enc_local,
                                                            cc->decoder_use_flash);
             if (det.out == nullptr || det.graph == nullptr) {
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_GGUF;
             }
             ggml_backend_sched_reset(cc->sched);
             if (!ggml_backend_sched_alloc_graph(cc->sched, det.graph)) {
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_GGUF;
             }
             const int32_t sot = hp.decoder_start_token_id;
@@ -2806,6 +2871,7 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
                 ggml_backend_tensor_set(det.causal_mask_in, &zero, 0, sizeof(float));
             }
             if (ggml_backend_sched_graph_compute(cc->sched, det.graph) != GGML_STATUS_SUCCESS) {
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_GGUF;
             }
             std::vector<float> ll(static_cast<size_t>(vocab_size));
@@ -2869,6 +2935,7 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
         for (int b = 0; b < n; ++b) {
             cc->batch_results.push_back(std::move(results[b]));
         }
+        cleanup_gpu();
         return TRANSCRIBE_OK;
     }
 
@@ -2900,6 +2967,7 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
         if (!kv_cache_init_batched(cc->kv_cache, cm->plan.primary, max_n_kv, T_enc_max, d_model, n_layer, B,
                                    kv_type_g)) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "whisper run_batch: kv_cache_init_batched failed");
+            cleanup_gpu();
             return TRANSCRIBE_ERR_BACKEND;
         }
     } else {
@@ -2931,14 +2999,17 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
     // ---- Batched cross-attention K/V (tier-invariant; computed once). ----
     {
         if (!new_compute_ctx(16 * 1024 * 1024)) {
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
         DecoderBuild cross = build_cross_kv_graph_batched(cc->compute_ctx, cm->weights, hp, cc->kv_cache, T_enc_max, B);
         if (cross.graph == nullptr) {
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
         ggml_backend_sched_reset(cc->sched);
         if (!ggml_backend_sched_alloc_graph(cc->sched, cross.graph)) {
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
         std::vector<float> packed(static_cast<size_t>(d_model) * T_enc_max * B, 0.0f);
@@ -2951,6 +3022,7 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
         }
         ggml_backend_tensor_set(cross.encoder_out_in, packed.data(), 0, packed.size() * sizeof(float));
         if (ggml_backend_sched_graph_compute(cc->sched, cross.graph) != GGML_STATUS_SUCCESS) {
+            cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
         cc->kv_cache.cross_populated = true;
@@ -2993,6 +3065,7 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
         return true;
     };
     if (!rebuild_step(kv_window)) {
+        cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
 
@@ -3116,15 +3189,18 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
         int pos = 0;
         for (; pos < prompt_len; ++pos) {
             if (cc->poll_abort()) {
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_ABORTED;
             }
             if (!ensure_window(pos)) {
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_GGUF;
             }
             for (int b = 0; b < n; ++b) {
                 tok_buf[b] = valid[b] ? prompts[b][pos] : eos_id;
             }
             if (run_step(pos) != TRANSCRIBE_OK) {
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_GGUF;
             }
             if (ti == 0 && pos == sot_index && no_speech_token_id >= 0 &&
@@ -3176,6 +3252,7 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
         }
         for (int produced = 1; produced < k_max_new; ++produced, ++pos) {
             if (cc->poll_abort()) {
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_ABORTED;
             }
             bool all_done = true;
@@ -3189,12 +3266,14 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
                 break;
             }
             if (!ensure_window(pos)) {
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_GGUF;
             }
             for (int b = 0; b < n; ++b) {
                 tok_buf[b] = fin[b] ? eos_id : next_tok[b];
             }
             if (run_step(pos) != TRANSCRIBE_OK) {
+                cleanup_gpu();
                 return TRANSCRIBE_ERR_GGUF;
             }
             read_logits();
@@ -3339,6 +3418,7 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
             continue;
         }
         if (cc->poll_abort()) {
+            cleanup_gpu();
             return TRANSCRIBE_ERR_ABORTED;
         }
         const transcribe_status st = (pcm[b] == nullptr || n_samples[b] <= 0) ?
@@ -3369,6 +3449,7 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
     for (int b = 0; b < n; ++b) {
         cc->batch_results.push_back(std::move(results[b]));
     }
+    cleanup_gpu();
     return TRANSCRIBE_OK;
 }
 

@@ -478,12 +478,24 @@ transcribe_status run(transcribe_session *          session,
             return TRANSCRIBE_ERR_OOM;
         }
     }
+    // Free GPU buffers (scheduler galloc) after each transcription to prevent
+    // memory accumulation across repeated runs. The session is reused across
+    // calls (e.g. Multi-STT extra models with multi_stt_keep_extra_models_loaded),
+    // so releasing here lets the caching allocator reuse freed blocks on the
+    // next run() rather than growing the cache (GPU memory leak on Windows).
+    auto cleanup_gpu = [&]() {
+        if (cc->sched != nullptr) {
+            safe_sched_free(cc->sched);
+            cc->sched = nullptr;
+        }
+    };
     ggml_backend_sched_reset(cc->sched);
     if (!ggml_backend_sched_alloc_graph(cc->sched, eb.graph)) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "sensevoice run: encoder graph allocation failed — out of memory. "
                             "Split long audio into shorter segments (see "
                             "transcribe_capabilities.max_audio_ms).");
+        cleanup_gpu();
         return TRANSCRIBE_ERR_OOM;
     }
 
@@ -527,6 +539,7 @@ transcribe_status run(transcribe_session *          session,
     transcribe::sanm::build_sinusoidal_pe(cc->pe_buf, hp.enc_d_input, T_full);
     if (eb.pe_in == nullptr) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "sensevoice run: pe.in not found in graph");
+        cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
     ggml_backend_tensor_set(eb.pe_in, cc->pe_buf.data(), 0, cc->pe_buf.size() * sizeof(float));
@@ -540,6 +553,7 @@ transcribe_status run(transcribe_session *          session,
     const int64_t t_enc_start = ggml_time_us();
     if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, eb.graph); gs != GGML_STATUS_SUCCESS) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "sensevoice run: graph compute failed (%d)", static_cast<int>(gs));
+        cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
     cc->t_encode_us = ggml_time_us() - t_enc_start;
@@ -590,7 +604,9 @@ transcribe_status run(transcribe_session *          session,
     ggml_backend_tensor_get(eb.out, cc->logits_buf.data(), 0, cc->logits_buf.size() * sizeof(float));
 
     // ---------- Greedy CTC decode + public result --------------------
-    return decode_and_populate(cc, cm, params, cc->logits_buf.data(), T_full, vocab, lang, n_samples);
+    const transcribe_status st_decode = decode_and_populate(cc, cm, params, cc->logits_buf.data(), T_full, vocab, lang, n_samples);
+    cleanup_gpu();
+    return st_decode;
 }
 
 // ---------------------------------------------------------------------------

@@ -1194,13 +1194,30 @@ transcribe_status run(transcribe_session *          session,
     }
 
     cc->clear_result();
+
+    // Free GPU buffers (KV cache + scheduler galloc buffers) after each
+    // transcription to prevent memory accumulation across repeated runs. The
+    // session is reused across calls (e.g. Multi-STT extra models with
+    // multi_stt_keep_extra_models_loaded), so releasing here lets the caching
+    // allocator reuse freed blocks on the next run() rather than growing the
+    // cache (GPU memory leak on Windows).
+    auto cleanup_gpu = [&]() {
+        cc->kv_cache.free();
+        if (cc->sched != nullptr) {
+            safe_sched_free(cc->sched);
+            cc->sched = nullptr;
+        }
+    };
+
     const transcribe_status st = run_one_shot_inner(cc, cm, pcm, n_samples, params);
     if (st != TRANSCRIBE_OK) {
+        cleanup_gpu();
         return st;
     }
     // Remap truncation to a hard status only at this offline entry:
     // decode_from_kv_cache returns OK (it's shared with the streaming finalize
     // path, which must NOT surface OUTPUT_TRUNCATED). Partial text stays readable.
+    cleanup_gpu();
     return cc->was_truncated ? TRANSCRIBE_ERR_OUTPUT_TRUNCATED : TRANSCRIBE_OK;
 }
 
@@ -1665,6 +1682,16 @@ transcribe_status stream_finalize(transcribe_session * session, transcribe_strea
 
     const auto & hp = cm->hparams;
 
+    // Free GPU buffers (KV cache + scheduler galloc buffers) after each
+    // transcription to prevent memory accumulation across repeated runs.
+    auto cleanup_gpu = [&]() {
+        cc->kv_cache.free();
+        if (cc->sched != nullptr) {
+            safe_sched_free(cc->sched);
+            cc->sched = nullptr;
+        }
+    };
+
     // Empty stream: produce an empty result. Mirrors transcribe_run on
     // zero-sample input.
     if (cc->stream_pcm_buffer.empty() && cc->stream_pcm_start_sample == 0) {
@@ -1677,6 +1704,7 @@ transcribe_status stream_finalize(transcribe_session * session, transcribe_strea
             update->audio_committed_ms = us_to_ms(cc->stream_audio_committed_us);
             update->buffered_ms        = 0;
         }
+        cleanup_gpu();
         return TRANSCRIBE_OK;
     }
 
@@ -1716,6 +1744,7 @@ transcribe_status stream_finalize(transcribe_session * session, transcribe_strea
         const int win_end    = emit_end;
         if (auto st = flush_stable_frames(cc, cm, win_start, win_end, emit_start, emit_end); st != TRANSCRIBE_OK) {
             write_update(st);
+            cleanup_gpu();
             return st;
         }
     }
@@ -1731,6 +1760,7 @@ transcribe_status stream_finalize(transcribe_session * session, transcribe_strea
             update->audio_committed_ms = us_to_ms(cc->stream_audio_committed_us);
             update->buffered_ms        = 0;
         }
+        cleanup_gpu();
         return TRANSCRIBE_OK;
     }
 
@@ -1745,6 +1775,7 @@ transcribe_status stream_finalize(transcribe_session * session, transcribe_strea
                                      /*emit_dumps=*/true);
             st != TRANSCRIBE_OK) {
             write_update(st);
+            cleanup_gpu();
             return st;
         }
     }
@@ -1774,11 +1805,17 @@ transcribe_status stream_finalize(transcribe_session * session, transcribe_strea
         update->audio_committed_ms = us_to_ms(cc->stream_audio_committed_us);
         update->buffered_ms        = 0;
     }
+    cleanup_gpu();
     return TRANSCRIBE_OK;
 }
 
 void stream_reset(transcribe_session * session) {
     auto * cc = static_cast<MoonshineStreamingSession *>(session);
+    if (cc->sched != nullptr) {
+        safe_sched_free(cc->sched);
+        cc->sched = nullptr;
+    }
+    cc->kv_cache.free();
     cc->stream_pcm_buffer.clear();
     cc->stream_pcm_start_sample = 0;
     cc->stream_adapter_committed.clear();

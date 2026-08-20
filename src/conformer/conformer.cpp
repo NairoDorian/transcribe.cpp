@@ -171,12 +171,17 @@ ggml_tensor * conv_1d_f32(ggml_context * ctx,
 //
 // It is NOT true that ggml_conv_2d_dw_direct is unusable on Metal: the
 // vendored backend declares GGML_OP_CONV_2D_DW supported for an F16/F32
-// kernel with F32 data and F32 output (ggml-metal-device.m, ggml_metal_
-// device_supports_op), and every family's in-block depthwise site runs the
-// direct op there today. The per-site `!is_metal` defaults that remain are
-// for the stride-2 2-D pre_encode shape only, and are unverified-on-Metal
-// conservatism rather than a backend limitation — do not copy them to a
-// 1-D (KH=1) in-block site.
+// kernel with F32 data and F32 output (ggml-metal-device.m,
+// ggml_metal_device_supports_op). Most in-block depthwise sites take the
+// direct op on every backend, Metal included — parakeet, canary,
+// canary_qwen, gigaam, medasr, sortformer, granite, granite_nar.
+//
+// Narrower per-site defaults do remain, and none of them mean the op is
+// missing: the stride-2 2-D pre_encode sites keep `!is_metal` as
+// unverified-on-Metal conservatism, and cohere opts out on CPU as well as
+// Metal for its own F16-kernel/measured reasons. Treat those as per-shape
+// choices — do NOT copy them to a 1-D (KH=1) in-block site, which is how
+// granite ended up on the im2col path on Metal for no reason.
 ggml_tensor * conv_2d_dw_f32(ggml_context * ctx,
                              ggml_tensor *  kernel,  // [KW, KH, 1, C]
                              ggml_tensor *  data,    // [W, H, C, N]

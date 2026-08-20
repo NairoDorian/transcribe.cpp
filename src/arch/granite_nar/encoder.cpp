@@ -37,12 +37,19 @@ namespace transcribe::granite_nar {
 namespace {
 
 // In-block depthwise dispatch. Direct ggml_conv_2d_dw_direct on every
-// backend, matching every other conformer family's in-block site
-// (parakeet, canary, canary_qwen, gigaam, medasr, sortformer): the vendored
-// ggml implements CONV_2D_DW for an f32 kernel / f32 data / f32 output on
-// CPU, CUDA, Vulkan AND Metal (ggml-metal-device.m supports_op), which is
-// exactly what the branch below builds. The Metal opt-out belongs to the
-// pre_encode site's stride-2 2-D depthwise, which granite does not have.
+// backend, as at parakeet's, canary's, canary_qwen's, gigaam's, medasr's and
+// sortformer's in-block site: the vendored ggml implements CONV_2D_DW for an
+// f32 kernel / f32 data / f32 output on CPU, CUDA, Vulkan AND Metal
+// (ggml-metal-device.m supports_op), which is exactly what the branch below
+// builds. Metal picks its pipeline by `use_tiled = (nb12 < nb10)`
+// (ggml-metal-ops.cpp); the reshape below leaves nb12 = 4*T > nb10 = 4, so
+// this lands on the same non-tiled kernel_conv_2d_dw_f32_f32 those families
+// already exercise there — not merely a supported op, the identical kernel.
+//
+// The `!is_metal` default belongs to the stride-2 2-D pre_encode site, which
+// granite does not have: this encoder's only conv is this one. (cohere
+// narrows further, on CPU too, for its own F16-kernel reasons; see the
+// canonical note in conformer.cpp.)
 // TRANSCRIBE_CONV_NO_DIRECT_DW is the kill switch back to im2col.
 // Mirrors arch/granite/encoder.cpp.
 static bool detect_conv_dw_direct() {

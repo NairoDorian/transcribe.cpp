@@ -356,9 +356,8 @@ VerifyBuild build_verify_graph(ggml_context *                   ctx,
         return vb;
     }
 
-    const int64_t vocab   = hp.dec_vocab_size;
-    const int     n_layer = hp.dec_n_layers;
-    const float   rms_eps = hp.dec_rms_norm_eps;
+    const int   n_layer = hp.dec_n_layers;
+    const float rms_eps = hp.dec_rms_norm_eps;
 
     const auto block_params = to_block_params(hp);
 
@@ -404,7 +403,6 @@ VerifyBuild build_verify_graph(ggml_context *                   ctx,
     ggml_set_output(vb.out);
 
     ggml_build_forward_expand(gf, vb.out);
-    (void) vocab;
     return vb;
 }
 

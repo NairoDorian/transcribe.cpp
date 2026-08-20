@@ -900,9 +900,11 @@ transcribe_status run(transcribe_session *          session,
 
     // params->spec_k_drafts: -1 = family default (=0, disabled), 0 =
     // disabled, 1..QWEN3_ASR_SPEC_K_MAX = explicit draft length for the
-    // 1-gram-lookup speculative decode below. Greedy acceptance keeps the
-    // committed token sequence bit-identical to plain stepping, so this is a
-    // pure speed knob — but it defaults OFF: measured on short clips the
+    // 1-gram-lookup speculative decode below. Greedy acceptance commits only
+    // tokens the verify pass itself predicted, so drafting adds no
+    // approximation — but see the numerics note on the loop for why that is
+    // still not byte-equality with k=0. It defaults OFF: measured on short
+    // clips the
     // 1-gram acceptance (~1.1 tokens/verify) does not amortize the verify
     // pass, which costs ~1.5x a single step on CPU (T=2 leaves the matvec
     // fast path) and break-even on CUDA. Worth re-testing per workload via
@@ -1042,7 +1044,23 @@ transcribe_status run(transcribe_session *          session,
         }
     } else {
         // ---- 1-gram-lookup speculative decode (mechanism as in ----
-        // ---- arch/voxtral_realtime; greedy acceptance = lossless) ----
+        // ---- arch/voxtral_realtime) ----
+        //
+        // NUMERICS — read before trusting this to reproduce k=0. The
+        // acceptance rule is exact: a draft is committed only when the verify
+        // pass's own argmax at the previous column equals it, so no token is
+        // committed that plain stepping would not have produced. What is NOT
+        // guaranteed is byte-equality with spec_k_drafts == 0, because this
+        // path runs build_verify_graph (T = k+1 >= 2 columns) instead of
+        // build_step_graph (T = 1), and a multi-column mul_mat dispatches a
+        // different kernel than the n=1 GEMV under GGML_LLAMAFILE. The drift
+        // is enough to flip a near-tie argmax: on whole-earth.wav
+        // (Qwen3-ASR-0.6B Q4_K_M, CPU, 255 tokens) every k >= 1 differs from
+        // k = 0 at exactly one token. That the divergence is identical for
+        // k = 1 and k = 4 — which accept different numbers of drafts, 1.06 vs
+        // 1.08 tokens/run — is what isolates the cause to the graph rather
+        // than the acceptance rule. transcribe.h documents k == 0 as the
+        // byte-equal setting; this is that caveat, made concrete.
         //
         // all_ids[p] = token at absolute position p (prompt + committed).
         // last_pos_by_tok[t] = latest position whose token is t. A draft is

@@ -18,8 +18,11 @@ void apply_family_invariants(transcribe_model & model) {
     caps.supports_translate = false;
 
     // Offline run() uses 1-gram-lookup speculative decode for the step loop
-    // (verify graph at T = spec_k_drafts + 1; greedy acceptance, lossless).
-    // The batched path is not spec-enabled.
+    // (verify graph at T = spec_k_drafts + 1). Greedy acceptance commits only
+    // tokens the verify pass itself predicted, so drafting adds no
+    // approximation — but the output is NOT byte-equal to spec_k_drafts == 0;
+    // see the note above the spec loop in model.cpp. The batched path is not
+    // spec-enabled.
     caps.supports_spec_decode = true;
 
     // Cancellation is wired at the per-run level. No PNC/ITN toggle; the

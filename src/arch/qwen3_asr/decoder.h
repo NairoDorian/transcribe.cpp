@@ -131,9 +131,12 @@ struct VerifyBuild {
 // Build a static-shape T_verify-position forward for 1-gram-lookup
 // speculative decode (mechanism as in arch/voxtral_realtime): column c is the
 // (n_past + c)-th position, writing its K/V row at kv_idx[c] and reading the
-// full window under mask column c. Greedy acceptance keeps the committed
-// sequence bit-identical to plain single-token stepping, because a draft is
-// only accepted when the verify argmax at the previous column equals it.
+// full window under mask column c. A draft is committed only when the verify
+// argmax at the previous column equals it, so drafting introduces no token
+// the model did not predict. That is NOT the same as byte-equality with
+// build_step_graph: this graph is T >= 2 columns wide and its mul_mat takes a
+// different kernel than the step graph's n=1 GEMV — see the numerics note
+// above the spec loop in model.cpp.
 // Reused across every iteration like the step graph (same four inputs, T-wide).
 VerifyBuild build_verify_graph(ggml_context *                   ctx,
                                const QwenAsrWeights &           weights,

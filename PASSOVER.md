@@ -16,9 +16,9 @@ depthwise conv, frame-batched RNN-T joint, qwen3 spec decode, `--multi` bench
 harness, node profiler. The author flagged them as measured-but-rushed and
 asked for a line-by-line correctness audit rather than more benchmarking.
 
-That audit found **five defects**. Two were real bugs, one was a silent
-performance regression, one was a latent crash, one was cosmetic. All are
-fixed. Transcripts are byte-identical before and after across 9 model×clip
+That audit found **six defects**. Two were real bugs, one a silent performance
+regression, one a latent crash, one an overstated correctness claim that
+measurement falsified, one cosmetic. All are fixed. Transcripts are byte-identical before and after across 9 model×clip
 combinations, so nothing in the fix set changes output on x86/CPU or CUDA.
 
 ---
@@ -110,10 +110,11 @@ and warns that `cap <= 0` does **not** restore the logical count.
 ### 2.3 granite/granite_nar copied the wrong Metal policy — MISSED WIN
 
 The new `detect_conv_dw_direct` used `backend_default = !is_metal` for the
-**in-block** depthwise site. That is the **pre_encode** policy. Every other
-conformer family uses `true` unconditionally at the in-block site (parakeet,
-canary, canary_qwen, gigaam, medasr, sortformer), and the vendored ggml Metal
-backend **does** implement the op — `ggml-metal-device.m`:
+**in-block** depthwise site. That is the **pre_encode** policy. Six other
+conformer families use `true` unconditionally at the in-block site (parakeet,
+canary, canary_qwen, gigaam, medasr, sortformer — cohere is the one exception,
+see below), and the vendored ggml Metal backend **does** implement the op —
+`ggml-metal-device.m`:
 
 ```c
 case GGML_OP_CONV_2D_DW:
@@ -136,12 +137,22 @@ series was removed — both `encoder.h` files are now byte-identical to
 `16f579b`, and the `= ""` default-argument footgun the previous passover
 worried about is gone by construction rather than by convention.
 
-**This is the one change made without hardware to verify it on.** The evidence
-is: the op is declared supported by the backend, and six other families
-already run the same op with the same dtypes and the same KH=1 shape on Metal
-in production. Worst case is a scheduler CPU fallback (perf, not
-correctness). If it misbehaves on Apple silicon,
+**This is the one change made without hardware to verify it on**, so here is
+the evidence in full. Metal's `supports_op` returns true for this op with
+these dtypes (`ggml-metal-device.m`). Six other families already run the same
+op with the same dtypes and the same KH=1 shape there in production. And the
+kernel *variant* matches too: Metal selects its pipeline with
+`use_tiled = (nb12 < nb10)` (`ggml-metal-ops.cpp`), and granite's
+`reshape_4d(x, T, 1, inner_dim, 1)` over a contiguous `[T, inner_dim]` leaves
+`nb12 = 4T > nb10 = 4`, exactly as parakeet's in-block reshape does — so both
+land on the non-tiled `kernel_conv_2d_dw_f32_f32`. This is not "a supported
+op", it is the identical already-exercised kernel. Worst case remains a
+scheduler CPU fallback (perf, not correctness), and
 `TRANSCRIBE_CONV_NO_DIRECT_DW=1` is the kill switch.
+
+Note the landscape is not uniform: **cohere** opts out of direct dw at *both*
+its sites on CPU as well as Metal, for F16-kernel/measured reasons of its own.
+Do not read that as evidence about the op.
 
 ### 2.4 `dec.joint.0` debug dump read a null pointer — LATENT CRASH
 
@@ -224,6 +235,36 @@ the same logic that killed the serializer. That framing is wrong:
 The serializer was categorically different: a *new*, undocumented behavior
 change that harmed the default path. This is default-OFF and inert.
 
+**But its documented losslessness was overstated, and is now corrected.** The
+code claimed in three places that greedy acceptance keeps the committed
+sequence "bit-identical to plain stepping". Measured on
+`samples/whole-earth.wav` (Qwen3-ASR-0.6B Q4_K_M, CPU, 255 generated tokens):
+
+| k | tokens/run | output |
+|---|---|---|
+| 0 | 1.00 | `…stay foolish." And I have always wished…` |
+| 1 | 1.06 | `…stay foolish," and I have always wished…` |
+| 2, 3, 4 | up to 1.08 | identical to k=1 |
+
+jfk and german are identical at every k; only the long clip exposes it.
+
+The acceptance rule is **not** the culprit and is exactly right: k=1 and k=4
+accept different numbers of drafts (1.06 vs 1.08 tokens/run) yet produce
+byte-identical output, and both differ from k=0 at the same single token. If
+acceptance were wrong the divergence would be k-dependent. The cause is that
+every k >= 1 routes through `build_verify_graph` (T = k+1 >= 2 columns)
+instead of `build_step_graph` (T = 1), and a multi-column `mul_mat` dispatches
+a different kernel than the n=1 GEMV under `GGML_LLAMAFILE=ON` — the same
+numerics caveat the RNN-T batched joint documents, which here flips one
+near-tie argmax.
+
+`include/transcribe.h` was already honest (it documents `spec_k_drafts == 0`
+as the setting "for byte-equal reproduction of pre-spec behavior"), so no ABI
+promise was broken and the feature is default-OFF. The three code comments
+that claimed bit-identity now state the real property: drafting introduces no
+token the model did not predict, which is not the same as byte-equality with
+k=0.
+
 Both subtleties the previous passover flagged were verified:
 
 - **KV headroom guard is correct.** Loop entry requires
@@ -285,6 +326,24 @@ sane degradation. Still unexecuted; treat as review-grade, not tested.
 ---
 
 ## 4. Open questions deliberately NOT acted on
+
+- **Seven families hand-roll the fallback `default_n_threads()` gives them.**
+  `canary`, `canary_qwen`, `cohere`, `funasr_nano`, `granite`, `qwen3_asr`,
+  `voxtral` and `whisper` all do
+  `n = cc->n_threads; if (n <= 0) n = default_n_threads();` and pass the
+  result to `parallel_for_all`, each item's mel pinned to 1 thread. That is
+  the §2.2 defect spelled explicitly: a barrier-free work-stealing pool sized
+  by the barrier-oriented count. `8fecde4` silently took them from 8 workers
+  to 6.
+
+  **Deliberately not changed.** Deleting the hand-rolled fallback (letting
+  `parallel_for_all` apply its own, now-correct default) would take them to
+  20, which is not a restore of anything — base was 8. And
+  `parallel_for_all` already clamps to `min(n, n_threads)`, so it only bites
+  on batches larger than 6 utterances. Changing eight families' batch
+  threading on an unmeasured hunch is precisely the §1 mistake. Measure a
+  large batch first; if it wins, the fix is a three-line deletion per family,
+  not an addition.
 
 - **The cap of 8 in `default_n_threads`.** A 16-P-core desktop still gets 8.
   Almost certainly leaving performance on the table, but it is also what stops

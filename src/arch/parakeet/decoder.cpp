@@ -412,8 +412,9 @@ bool build_joint_graph(JointGraph & g, const HostJoint & j, ggml_backend_t backe
 // nemotron (argmax stable; well under the family's ~1e-4 accuracy envelope
 // vs the NeMo reference, see the file header) and bit-identical on
 // parakeet-v3's joint shape. TRANSCRIBE_RNNT_BATCH_CHECK=1 re-runs the
-// serial joint per consumed column and reports any byte difference plus
-// both argmaxes. Enabled by default only for the RNN-T loop; the TDT loop
+// serial joint per consumed column and compares the two (see
+// joint_batch_check: an argmax flip is an error, drift alone is DEBUG).
+// Enabled by default only for the RNN-T loop; the TDT loop
 // defaults to serial (its duration head skips frames, so windows are
 // mostly wasted — measured slower). TRANSCRIBE_RNNT_BATCH_W overrides.
 struct JointGraphBatch {
@@ -736,8 +737,6 @@ HostPredictor::~HostPredictor() {
     }
 }
 
-// Resolve a decode thread count: n_threads <= 0 means "auto" →
-// default_n_threads() (min(8, usable cpus)), matching the encoder.
 // Joint-window width for the frame-batched greedy decode. `default_w` is the
 // per-head default: 16 for the RNN-T loop (one joint eval per frame; window
 // amortizes ~3x — see JointGraphBatch), 1 (serial) for the TDT loop, whose
@@ -762,6 +761,8 @@ static bool joint_batch_check_enabled() {
     return transcribe::env::flag("TRANSCRIBE_RNNT_BATCH_CHECK");
 }
 
+// Resolve a decode thread count: n_threads <= 0 means "auto" →
+// default_n_threads(), matching the encoder.
 static int resolve_decode_threads(int n_threads) {
     return n_threads > 0 ? n_threads : transcribe::default_n_threads();
 }
@@ -1109,6 +1110,50 @@ int argmax_range(const float * data, int n) {
     return best_i;
 }
 
+// Batched-vs-serial joint verification (TRANSCRIBE_RNNT_BATCH_CHECK=1).
+//
+// The W-column mul_mat can dispatch a different kernel than the n=1 GEMV
+// (GGML_LLAMAFILE tinyBLAS), so last-bit drift between the two is EXPECTED —
+// ~1e-5 on nemotron's joint shape, roughly an order of magnitude under the
+// family's ~1e-4 accuracy envelope vs the NeMo reference (see the file
+// header) — and it shows up on nearly every column. Only a differing ARGMAX
+// changes a decode decision, so that alone is an error; the drift itself is
+// a DEBUG-level observation. Reporting drift as an error would bury the one
+// signal worth grepping for under hundreds of expected-noise lines.
+//
+// `n_dur > 0` additionally checks the TDT duration head, whose argmax is the
+// loop's second decision.
+static void joint_batch_check(const char *  tag,
+                              const float * serial,
+                              const float * batch,
+                              int           n_logits,
+                              int           n_token_cls,
+                              int           n_dur,
+                              int           step,
+                              int           iter) {
+    if (std::memcmp(serial, batch, static_cast<size_t>(n_logits) * sizeof(float)) == 0) {
+        return;
+    }
+    float max_d  = 0.0f;
+    int   n_diff = 0;
+    for (int i = 0; i < n_logits; ++i) {
+        const float d = std::fabs(serial[i] - batch[i]);
+        if (d > 0.0f) {
+            ++n_diff;
+        }
+        max_d = std::max(max_d, d);
+    }
+    const int  tok_s   = argmax_range(serial, n_token_cls);
+    const int  tok_b   = argmax_range(batch, n_token_cls);
+    const int  dur_s   = n_dur > 0 ? argmax_range(serial + n_token_cls, n_dur) : 0;
+    const int  dur_b   = n_dur > 0 ? argmax_range(batch + n_token_cls, n_dur) : 0;
+    const bool flipped = (tok_s != tok_b) || (dur_s != dur_b);
+    log_msg(flipped ? TRANSCRIBE_LOG_LEVEL_ERROR : TRANSCRIBE_LOG_LEVEL_DEBUG,
+            "%s: batched joint %s at step=%d iter=%d n_diff=%d max=%g token=%d/%d dur=%d/%d", tag,
+            flipped ? "ARGMAX FLIP (decode diverges)" : "drift (argmax stable)", step, iter, n_diff, max_d, tok_s,
+            tok_b, dur_s, dur_b);
+}
+
 // Entropy-based confidence over a token-logit slice. Mirrors the
 // reference ParakeetTDT.decode_greedy path:
 //
@@ -1297,11 +1342,8 @@ transcribe_status decode_tdt_greedy(const HostDecoderWeights & w,
             if (batch_check) {
                 const float * enc_proj = enc_proj_all.data() + static_cast<size_t>(step) * static_cast<size_t>(joint_h);
                 joint_step(w.joint, jg, enc_proj, decoder_out, logits);
-                if (std::memcmp(logits.data(), frame_logits, static_cast<size_t>(w.joint.joint_n) * sizeof(float)) !=
-                    0) {
-                    log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet decoder: BATCH CHECK MISMATCH at step=%d iter=%d",
-                            step, iter);
-                }
+                joint_batch_check("parakeet decoder (tdt)", logits.data(), frame_logits, w.joint.joint_n, n_token_cls,
+                                  n_dur, step, iter);
             }
         } else {
             const float * enc_proj = enc_proj_all.data() + static_cast<size_t>(step) * static_cast<size_t>(joint_h);
@@ -1338,7 +1380,7 @@ transcribe_status decode_tdt_greedy(const HostDecoderWeights & w,
             }
 
             const long long s_n = w.joint.joint_n;
-            transcribe::debug::dump_host_f32("dec.joint.0", logits.data(), s_n, &s_n, 1, "decoder.joint");
+            transcribe::debug::dump_host_f32("dec.joint.0", frame_logits, s_n, &s_n, 1, "decoder.joint");
         }
 
         // ----- TDT emit + state advance -----
@@ -1546,23 +1588,8 @@ transcribe_status decode_rnnt_greedy(const HostDecoderWeights & w,
             if (batch_check) {
                 const float * enc_proj = enc_proj_all.data() + static_cast<size_t>(step) * static_cast<size_t>(joint_h);
                 joint_step(w.joint, jg, enc_proj, decoder_out, logits);
-                if (std::memcmp(logits.data(), frame_logits, static_cast<size_t>(w.joint.joint_n) * sizeof(float)) !=
-                    0) {
-                    float max_d  = 0.0f;
-                    int   n_diff = 0;
-                    for (int i = 0; i < w.joint.joint_n; ++i) {
-                        const float d = std::fabs(logits[static_cast<size_t>(i)] - frame_logits[i]);
-                        if (d > 0.0f) {
-                            ++n_diff;
-                        }
-                        max_d = std::max(max_d, d);
-                    }
-                    log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
-                            "parakeet decoder (rnnt): BATCH CHECK MISMATCH at step=%d iter=%d n_diff=%d max=%g "
-                            "serial_argmax=%d batch_argmax=%d",
-                            step, iter, n_diff, max_d, argmax_range(logits.data(), n_token_cls),
-                            argmax_range(frame_logits, n_token_cls));
-                }
+                joint_batch_check("parakeet decoder (rnnt)", logits.data(), frame_logits, w.joint.joint_n, n_token_cls,
+                                  /*n_dur=*/0, step, iter);
             }
         } else {
             const float * enc_proj = enc_proj_all.data() + static_cast<size_t>(step) * static_cast<size_t>(joint_h);
@@ -1589,7 +1616,7 @@ transcribe_status decode_rnnt_greedy(const HostDecoderWeights & w,
                 transcribe::debug::dump_host_f32(name_c, next_state.c[layer].data(), s_h, &s_h, 1, "decoder.lstm");
             }
             const long long s_n = w.joint.joint_n;
-            transcribe::debug::dump_host_f32("dec.joint.0", logits.data(), s_n, &s_n, 1, "decoder.joint");
+            transcribe::debug::dump_host_f32("dec.joint.0", frame_logits, s_n, &s_n, 1, "decoder.joint");
         }
 
         const bool is_blank = (pred_token == blank_id);

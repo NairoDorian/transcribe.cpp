@@ -163,6 +163,18 @@ class MelFrontend {
     std::vector<double> window_;  // [n_fft], periodic hann zero-padded
     std::vector<float>  mel_fb_;  // [num_mels * n_freq] row-major, Slaney
 
+    // Per-band nonzero support of mel_fb_: band m occupies bins
+    // [fb_begin_[m], fb_end_[m]). A Slaney/whisper filterbank is
+    // triangular, so each band touches only ~2*n_freq/num_mels bins out
+    // of n_freq (e.g. 5 of 201 for whisper's 80x201). The scalar matmul
+    // paths iterate only this span; the skipped terms are exactly
+    // 0.0f * power, and adding 0.0 to the fp64 accumulator is exact, so
+    // the result is bit-identical to the dense loop. An empty band gets
+    // begin == end (sum stays 0.0, same as the dense loop). Sized
+    // [num_mels]; built once in the constructor.
+    std::vector<int> fb_begin_;
+    std::vector<int> fb_end_;
+
     // sin/cos LUT for the mixed-radix FFT. Sized to n_fft so that every
     // recursion-level N (n_fft, n_fft/2, n_fft/4, ..., odd leaf) divides
     // the LUT exactly and lookups never fall back to live std::cos/sin.

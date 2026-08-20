@@ -52,10 +52,15 @@ void KvCache::free() {
         ggml_free(ctx);
         ctx = nullptr;
     }
-    self_k = nullptr;
-    self_v = nullptr;
-    n      = 0;
-    head   = 0;
+    self_k  = nullptr;
+    self_v  = nullptr;
+    n       = 0;
+    head    = 0;
+    // n_ctx must not survive the buffers: voxtral / voxtral_realtime gate
+    // re-init on `n_ctx < wanted`, so a stale capacity after free() would
+    // skip kv_init and run the decoder against null K/V tensors.
+    n_ctx   = 0;
+    n_batch = 1;
 }
 
 bool kv_init(KvCache &      cache,

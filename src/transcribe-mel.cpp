@@ -302,6 +302,25 @@ MelFrontend::MelFrontend(const MelConfig & cfg) : cfg_(cfg) {
                                     static_cast<double>(cfg.f_max), mel_fb_);
     }
 
+    // Nonzero support per mel band (see fb_begin_/fb_end_ in the header).
+    // Trailing zeros are trimmed first so an all-zero band collapses to an
+    // empty span rather than [0, n_freq).
+    fb_begin_.assign(static_cast<size_t>(cfg.num_mels), 0);
+    fb_end_.assign(static_cast<size_t>(cfg.num_mels), 0);
+    for (int m = 0; m < cfg.num_mels; ++m) {
+        const float * row = mel_fb_.data() + static_cast<size_t>(m) * n_freq_;
+        int           lo  = 0;
+        while (lo < n_freq_ && row[lo] == 0.0f) {
+            ++lo;
+        }
+        int hi = n_freq_;
+        while (hi > lo && row[hi - 1] == 0.0f) {
+            --hi;
+        }
+        fb_begin_[static_cast<size_t>(m)] = lo;
+        fb_end_[static_cast<size_t>(m)]   = hi;
+    }
+
     // Sin/cos LUT for the mixed-radix FFT. Only the non-pow2 path
     // consumes it; pow2 sizes go through fft_radix2 (Linux) or vDSP
     // (Apple), both of which carry their own twiddle factors.
@@ -529,15 +548,22 @@ transcribe_status MelFrontend::compute(const float *        pcm,
                 }
                 for (int m = 0; m < n_mels; ++m) {
                     const float * fb_row = mel_fb_.data() + static_cast<size_t>(m) * n_freq;
+                    // Restrict to the band's nonzero span. k starts on the same
+                    // 4-aligned boundary the dense loop would have used, so every
+                    // group that contains a nonzero keeps its exact accumulation
+                    // order; the groups/elements skipped on either side are all
+                    // fb_row[k] == 0.0f, and `sum += 0.0` is exact. Bit-identical
+                    // to the dense loop.
+                    const int     k_end  = fb_end_[static_cast<size_t>(m)];
                     double        sum    = 0.0;
-                    int           k      = 0;
-                    for (; k < n_freq - 3; k += 4) {
+                    int           k      = (fb_begin_[static_cast<size_t>(m)] / 4) * 4;
+                    for (; k < n_freq - 3 && k < k_end; k += 4) {
                         sum += static_cast<double>(fb_row[k]) * static_cast<double>(power_scratch[k]) +
                                static_cast<double>(fb_row[k + 1]) * static_cast<double>(power_scratch[k + 1]) +
                                static_cast<double>(fb_row[k + 2]) * static_cast<double>(power_scratch[k + 2]) +
                                static_cast<double>(fb_row[k + 3]) * static_cast<double>(power_scratch[k + 3]);
                     }
-                    for (; k < n_freq; ++k) {
+                    for (; k < n_freq && k < k_end; ++k) {
                         sum += static_cast<double>(fb_row[k]) * static_cast<double>(power_scratch[k]);
                     }
                     float result;
@@ -660,40 +686,50 @@ transcribe_status MelFrontend::compute(const float *        pcm,
             }
         }
 #else
-        // Scalar fused matmul + log fallback (no BLAS available).
-        for (int t = 0; t < n_frames; ++t) {
-            const float * pwr = power.data() + static_cast<size_t>(t) * n_freq;
-            for (int m = 0; m < n_mels; ++m) {
-                const float * fb_row = mel_fb_.data() + static_cast<size_t>(m) * n_freq;
-                double        sum    = 0.0;
-                int           k      = 0;
-                for (; k < n_freq - 3; k += 4) {
-                    sum += static_cast<double>(fb_row[k]) * static_cast<double>(pwr[k]) +
-                           static_cast<double>(fb_row[k + 1]) * static_cast<double>(pwr[k + 1]) +
-                           static_cast<double>(fb_row[k + 2]) * static_cast<double>(pwr[k + 2]) +
-                           static_cast<double>(fb_row[k + 3]) * static_cast<double>(pwr[k + 3]);
-                }
-                for (; k < n_freq; ++k) {
-                    sum += static_cast<double>(fb_row[k]) * static_cast<double>(pwr[k]);
-                }
-                float result;
-                if (whisper_mode) {
-                    if (sum < 1.0e-10) {
-                        sum = 1.0e-10;
+        // Scalar fused matmul + log fallback (no BLAS available). This is the
+        // shipped path for the pow2 families on every non-Apple build without a
+        // system BLAS, so it runs on the same strided frame split as the FFT
+        // worker above rather than single-threaded. Frames are independent
+        // (each writes its own column of log_mel), so the split changes no
+        // arithmetic. Band spans are the same bit-exact restriction the
+        // non-pow2 worker uses.
+        auto matmul_worker = [&](int tid) {
+            for (int t = tid; t < n_frames; t += stft_threads) {
+                const float * pwr = power.data() + static_cast<size_t>(t) * n_freq;
+                for (int m = 0; m < n_mels; ++m) {
+                    const float * fb_row = mel_fb_.data() + static_cast<size_t>(m) * n_freq;
+                    const int     k_end  = fb_end_[static_cast<size_t>(m)];
+                    double        sum    = 0.0;
+                    int           k      = (fb_begin_[static_cast<size_t>(m)] / 4) * 4;
+                    for (; k < n_freq - 3 && k < k_end; k += 4) {
+                        sum += static_cast<double>(fb_row[k]) * static_cast<double>(pwr[k]) +
+                               static_cast<double>(fb_row[k + 1]) * static_cast<double>(pwr[k + 1]) +
+                               static_cast<double>(fb_row[k + 2]) * static_cast<double>(pwr[k + 2]) +
+                               static_cast<double>(fb_row[k + 3]) * static_cast<double>(pwr[k + 3]);
                     }
-                    result = static_cast<float>(std::log10(sum));
-                } else if (cfg_.log_clamp_min > 0.0f) {
-                    const double clamp = static_cast<double>(cfg_.log_clamp_min);
-                    if (sum < clamp) {
-                        sum = clamp;
+                    for (; k < n_freq && k < k_end; ++k) {
+                        sum += static_cast<double>(fb_row[k]) * static_cast<double>(pwr[k]);
                     }
-                    result = static_cast<float>(std::log(sum));
-                } else {
-                    result = static_cast<float>(std::log(sum + static_cast<double>(kLogEps)));
+                    float result;
+                    if (whisper_mode) {
+                        if (sum < 1.0e-10) {
+                            sum = 1.0e-10;
+                        }
+                        result = static_cast<float>(std::log10(sum));
+                    } else if (cfg_.log_clamp_min > 0.0f) {
+                        const double clamp = static_cast<double>(cfg_.log_clamp_min);
+                        if (sum < clamp) {
+                            sum = clamp;
+                        }
+                        result = static_cast<float>(std::log(sum));
+                    } else {
+                        result = static_cast<float>(std::log(sum + static_cast<double>(kLogEps)));
+                    }
+                    log_mel[static_cast<size_t>(m) * n_frames + t] = result;
                 }
-                log_mel[static_cast<size_t>(m) * n_frames + t] = result;
             }
-        }
+        };
+        run_threaded(matmul_worker);
 #endif
     }
 

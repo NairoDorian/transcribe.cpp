@@ -1664,7 +1664,7 @@ transcribe_status whisper_run(transcribe_session *          session,
         const int64_t t_enc_start = ggml_time_us();
         if (const transcribe_status st =
                 run_whisper_encoder_on_window(cc, cm, chunk_mel.data(), n_mels, n_mel_frames_per_chunk,
-                                            /*allow_dumps=*/is_first_chunk, T_enc_local);
+                                              /*allow_dumps=*/is_first_chunk, T_enc_local);
             st != TRANSCRIBE_OK) {
             cleanup_gpu();
             return st;
@@ -1996,9 +1996,9 @@ transcribe_status whisper_run(transcribe_session *          session,
                 }
                 const int    kv_pad = kv_pad_self_attn(cm->plan.primary_kind, cc->decoder_use_flash);
                 DecoderBuild db     = build_decoder_graph_kv(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache,
-                                                           /*n_tokens=*/seq_len, /*n_past=*/0, T_enc_local,
-                                                           /*kv_pad=*/kv_pad,
-                                                           /*skip_log_softmax=*/false, cc->decoder_use_flash);
+                                                             /*n_tokens=*/seq_len, /*n_past=*/0, T_enc_local,
+                                                             /*kv_pad=*/kv_pad,
+                                                             /*skip_log_softmax=*/false, cc->decoder_use_flash);
                 if (db.out == nullptr || db.graph == nullptr) {
                     cleanup_gpu();
                     return TRANSCRIBE_ERR_GGUF;

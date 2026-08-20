@@ -766,7 +766,7 @@ transcribe_status run(transcribe_session *          session,
                             "funasr_nano run: prefill graph allocation failed (T_prompt=%d) — "
                             "out of memory. Lower transcribe_session_params.n_ctx or shorten "
                             "the audio.",
-                             T_prompt);
+                            T_prompt);
         cleanup_gpu();
         return TRANSCRIBE_ERR_OOM;
     }

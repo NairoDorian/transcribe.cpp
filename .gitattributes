@@ -1,0 +1,57 @@
+# Line-ending policy.
+#
+# Without this file a Windows checkout with Git's default core.autocrlf=true
+# materializes the whole tree with CRLF terminators. The pinned formatter
+# (scripts/ci/clang-format.sh, clang-format 22.1.5) expects the LF form that is
+# stored in the index, so it reports every line of every file as unformatted —
+# `--check` fails on 285 files a Windows contributor never touched, and
+# `--fix` cannot converge. Pinning eol=lf for the formatted sources keeps the
+# working tree byte-identical to the index on every platform.
+
+# Default: let git detect text vs binary, and normalize text to LF in the index.
+* text=auto
+
+# Sources the formatter and the build own: LF in the working tree everywhere.
+*.c     text eol=lf
+*.h     text eol=lf
+*.cc    text eol=lf
+*.cpp   text eol=lf
+*.hpp   text eol=lf
+*.cu    text eol=lf
+*.cuh   text eol=lf
+*.m     text eol=lf
+*.mm    text eol=lf
+*.metal text eol=lf
+*.inc   text eol=lf
+
+# Build system, scripts and config. Shell scripts in particular break under
+# CRLF (`/bin/sh^M: bad interpreter`).
+*.cmake      text eol=lf
+CMakeLists.txt text eol=lf
+*.sh         text eol=lf
+*.py         text eol=lf
+*.rs         text eol=lf
+*.toml       text eol=lf
+*.json       text eol=lf
+*.yml        text eol=lf
+*.yaml       text eol=lf
+*.md         text eol=lf
+
+# Windows-only scripts keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets: never touched.
+*.wav    binary
+*.gguf   binary
+*.png    binary
+*.jpg    binary
+*.ico    binary
+*.icns   binary
+*.pdf    binary
+*.a      binary
+*.lib    binary
+*.dll    binary
+*.dylib  binary
+*.so     binary

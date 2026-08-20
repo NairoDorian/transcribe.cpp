@@ -42,7 +42,13 @@ bool parallel_for_all(int n, int n_threads, const std::function<bool(int)> & wor
 // the usable cores and ggml's spin-wait barriers livelock.
 // CAVEAT: the affinity mask reflects taskset/cpuset but NOT a CFS bandwidth
 // quota (`docker --cpus=N` without --cpuset) — that case still over-counts.
-// A cap <= 0 disables the clamp (use all usable CPUs).
+// Resolves one thread per PERFORMANCE physical core (SMT siblings collapsed;
+// on a hybrid CPU only the fastest core class) when the platform can report
+// the topology, else every usable CPU. Never exceeds the usable-CPU count.
+// This is the default for ggml's CPU backend, whose op split joins on a spin
+// barrier — see performance_cpu_count() in the .cpp for the measurements.
+// A cap <= 0 disables the clamp only; it does NOT restore the logical count.
+// Task-parallel pools that want every logical CPU must not call this.
 int default_n_threads(int cap = 8);
 
 // Resolve a CPU thread count and apply it to every CPU/BLAS backend in `sched`

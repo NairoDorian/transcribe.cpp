@@ -114,6 +114,38 @@ StepBuild build_step_graph(ggml_context *                   ctx,
                            int                              max_n_kv,
                            bool                             use_flash);
 
+// ---------- Verify graph (spec decode: T_verify positions in one pass) ----------
+
+struct VerifyBuild {
+    ggml_tensor * input_ids_in = nullptr;  // [T_verify] i32
+    ggml_tensor * positions_in = nullptr;  // [T_verify] i32
+    ggml_tensor * kv_idx_in    = nullptr;  // [T_verify] i64
+    ggml_tensor * mask_in      = nullptr;  // [max_n_kv, T_verify] f16
+    ggml_tensor * out          = nullptr;  // [T_verify] i32 — per-position argmax
+    ggml_cgraph * graph        = nullptr;
+
+    int T_verify = 0;
+    int max_n_kv = 0;
+};
+
+// Build a static-shape T_verify-position forward for 1-gram-lookup
+// speculative decode (mechanism as in arch/voxtral_realtime): column c is the
+// (n_past + c)-th position, writing its K/V row at kv_idx[c] and reading the
+// full window under mask column c. A draft is committed only when the verify
+// argmax at the previous column equals it, so drafting introduces no token
+// the model did not predict. That is NOT the same as byte-equality with
+// build_step_graph: this graph is T >= 2 columns wide and its mul_mat takes a
+// different kernel than the step graph's n=1 GEMV — see the numerics note
+// above the spec loop in model.cpp.
+// Reused across every iteration like the step graph (same four inputs, T-wide).
+VerifyBuild build_verify_graph(ggml_context *                   ctx,
+                               const QwenAsrWeights &           weights,
+                               const QwenAsrHParams &           hp,
+                               transcribe::causal_lm::KvCache & kv_cache,
+                               int                              T_verify,
+                               int                              max_n_kv,
+                               bool                             use_flash);
+
 // ---------- Batched prefill graph (B utterances, T tokens each) ----------
 
 struct PrefillBuildBatched {

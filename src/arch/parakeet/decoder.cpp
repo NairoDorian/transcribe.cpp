@@ -16,6 +16,7 @@
 #include "parakeet.h"
 #include "transcribe-batch-util.h"
 #include "transcribe-debug.h"
+#include "transcribe-env.h"
 #include "transcribe-log.h"
 #include "weights.h"
 
@@ -386,6 +387,134 @@ bool build_joint_graph(JointGraph & g, const HostJoint & j, ggml_backend_t backe
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Batched joint graph (frame-windowed greedy decode)
+// ---------------------------------------------------------------------------
+//
+// The greedy loops evaluate joint(enc_proj[frame], pred_state) once per
+// frame, and the predictor state only changes when a non-blank token is
+// emitted. Between emissions the pred side is a constant, so the joint for a
+// window of W consecutive frames collapses into ONE graph dispatch:
+//
+//   pred_proj = pred_w @ pred_in + pred_b            [joint_h]      (once)
+//   summed    = enc_in + pred_proj                   [joint_h, W]   (broadcast)
+//   act       = relu/sigmoid/tanh(summed)
+//   logits    = out_w @ act + out_b                  [joint_n, W]
+//
+// vs W separate dispatches of the same math. This amortizes the per-call
+// graph dispatch + threadpool wake + readback overhead (~0.5 ms per frame
+// measured on an i9-13900H, x425 frames = the bulk of nemotron-3.5's
+// 200-290 ms joint time; W=16 lands at 60-90 ms). Columns after the first
+// non-blank are discarded and recomputed with the new state, which
+// reproduces the serial decode DECISIONS exactly. Numerics: the W-column
+// mul_mat may take a different kernel than the n=1 GEMV (GGML_LLAMAFILE
+// tinyBLAS), shifting logits by accumulation order — observed <= 1.5e-5 on
+// nemotron (argmax stable; well under the family's ~1e-4 accuracy envelope
+// vs the NeMo reference, see the file header) and bit-identical on
+// parakeet-v3's joint shape. TRANSCRIBE_RNNT_BATCH_CHECK=1 re-runs the
+// serial joint per consumed column and reports any byte difference plus
+// both argmaxes. Enabled by default only for the RNN-T loop; the TDT loop
+// defaults to serial (its duration head skips frames, so windows are
+// mostly wasted — measured slower). TRANSCRIBE_RNNT_BATCH_W overrides.
+struct JointGraphBatch {
+    ggml_context *        ctx     = nullptr;
+    ggml_backend_t        backend = nullptr;  // BORROWED (PredGraph's); NOT freed here
+    ggml_backend_buffer_t buf     = nullptr;
+    ggml_cgraph *         graph   = nullptr;
+    ggml_tensor *         pred_in = nullptr;  // [pred_hidden] fp32 input (decoder out)
+    ggml_tensor *         enc_in  = nullptr;  // [joint_h, W] fp32 input (enc_proj window)
+    ggml_tensor *         logits  = nullptr;  // [joint_n, W] fp32 output
+    int                   W       = 0;
+    bool                  ready   = false;
+
+    JointGraphBatch() = default;
+
+    ~JointGraphBatch() {
+        if (buf != nullptr) {
+            safe_buffer_free(buf);
+        }
+        if (ctx != nullptr) {
+            ggml_free(ctx);
+        }
+        // backend is borrowed from PredGraph — do NOT free here.
+    }
+
+    JointGraphBatch(const JointGraphBatch &)             = delete;
+    JointGraphBatch & operator=(const JointGraphBatch &) = delete;
+};
+
+// Build the W-frame joint window graph on the shared `backend`. Mirrors
+// build_joint_graph exactly except for the window axis.
+bool build_joint_graph_batch(JointGraphBatch & g, const HostJoint & j, ggml_backend_t backend, int W) {
+    if (backend == nullptr || W < 2) {
+        return false;
+    }
+    if (!j.w_ready || j.gw_w == nullptr || j.gw_b == nullptr || j.g_pred_w == nullptr || j.g_pred_b == nullptr) {
+        return false;
+    }
+
+    g.backend = backend;  // borrowed
+    g.W       = W;
+
+    auto fail = [&]() -> bool {
+        if (g.buf != nullptr) {
+            safe_buffer_free(g.buf);
+            g.buf = nullptr;
+        }
+        if (g.ctx != nullptr) {
+            ggml_free(g.ctx);
+            g.ctx = nullptr;
+        }
+        g.pred_in = nullptr;
+        g.enc_in  = nullptr;
+        g.logits  = nullptr;
+        g.graph   = nullptr;
+        g.ready   = false;
+        return false;
+    };
+
+    ggml_init_params ip{};
+    ip.mem_size   = ggml_tensor_overhead() * 16 + ggml_graph_overhead();
+    ip.mem_buffer = nullptr;
+    ip.no_alloc   = true;
+    g.ctx         = ggml_init(ip);
+    if (g.ctx == nullptr) {
+        return fail();
+    }
+
+    g.pred_in = ggml_new_tensor_1d(g.ctx, GGML_TYPE_F32, j.pred_hidden);
+    ggml_set_input(g.pred_in);
+    g.enc_in = ggml_new_tensor_2d(g.ctx, GGML_TYPE_F32, j.joint_h, W);
+    ggml_set_input(g.enc_in);
+
+    // pred_proj = pred_w @ pred_in + pred_b   [joint_h]   (once per window)
+    ggml_tensor * pred_proj = ggml_add(g.ctx, ggml_mul_mat(g.ctx, j.g_pred_w, g.pred_in), j.g_pred_b);
+    // summed = enc window + pred_proj broadcast across columns  [joint_h, W]
+    ggml_tensor * summed    = ggml_add(g.ctx, g.enc_in, pred_proj);
+    ggml_tensor * activated;
+    if (j.activation == "relu") {
+        activated = ggml_relu(g.ctx, summed);
+    } else if (j.activation == "sigmoid") {
+        activated = ggml_sigmoid(g.ctx, summed);
+    } else {  // "tanh"
+        activated = ggml_tanh(g.ctx, summed);
+    }
+    // logits = out_w @ activated + out_b      [joint_n, W]
+    ggml_tensor * mm = ggml_mul_mat(g.ctx, j.gw_w, activated);
+    g.logits         = ggml_add(g.ctx, mm, j.gw_b);
+    ggml_set_output(g.logits);
+
+    g.buf = ggml_backend_alloc_ctx_tensors(g.ctx, g.backend);
+    if (g.buf == nullptr) {
+        return fail();
+    }
+
+    g.graph = ggml_new_graph(g.ctx);
+    ggml_build_forward_expand(g.graph, g.logits);
+    g.ready = true;
+    return true;
+}
+
 // CPU-backend threadpool entry points, reached through the registry so
 // the library stays DL-safe (under GGML_BACKEND_DL these symbols are not
 // directly linkable). Resolved via ggml_backend_reg_get_proc_address.
@@ -609,6 +738,30 @@ HostPredictor::~HostPredictor() {
 
 // Resolve a decode thread count: n_threads <= 0 means "auto" →
 // default_n_threads() (min(8, usable cpus)), matching the encoder.
+// Joint-window width for the frame-batched greedy decode. `default_w` is the
+// per-head default: 16 for the RNN-T loop (one joint eval per frame; window
+// amortizes ~3x — see JointGraphBatch), 1 (serial) for the TDT loop, whose
+// duration head already skips frames so a window mostly computes columns an
+// emission then invalidates (measured 3-4x SLOWER at W=32 than serial).
+// TRANSCRIBE_RNNT_BATCH_W overrides both loops (<= 1 forces the serial
+// one-frame-per-dispatch path — the kill switch; clamped to 256). Debug
+// tensor dumping forces serial so the dec.joint.0 dump and its log_softmax
+// normalization stay byte-stable.
+static int resolve_joint_batch_w(int default_w) {
+    int w = default_w;
+    if (const char * v = transcribe::env::str("TRANSCRIBE_RNNT_BATCH_W")) {
+        w = std::atoi(v);
+    }
+    if (transcribe::debug::enabled()) {
+        w = 1;
+    }
+    return std::min(std::max(w, 1), 256);
+}
+
+static bool joint_batch_check_enabled() {
+    return transcribe::env::flag("TRANSCRIBE_RNNT_BATCH_CHECK");
+}
+
 static int resolve_decode_threads(int n_threads) {
     return n_threads > 0 ? n_threads : transcribe::default_n_threads();
 }
@@ -1044,6 +1197,15 @@ transcribe_status decode_tdt_greedy(const HostDecoderWeights & w,
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet decoder: ggml decode graph build failed");
         return TRANSCRIBE_ERR_BACKEND;
     }
+    // Frame-batched joint window (see JointGraphBatch). A batch-graph build
+    // failure silently falls back to the serial path — never a decode error.
+    const int       batch_W = resolve_joint_batch_w(/*default_w=*/1);
+    JointGraphBatch jgb;
+    if (batch_W > 1) {
+        build_joint_graph_batch(jgb, w.joint, pg.backend, batch_W);
+    }
+    const bool use_batch   = jgb.ready;
+    const bool batch_check = use_batch && joint_batch_check_enabled();
 
     // Two LSTM states, both pre-sized: `state` is the committed
     // state we read from each iteration; `next_state` is where the
@@ -1064,12 +1226,27 @@ transcribe_status decode_tdt_greedy(const HostDecoderWeights & w,
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet decoder: enc_proj graph failed");
         return TRANSCRIBE_ERR_BACKEND;
     }
+    if (use_batch) {
+        // Zero-pad W-1 trailing frames so a window based near the last frame
+        // stays in bounds; the padded columns are never consumed.
+        enc_proj_all.resize(static_cast<size_t>(T_enc + batch_W - 1) * static_cast<size_t>(joint_h), 0.0f);
+    }
     const int64_t t_enc_proj_us = ggml_time_us() - t_enc_proj_start;
 
     // Per-call scratch reused across every decode step.
     std::vector<float> scratch_x;
     std::vector<float> scratch_probs;
     std::vector<float> logits;
+
+    // Batched-window state: logits_w holds the current window's [joint_n, W]
+    // readback; win_base is its first frame; win_valid drops on every state
+    // change (non-blank emission) so stale columns are never consumed.
+    std::vector<float> logits_w;
+    if (use_batch) {
+        logits_w.resize(static_cast<size_t>(w.joint.joint_n) * static_cast<size_t>(batch_W));
+    }
+    int  win_base  = 0;
+    bool win_valid = false;
 
     int last_token  = -1;  // sentinel: no previous token (start state)
     int step        = 0;
@@ -1102,15 +1279,42 @@ transcribe_status decode_tdt_greedy(const HostDecoderWeights & w,
         const int64_t t1 = ggml_time_us();
 
         // ----- Joint (using precomputed encoder projection) -----
-        const float * enc_proj = enc_proj_all.data() + static_cast<size_t>(step) * static_cast<size_t>(joint_h);
-        joint_step(w.joint, jg, enc_proj, decoder_out, logits);
+        const float * frame_logits;
+        if (use_batch) {
+            if (!win_valid || step < win_base || step >= win_base + batch_W) {
+                ggml_backend_tensor_set(jgb.pred_in, decoder_out, 0,
+                                        static_cast<size_t>(w.joint.pred_hidden) * sizeof(float));
+                ggml_backend_tensor_set(jgb.enc_in,
+                                        enc_proj_all.data() + static_cast<size_t>(step) * static_cast<size_t>(joint_h),
+                                        0, static_cast<size_t>(joint_h) * static_cast<size_t>(batch_W) * sizeof(float));
+                ggml_backend_graph_compute(jgb.backend, jgb.graph);
+                ggml_backend_tensor_get(jgb.logits, logits_w.data(), 0, logits_w.size() * sizeof(float));
+                win_base  = step;
+                win_valid = true;
+            }
+            frame_logits =
+                logits_w.data() + static_cast<size_t>(step - win_base) * static_cast<size_t>(w.joint.joint_n);
+            if (batch_check) {
+                const float * enc_proj = enc_proj_all.data() + static_cast<size_t>(step) * static_cast<size_t>(joint_h);
+                joint_step(w.joint, jg, enc_proj, decoder_out, logits);
+                if (std::memcmp(logits.data(), frame_logits, static_cast<size_t>(w.joint.joint_n) * sizeof(float)) !=
+                    0) {
+                    log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet decoder: BATCH CHECK MISMATCH at step=%d iter=%d",
+                            step, iter);
+                }
+            }
+        } else {
+            const float * enc_proj = enc_proj_all.data() + static_cast<size_t>(step) * static_cast<size_t>(joint_h);
+            joint_step(w.joint, jg, enc_proj, decoder_out, logits);
+            frame_logits = logits.data();
+        }
         const int64_t t2 = ggml_time_us();
         t_pred_us += t1 - t0;
         t_joint_us += t2 - t1;
 
         // ----- Argmax (token + duration) -----
-        const float * token_logits    = logits.data();
-        const float * duration_logits = logits.data() + n_token_cls;
+        const float * token_logits    = frame_logits;
+        const float * duration_logits = frame_logits + n_token_cls;
 
         const int pred_token = argmax_range(token_logits, n_token_cls);
         const int decision   = argmax_range(duration_logits, n_dur);
@@ -1153,6 +1357,7 @@ transcribe_status decode_tdt_greedy(const HostDecoderWeights & w,
             last_token = pred_token;
             std::swap(state, next_state);  // commit
             predictor_dirty = true;
+            win_valid       = false;       // pred side changed; window logits are stale
         }
 
         // Step / stuck advance. Matches the reference:
@@ -1258,6 +1463,15 @@ transcribe_status decode_rnnt_greedy(const HostDecoderWeights & w,
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet decoder: ggml decode graph build failed");
         return TRANSCRIBE_ERR_BACKEND;
     }
+    // Frame-batched joint window (see JointGraphBatch); build failure falls
+    // back to serial.
+    const int       batch_W = resolve_joint_batch_w(/*default_w=*/16);
+    JointGraphBatch jgb;
+    if (batch_W > 1) {
+        build_joint_graph_batch(jgb, w.joint, pg.backend, batch_W);
+    }
+    const bool use_batch   = jgb.ready;
+    const bool batch_check = use_batch && joint_batch_check_enabled();
 
     LstmState state;
     LstmState next_state;
@@ -1272,11 +1486,21 @@ transcribe_status decode_rnnt_greedy(const HostDecoderWeights & w,
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet decoder: enc_proj graph failed");
         return TRANSCRIBE_ERR_BACKEND;
     }
+    if (use_batch) {
+        enc_proj_all.resize(static_cast<size_t>(T_enc + batch_W - 1) * static_cast<size_t>(joint_h), 0.0f);
+    }
     const int64_t t_enc_proj_us = ggml_time_us() - t_enc_proj_start;
 
     std::vector<float> scratch_x;
     std::vector<float> scratch_probs;
     std::vector<float> logits;
+
+    std::vector<float> logits_w;
+    if (use_batch) {
+        logits_w.resize(static_cast<size_t>(w.joint.joint_n) * static_cast<size_t>(batch_W));
+    }
+    int  win_base  = 0;
+    bool win_valid = false;
 
     int last_token  = -1;
     int step        = 0;
@@ -1304,14 +1528,53 @@ transcribe_status decode_rnnt_greedy(const HostDecoderWeights & w,
         }
         const int64_t t1 = ggml_time_us();
 
-        const float * enc_proj = enc_proj_all.data() + static_cast<size_t>(step) * static_cast<size_t>(joint_h);
-        joint_step(w.joint, jg, enc_proj, decoder_out, logits);
+        const float * frame_logits;
+        if (use_batch) {
+            if (!win_valid || step < win_base || step >= win_base + batch_W) {
+                ggml_backend_tensor_set(jgb.pred_in, decoder_out, 0,
+                                        static_cast<size_t>(w.joint.pred_hidden) * sizeof(float));
+                ggml_backend_tensor_set(jgb.enc_in,
+                                        enc_proj_all.data() + static_cast<size_t>(step) * static_cast<size_t>(joint_h),
+                                        0, static_cast<size_t>(joint_h) * static_cast<size_t>(batch_W) * sizeof(float));
+                ggml_backend_graph_compute(jgb.backend, jgb.graph);
+                ggml_backend_tensor_get(jgb.logits, logits_w.data(), 0, logits_w.size() * sizeof(float));
+                win_base  = step;
+                win_valid = true;
+            }
+            frame_logits =
+                logits_w.data() + static_cast<size_t>(step - win_base) * static_cast<size_t>(w.joint.joint_n);
+            if (batch_check) {
+                const float * enc_proj = enc_proj_all.data() + static_cast<size_t>(step) * static_cast<size_t>(joint_h);
+                joint_step(w.joint, jg, enc_proj, decoder_out, logits);
+                if (std::memcmp(logits.data(), frame_logits, static_cast<size_t>(w.joint.joint_n) * sizeof(float)) !=
+                    0) {
+                    float max_d  = 0.0f;
+                    int   n_diff = 0;
+                    for (int i = 0; i < w.joint.joint_n; ++i) {
+                        const float d = std::fabs(logits[static_cast<size_t>(i)] - frame_logits[i]);
+                        if (d > 0.0f) {
+                            ++n_diff;
+                        }
+                        max_d = std::max(max_d, d);
+                    }
+                    log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
+                            "parakeet decoder (rnnt): BATCH CHECK MISMATCH at step=%d iter=%d n_diff=%d max=%g "
+                            "serial_argmax=%d batch_argmax=%d",
+                            step, iter, n_diff, max_d, argmax_range(logits.data(), n_token_cls),
+                            argmax_range(frame_logits, n_token_cls));
+                }
+            }
+        } else {
+            const float * enc_proj = enc_proj_all.data() + static_cast<size_t>(step) * static_cast<size_t>(joint_h);
+            joint_step(w.joint, jg, enc_proj, decoder_out, logits);
+            frame_logits = logits.data();
+        }
         const int64_t t2 = ggml_time_us();
         t_pred_us += t1 - t0;
         t_joint_us += t2 - t1;
 
         // RNNT joint output is just `n_token_cls` floats (no duration extras).
-        const float * token_logits = logits.data();
+        const float * token_logits = frame_logits;
         const int     pred_token   = argmax_range(token_logits, n_token_cls);
 
         if (iter == 1 && transcribe::debug::enabled()) {
@@ -1347,6 +1610,7 @@ transcribe_status decode_rnnt_greedy(const HostDecoderWeights & w,
             last_token = pred_token;
             std::swap(state, next_state);
             predictor_dirty = true;
+            win_valid       = false;  // pred side changed; window logits are stale
 
             new_symbols += 1;
             if (w.tdt_max_symbols > 0 && new_symbols >= w.tdt_max_symbols) {

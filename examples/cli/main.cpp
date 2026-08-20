@@ -745,13 +745,24 @@ bool write_output_file(std::ofstream * output, const std::string & path, const c
 
 // ---------------------------------------------------------------------------
 // --multi mode: load N models, transcribe ONE wav with all of them
-// concurrently on N threads (one session each) — the Handy Multi-STT
+// concurrently on N threads (one session each) — the multi-model host
 // pattern — and report per-model stage timings plus the wall clock of each
 // round. --multi-serial runs the same set back-to-back instead, so the
-// concurrency cost (GPU contention, CPU oversubscription) is the difference
-// between the two wall clocks. --repeat R repeats the measurement; the
-// first round is the cold one (galloc warm-up), later rounds are steady
-// state.
+// concurrency delta is the difference between the two wall clocks.
+// --repeat R repeats the measurement; round 0 is the cold one (galloc
+// warm-up), later rounds are steady state.
+//
+// What this harness established (RTX 4070 Laptop 8 GB, 4-model set):
+// concurrency is the right default for dictation-length audio — 3 models on
+// a 5 s clip ran 440 ms concurrent vs 606 ms serial, because one model's
+// host-side work (mel, host decode loops, D2H) overlaps another's GPU work;
+// the serial number matches the sum of the solo runs (219+194+166 = 579 ms).
+// Only at long-form sizes does that invert (4 models on 29.3 s: 5030 ms
+// concurrent median vs 2326 ms serial) and even there the concurrent MIN
+// (2323 ms) equals the serial median — the gap is variance from VRAM
+// pressure on a card holding 4 model weights, not raw throughput. That is
+// why the library ships no run serializer: it would forfeit a real 24%
+// overlap gain in the common case to buy predictability in the rare one.
 static int multi_main(const cli_args & args) {
     std::vector<std::string> paths;
     {

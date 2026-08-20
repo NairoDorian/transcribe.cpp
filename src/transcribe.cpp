@@ -21,7 +21,6 @@
 #include "transcribe-abi.h"
 #include "transcribe-arch.h"
 #include "transcribe-backend.h"
-#include "transcribe-env.h"
 #include "transcribe-loader.h"
 #include "transcribe-log.h"
 #include "transcribe-model.h"
@@ -55,8 +54,6 @@
 #include <filesystem>
 #include <fstream>
 #include <ios>
-#include <map>
-#include <memory>
 #include <mutex>
 #include <new>
 #include <set>
@@ -2073,118 +2070,6 @@ extern "C" transcribe_status transcribe_stream_get_text(const struct transcribe_
 // return preserves the previous result snapshot exactly as the original
 // transcribe_run contract documented (see the inline comments).
 
-// ---------------------------------------------------------------------------
-// Multi-STT device-run serializer (opt-in).
-//
-// Hosts that transcribe the SAME audio with several models at once (Handy's
-// Multi-STT: 4 sessions, 4 threads, one GPU) discover that concurrent
-// graph_compute on one device is slower than running the same set back to
-// back: the device serializes the math anyway, and interleaved kernels thrash
-// caches/launch queues while N x n_threads host threads oversubscribe the
-// P-cores. Measured on a 29.3 s clip, RTX 4070 Laptop, the production
-// quartet (nemotron-3.5 + granite-2b + qwen3-1.7b + canary-1b): concurrent
-// wall 6.7-7.7 s vs serial 5.9-6.4 s, and the primary model's latency drops
-// from ~5.7-7.7 s to ~1.6-2.4 s when runs do not overlap.
-//
-// TRANSCRIBE_MULTI_STT_SERIALIZE=1 makes transcribe_run / transcribe_run_batch
-// hold a per-device mutex for the duration of the family run() so concurrent
-// sessions on the SAME device execute one at a time (first-come first-served;
-// sessions on different devices still overlap). Streaming feeds/finalize are
-// deliberately NOT serialized — they are the latency-critical path.
-//
-// On the CPU backend the same experiment goes the other way — a second
-// model's threads land on the E-cores the first model's default thread
-// count leaves idle, so concurrent runs DO overlap usefully. Hence the
-// policy below: "1"/"on" serializes GPU devices only (the measured-win
-// case); "all" also serializes CPU (diagnostics).
-//
-// Read once per process (same convention as the other env toggles).
-namespace {
-
-enum class MultiSttSerialize { Off, GpuOnly, All };
-
-MultiSttSerialize multi_stt_serialize_mode() {
-    static const MultiSttSerialize mode = [] {
-        const char * v = transcribe::env::str("TRANSCRIBE_MULTI_STT_SERIALIZE");
-        if (v == nullptr || v[0] == '0') {
-            return MultiSttSerialize::Off;
-        }
-        if (std::strcmp(v, "all") == 0) {
-            return MultiSttSerialize::All;
-        }
-        return MultiSttSerialize::GpuOnly;
-    }();
-    return mode;
-}
-
-// One mutex per compute device. The registry hands back the same
-// ggml_backend_dev_t for the same physical device across model loads, so the
-// device pointer is a stable process-wide key. A null device (no backend
-// bound / CPU-only edge) shares the nullptr slot, which is still correct:
-// those sessions serialize among themselves.
-std::mutex & device_run_mutex(ggml_backend_dev_t dev) {
-    static std::mutex                                                registry_mu;
-    static std::map<ggml_backend_dev_t, std::unique_ptr<std::mutex>> mutexes;
-    std::lock_guard<std::mutex>                                      lock(registry_mu);
-    std::unique_ptr<std::mutex> &                                    slot = mutexes[dev];
-    if (slot == nullptr) {
-        slot = std::make_unique<std::mutex>();
-    }
-    return *slot;
-}
-
-// The device whose run mutex THIS thread currently holds (nullptr = none).
-// transcribe_run_batch's serial fallback calls run_one_inner per utterance
-// while already holding the guard; the inner guard must no-op instead of
-// self-deadlocking on the non-recursive mutex.
-thread_local ggml_backend_dev_t t_held_run_device = nullptr;
-
-// RAII: locks the session's primary-device mutex when serialization is
-// enabled; no-op otherwise, and no-op when this thread already holds this
-// device's mutex (reentrant dispatch, see t_held_run_device).
-class MultiSttRunGuard {
-  public:
-    explicit MultiSttRunGuard(const transcribe_session * session) {
-        const MultiSttSerialize mode = multi_stt_serialize_mode();
-        if (mode == MultiSttSerialize::Off || session == nullptr || session->model == nullptr ||
-            session->model->primary_backend == nullptr) {
-            return;
-        }
-        ggml_backend_dev_t dev = ggml_backend_get_device(session->model->primary_backend);
-        if (dev == nullptr) {
-            return;
-        }
-        if (mode == MultiSttSerialize::GpuOnly && ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) {
-            return;
-        }
-        if (dev == t_held_run_device) {
-            return;  // reentrant: outer guard already serializes this device
-        }
-        mu_ = &device_run_mutex(dev);
-        mu_->lock();
-        prev_held_        = t_held_run_device;
-        t_held_run_device = dev;
-        dev_              = dev;
-    }
-
-    ~MultiSttRunGuard() {
-        if (mu_ != nullptr) {
-            t_held_run_device = prev_held_;
-            mu_->unlock();
-        }
-    }
-
-    MultiSttRunGuard(const MultiSttRunGuard &)             = delete;
-    MultiSttRunGuard & operator=(const MultiSttRunGuard &) = delete;
-
-  private:
-    std::mutex *       mu_        = nullptr;
-    ggml_backend_dev_t dev_       = nullptr;
-    ggml_backend_dev_t prev_held_ = nullptr;
-};
-
-}  // namespace
-
 static transcribe_status run_one_inner(struct transcribe_session *          session,
                                        const float *                        pcm,
                                        int                                  n_samples,
@@ -2315,8 +2200,6 @@ static transcribe_status run_one_inner(struct transcribe_session *          sess
         return TRANSCRIBE_ERR_NOT_IMPLEMENTED;
     }
 
-    // Multi-STT: optionally serialize with other sessions on this device.
-    MultiSttRunGuard multi_guard(session);
     return session->model->arch->run(session, pcm, n_samples, params);
 }
 
@@ -2445,10 +2328,6 @@ static transcribe_status transcribe_run_batch_impl(struct transcribe_session *  
     session->was_truncated = false;
     session->stream_state  = TRANSCRIBE_STREAM_IDLE;
     session->batch_results.clear();
-
-    // Multi-STT: optionally serialize with other sessions on this device
-    // (covers both the family fast path and the serial fallback below).
-    MultiSttRunGuard multi_guard(session);
 
     // Fast path: a family with a batched compute graph owns the whole loop.
     if (session->model->arch->run_batch != nullptr) {

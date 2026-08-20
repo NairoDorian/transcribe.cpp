@@ -1,444 +1,376 @@
 # PASSOVER — audit of the 2026-08-20 optimization series
 
-**To:** the next AI agent working on this repo
-**From:** the agent that wrote commits `8fecde4`, `e90b0e7`, `f0b1cba`, `e602020`
-**Repo:** `C:\Users\Z\Downloads\PROJECTS\transcribe-fork` (fork of
-`handy-computer/transcribe.cpp`, remote `origin` =
-`github.com/NairoDorian/transcribe.cpp`, branch `main`)
+**Status:** the audit requested by the previous passover is **done**. This file
+is now the record of what was checked, what was wrong, and what was changed.
+
+**Repo:** fork of `handy-computer/transcribe.cpp`, remote `origin` =
+`github.com/NairoDorian/transcribe.cpp`, branch `main`.
 
 ---
 
-## 0. Your task, in one paragraph
+## 0. What happened
 
-Four commits landed on `main` in one session. They were measured, but they
-were written fast and under measurement pressure. **Your job is not to add
-features and not to re-run the benchmarks. Your job is to READ these diffs
-line by line, file by file, and think hard about whether each change is
-actually correct and actually an improvement** — including the ones I was
-confident about. Where you find a bug, a latent hazard, a wrong abstraction,
-or something that is merely more complex than it needs to be, **fix it**.
-The one thing you must NOT do is re-introduce the multi-STT run serializer
-(see §4 — it was measured, it was harmful, and it is gone deliberately).
+Four commits landed in one session (`8fecde4`, `e90b0e7`, `f0b1cba`,
+`e602020`, base `16f579b`) — perf-core thread default, granite direct
+depthwise conv, frame-batched RNN-T joint, qwen3 spec decode, `--multi` bench
+harness, node profiler. The author flagged them as measured-but-rushed and
+asked for a line-by-line correctness audit rather than more benchmarking.
 
-Bias your effort toward *thinking*, not toward tooling. I already spent this
-session's budget on measurement; the marginal value now is in careful reading.
-The last commit in the series (`f0b1cba`) is proof that this matters: it
-reverted a 121-line feature from the first commit that benchmarks had
-"proven" was a 55% win and that turned out to be a 38–45% regression on the
-workload that actually matters. **Assume there is at least one more mistake
-of that kind still in the tree, and go looking for it.**
+That audit found **five defects**. Two were real bugs, one was a silent
+performance regression, one was a latent crash, one was cosmetic. All are
+fixed. Transcripts are byte-identical before and after across 9 model×clip
+combinations, so nothing in the fix set changes output on x86/CPU or CUDA.
 
 ---
 
-## 1. The commits under audit
+## 1. THE ONE THING NOT TO UNDO — the multi-STT serializer
 
-Run `git log --oneline 16f579b..HEAD`. Base for all diffs is `16f579b`.
+Unchanged from the previous passover, and still the most valuable thing here.
 
-| commit | title | net |
-|---|---|---|
-| `8fecde4` | perf(*): multi-STT device serializer, perf-core threads, granite direct dw conv | 14 files, +1088/−69 |
-| `e90b0e7` | perf(parakeet): frame-batched joint for the RNN-T greedy decode | 1 file, +271/−7 |
-| `f0b1cba` | revert(multi-stt): drop the run serializer | 2 files, +16/−126 |
-| `e602020` | style(transcribe): reattach run_one_inner doc comment | 1 file, −1 |
+`8fecde4` added a per-device mutex (`MultiSttRunGuard`) serializing concurrent
+`transcribe_run` calls; `f0b1cba` removed it. **Keep it removed.**
 
-**Net effect of the whole series** (`git diff 16f579b..HEAD --stat`) — 14
-files, +1248/−76:
-
-```
-examples/cli/main.cpp               | 206 +++++      <- --multi bench harness (new)
-src/arch/granite/encoder.cpp        |  49 +++        <- direct depthwise conv
-src/arch/granite/encoder.h          |   3 +-        <- backend_name param
-src/arch/granite/model.cpp          |   6 +-        <- pass backend name
-src/arch/granite_nar/encoder.cpp    |  50 ++++      <- same conv change (UNVERIFIED)
-src/arch/granite_nar/encoder.h      |   3 +-
-src/arch/granite_nar/model.cpp      |   3 +-
-src/arch/parakeet/decoder.cpp       | 278 +++++      <- frame-batched RNN-T joint
-src/arch/parakeet/model.cpp         |  22 +++        <- nemotron language caps fix
-src/arch/qwen3_asr/capabilities.cpp |   5 +          <- supports_spec_decode = true
-src/arch/qwen3_asr/decoder.cpp      |  78 ++++      <- build_verify_graph (new)
-src/arch/qwen3_asr/decoder.h        |  29 +++        <- VerifyBuild struct
-src/arch/qwen3_asr/model.cpp        | 250 +++++      <- spec-decode loop (default OFF)
-src/transcribe-batch-util.cpp       | 342 +++++      <- perf-core threads + node profiler
-```
-
-`src/transcribe.cpp` appears in the individual commits but is **byte-identical
-to `16f579b`** in the net — that is the point of `f0b1cba` + `e602020`. Verify
-with `git diff 16f579b HEAD -- src/transcribe.cpp` (expect empty output). If
-that ever becomes non-empty, someone re-added the serializer.
-
----
-
-## 2. Repo conventions you must follow
-
-Read `AGENTS.md` first — it is the canonical instruction file (`CLAUDE.md`
-just points at it). The load-bearing rules for this work:
-
-- **Python is always `uv run`.** Never bare `python`/`pip`. (This box also has
-  a working venv at `.venv/Scripts/python.exe` used for scratch scripts.)
-- **Build:** `cmake --build build --target transcribe-cli --config Release`.
-  A second CUDA build tree exists: `build-cuda` (already configured,
-  `CMAKE_CUDA_ARCHITECTURES=89` for the RTX 4070). Both have
-  `GGML_LLAMAFILE=ON` — this matters, see §5.
-- **Format before committing:** `scripts/ci/clang-format.sh` (writes) /
-  `--check` (verifies). It is pinned via `uvx`; do not use a system
-  clang-format. Vendored trees (`ggml/`, `src/third_party/`) are never
-  formatted and should not be edited.
-- **C ABI exception discipline:** no C++ exception may escape a public entry
-  point; new public entry points route through an `api_guard_*` wrapper or
-  are nothrow by construction. Teardown uses `transcribe::safe_*`, never raw
-  `ggml_backend_free` etc. — `tests/lint_teardown.cmake` enforces this.
-- **Do not commit/push/PR unless the user explicitly asks.** (They did ask,
-  for these four.)
-- **Public ABI changes are expensive.** `include/transcribe.abihash` gates
-  five language bindings plus a pinned Swift header hash; changing the public
-  header means regenerating FFI (`bindings/python/_generate/generate.py`,
-  `cargo xtask bindgen`) and consciously bumping the Swift pin. Avoid.
-
----
-
-## 3. Environment on this machine (so you don't rediscover it)
-
-- **CPU:** i9-13900H — 6 P-cores + 8 E-cores = 14 physical, 20 logical. This
-  hybrid topology is the *reason* for the thread change in §5.1. **The machine
-  is noisy** (background load ~11%, a `ProcessGovernor` process runs): single
-  measurements swing 2–5×. Any benchmark needs interleaved arms and
-  min/median over many rounds. Do not trust a single number.
-- **GPU:** RTX 4070 Laptop, **8 GB** — this is small relative to the 4-model
-  multi-STT set (~4.4 GB of weights resident), which is exactly why the
-  long-form concurrency case thrashed (§4).
-- **Models** (already downloaded, in the HF cache, not the app dir):
-  `C:\Users\Z\.cache\huggingface\hub\models--handy-computer--<name>-gguf\snapshots\<sha>\*.gguf`
-  Available: nemotron-3.5-asr-streaming-0.6b (Q8_0), granite-speech-4.1-2b
-  (Q4_K_M/Q5_K_M/Q6_K), Qwen3-ASR-1.7B (Q4_K_M…BF16), Qwen3-ASR-0.6B,
-  canary-1b-v2 (Q4_K_M/Q5_K_M), parakeet-tdt-0.6b-v3, parakeet-tdt-1.1b,
-  parakeet-unified-en-0.6b, nemotron-speech-streaming-en-0.6b.
-  **No granite_nar and no cohere/moss/etc. GGUF locally** — that gap matters
-  in §5.2.
-- **The downstream product** is Handy_V2 (`..\Handy_V2`, branch
-  `Handy_Multi_STT`), a Tauri app. It consumes this repo as a git dependency
-  pinned in `src-tauri/Cargo.lock`; `bun run tauri dev` runs
-  `scripts/check-transcribe-deps.ts`, which auto-detects a new `main` tip and
-  `cargo update`s to it. So **anything you push to `main` lands in the user's
-  app on their next dev run.** Be careful.
-- Handy's real Multi-STT flow (confirmed from its runtime log — memorize this,
-  it is what §4 turns on): the **primary is a streaming model** that
-  transcribes live *during* recording and is already finished when recording
-  stops; models 2/3/4 are **preloaded while the user speaks**; at finalize
-  only those 3 run, **concurrently**, over **dictation-length audio (~5 s)**.
-
----
-
-## 4. THE ONE THING NOT TO UNDO — the multi-STT serializer
-
-`8fecde4` added a per-device mutex (`MultiSttRunGuard`) that serialized
-concurrent `transcribe_run`/`transcribe_run_batch` calls, gated on
-`TRANSCRIBE_MULTI_STT_SERIALIZE`. `f0b1cba` removed it entirely. **Keep it
-removed.** Here is the full reasoning so you don't have to re-derive it:
-
-I benchmarked **4 offline models over a 29.3 s clip** and measured serialized
-= 2326 ms median vs concurrent = 5030 ms — a "55% win". That scenario does
-not exist in the product. Measuring the real flow (§3) inverted it:
+The author benchmarked 4 offline models over a 29.3 s clip and measured
+serialized 2326 ms vs concurrent 5030 ms — a "55% win". That scenario does not
+exist in the product. Measuring the real flow inverted it:
 
 | scenario | concurrent | serialized | |
 |---|---|---|---|
 | 3 models, 5 s (real flow, streaming primary) | **440 ms** | 606 ms | +37.8% worse |
 | 4 models, 5 s (real flow, offline primary) | **437 ms** | 636 ms | +45.4% worse |
-| 4 models, 29.3 s (my synthetic) | 5030 ms | **2326 ms** | −53.8% |
+| 4 models, 29.3 s (synthetic) | 5030 ms | **2326 ms** | −53.8% |
 
-The mechanism, which is the part worth internalizing: solo runs on the 5 s
-clip were granite 219 ms + qwen3 194 ms + canary 166 ms = **579 ms**. The
-serialized arm measured **606 ms** — the sum plus lock overhead, confirming
-the lock did exactly what it claimed. The concurrent arm measured **440 ms**,
-*24% below the sum*, because one model's host-side work (mel, host decode
-loops, D2H readback) overlaps another's GPU work. Serialization forfeits that
-overlap. And the long-form "win" was never throughput: there the concurrent
-**min** (2323 ms) already equalled the serialized **median** (2326 ms) — the
-gap was variance from VRAM pressure with 4 weight sets resident on an 8 GB
-card, not speed.
+Mechanism: solo runs on the 5 s clip were granite 219 + qwen3 194 + canary
+166 = **579 ms**. Serialized measured **606 ms** — the sum plus lock overhead,
+confirming the lock worked. Concurrent measured **440 ms**, *24% below the
+sum*, because one model's host-side work (mel, host decode loops, D2H
+readback) overlaps another's GPU work. Serialization forfeits that overlap.
+The long-form "win" was never throughput: the concurrent **min** (2323 ms)
+already equalled the serialized **median** (2326 ms) — the gap was variance
+from VRAM pressure with 4 weight sets on an 8 GB card.
 
-A `transcribe_run_serialization_set/get` public ABI pair was also drafted to
-make it host-controllable and was deliberately **not shipped** (§2: ABI
-additions are permanent, and this one would have been a footgun).
+If you think you have a reason to re-add device-level scheduling, the bar is:
+measure the *real* flow (3 models, ~5 s, streaming primary). Verify
+`git diff 16f579b HEAD -- src/transcribe.cpp` is still empty.
 
-**Conclusion the user endorsed:** Handy's existing architecture is correct;
-the library should not second-guess the host's scheduling. The portable wins
-are the per-model ones. If you think you have found a reason to re-add
-device-level scheduling, the bar is: measure the *real* flow (3 models, ~5 s,
-streaming primary), not a synthetic one — and read the header comment in
-`examples/cli/main.cpp` (`multi_main`), which records these numbers so this
-does not get re-litigated from first principles.
+Handy's real Multi-STT flow, for reference: the primary is a **streaming**
+model that finishes during recording; models 2/3/4 are preloaded while the
+user speaks; at finalize only those 3 run, **concurrently**, over
+**dictation-length audio (~5 s)**.
 
 ---
 
-## 5. What to audit, change by change
+## 2. Defects found and fixed
 
-Below is every surviving change with what I believe, what I verified, and —
-most importantly — **what I am unsure about**. Treat the "suspicion" lines as
-your starting worklist, not as a complete list of what's wrong.
+### 2.1 Windows `performance_cpu_count()` dropped the last core — REAL BUG
 
-### 5.1 Perf-core thread default — `src/transcribe-batch-util.cpp`
+`GetLogicalProcessorInformationEx` returns variable-length records where
+`Size` is the stride. The shipped walk bounded itself with
 
-`default_n_threads()` previously returned `min(8, logical CPUs)`. It now
-returns `min(8, performance_cpu_count())`, where the new
-`performance_cpu_count()` counts **one entry per physical core of the fastest
-core class only**:
-- Windows: `GetLogicalProcessorInformationEx(RelationProcessorCore)`, highest
-  `EfficiencyClass` among cores in the process affinity mask, two passes.
-- macOS: `sysctlbyname("hw.perflevel0.physicalcpu")`, falling back to
-  `hw.physicalcpu`.
-- Linux: `/sys/devices/cpu_core/cpus` (Intel hybrid) or per-CPU
-  `cpu_capacity` (ARM big.LITTLE) to pick the fast class, then collapse SMT
-  siblings via `topology/core_id` × `physical_package_id`, honoring
-  `sched_getaffinity`.
-- Returns 0 when unavailable → caller falls back to the old
-  `usable_cpu_count()`. Always clamped by the affinity mask and the cap, so
-  **the resolved count can never exceed the old default.**
+```c
+while (off + sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX) <= len + sizeof(GROUP_AFFINITY))
+```
 
-*Why:* ggml's CPU backend splits each op's rows evenly and joins on a spin
-barrier, so every thread waits for the slowest. Proven by pinning on this box:
-6 threads on P-cores ran the parakeet encoder in **1.9 s**, the same 6 on
-E-cores in **5.4 s**, 12 threads on the 6 P-cores (SMT) in **2.9 s**.
-Resolved 8→6 here; parakeet-v3 encode 2623→1610 ms (−39%, 21-round
-interleaved min).
+`sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)` is **80** on x64 — the union
+is sized by its `GROUP_RELATIONSHIP` member — while a `RelationProcessorCore`
+record is **48**. The condition reduces to `off <= len - 64`, so with N
+48-byte records the walk stops at `i <= N-2`: **the last core is never
+visited**. Verified by compiling a probe against the real Win32 headers:
+`shipped-loop entries visited = 13 (expected 14)`.
 
-**Audit this hardest — it is the riskiest change in the series**, because it
-is the only one whose platform code is *mostly unexecuted on this machine*.
-Specific suspicions:
-1. **The Windows buffer walk is convoluted.** The loop condition is
-   `while (off + sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX) <= len + sizeof(GROUP_AFFINITY))`
-   with a second bounds check inside (`off >= len || e->Size == 0 || off + e->Size > len`).
-   That outer condition is nearly meaningless and the real guard is the inner
-   one. It is *safe* as far as I can tell but it is ugly and hard to prove.
-   **Consider rewriting it as a clean `while (off < len)` with the inner
-   `e->Size` validation.** Convince yourself of the bounds first.
-2. **The macOS and Linux paths have never been compiled**, let alone run —
-   this session only built MSVC/Windows. At minimum, eyeball them for
-   compile errors (headers, types, `CPU_SETSIZE` loops) and for the
-   `fast.empty()` semantics: an empty `fast` set is overloaded to mean "no
-   class info, every usable CPU counts", and I want a second opinion that
-   every path sets it consistently. The `best_cap`/`fast` interaction in the
-   ARM branch is the fiddliest part.
-3. **The cap of 8 was left in place deliberately** (it makes the change
-   strictly non-increasing vs the old default, so it can't regress a machine
-   I couldn't test). But it means a 16-P-core desktop still gets 8. That is
-   almost certainly leaving performance on the table. I could not measure it
-   here. **Think about whether the cap should be raised or removed** — but
-   note it is also what keeps a 64-core server from spawning 64 threads on a
-   tiny graph. If you change it, say so loudly; it affects every family.
-4. `parallel_for_all` intentionally still uses the *logical* count
-   (`default_n_threads(/*cap=*/0)`) because it is task-parallel, not
-   barrier-synchronized. Check I didn't break that distinction.
+It was invisible on the dev box only by luck — the dropped record is an
+E-core, so the P-core count was still right. **On any homogeneous CPU (all
+AMD, all non-hybrid Intel) it silently resolved one fewer thread than
+intended.**
 
-### 5.2 Granite direct depthwise conv — `src/arch/granite{,_nar}/`
+Fixed: bound by `len`, validate `Size` against a named minimum-record
+constant. Probe with the corrected loop visits 14/14.
 
-`granite_conv_module` lowered its k=15 depthwise conv through
-`conv_1d_dw_f32`, whose `B==1` path uses im2col (15× scratch expansion) plus a
-degenerate per-channel `[1 × k]` matmul. Replaced with the single-op
-`ggml_conv_2d_dw_direct` (H=1) lowering that the shared conformer
-`conv_module` already uses for parakeet/canary — same f32 kernel cast, same
-`TRANSCRIBE_CONV_DIRECT_DW` / `TRANSCRIBE_CONV_NO_DIRECT_DW` overrides, same
-Metal opt-out. Dispatch resolved per load from the bound backend name,
-threaded through `build_encoder_graph` as a new `backend_name` parameter.
-Measured: granite encode CPU 6706→5406 ms (−19.4%), CUDA 468→380 ms (−18.9%),
-transcripts byte-identical.
+### 2.2 `parallel_for_all` lost 70% of its workers — SILENT REGRESSION
 
-**Suspicions:**
-1. **`granite_nar` is UNVERIFIED.** It got the mechanically identical change,
-   it compiles, but there is no granite_nar GGUF on this machine so its
-   output was never checked. **Read that diff especially carefully** and
-   confirm the shapes really are analogous (`inner_dim`, the pad, the
-   reshape back to 3D). This is the single most likely place for a real bug
-   in the series.
-2. The new `backend_name` parameter defaults to `""` in both headers. An
-   empty string is not Metal, so it resolves to *direct* — meaning a caller
-   that forgets to pass it silently gets the direct path on Metal too, which
-   is precisely the case the opt-out exists for. There is only one call site
-   each today and both pass `cm->backend.c_str()`, so it is fine now, but
-   **consider whether the default should be the safe one** (or whether the
-   parameter should be non-defaulted so a new call site must decide).
-3. There is now near-duplicate `detect_conv_dw_direct()` in *both*
-   `granite/encoder.cpp` and `granite_nar/encoder.cpp`, and a third
-   equivalent in the shared conformer. **Consider hoisting one helper into
-   `src/conformer/conformer.h`** next to `resolve_conv_direct` /
-   `detect_direct_pw`, which is where it belongs.
+The previous passover claimed `parallel_for_all` "intentionally still uses the
+logical count via `default_n_threads(/*cap=*/0)`". It does not. `cap <= 0`
+disables only the **cap**, not the new performance-core restriction:
 
-### 5.3 Frame-batched RNN-T joint — `src/arch/parakeet/decoder.cpp` (`e90b0e7`)
+```c
+n = performance_cpu_count();                 // 6 on the dev box
+if (n > 0) n = min(n, usable_cpu_count());
+if (cap > 0 && n > cap) n = cap;             // cap == 0 → no-op
+```
 
-The greedy loop evaluated `joint(enc_proj[frame], pred_state)` as one ggml
-dispatch per frame (~0.5 ms/call, ×425 frames). `JointGraphBatch` evaluates a
-**W-frame window in one dispatch** — the pred side is constant between
-emissions, so `pred_proj` is computed once and broadcast. The window is
-invalidated on every emission and recomputed at the current frame with the new
-state, so the sequence of `(frame, state)` joint evaluations, and therefore
-every decode decision, is identical to serial by construction.
-`enc_proj_all` is zero-padded by `W-1` frames so a window based near `T_enc`
-stays in bounds (padded columns are never consumed).
+So the batch host-parallel pool went from **20 workers to 6**. That pool hands
+items out of an atomic counter with **no barrier**, so SMT siblings and
+E-cores add real throughput there — the exact opposite of ggml's
+barrier-synchronized op split that motivated the perf-core default.
 
-Defaults are per-head and measured, not symmetric: **RNN-T W=16**, **TDT
-serial (W=1)** — the TDT duration head already skips frames, so windows get
-invalidated after ~2 consumed columns and batching measured **3–4× slower**
-there. `TRANSCRIBE_RNNT_BATCH_W` overrides both (≤1 = serial kill switch,
-clamped 256); debug dumping forces serial; a batch-graph build failure falls
-back to serial silently.
+Fixed: `parallel_for_all` calls `usable_cpu_count()` directly. The
+`default_n_threads` header doc now states the perf-core semantics explicitly
+and warns that `cap <= 0` does **not** restore the logical count.
 
-Measured: nemotron decode CPU 279→162 ms (−42%), CUDA 247→126 ms (−49%),
-total on CUDA −21%.
+### 2.3 granite/granite_nar copied the wrong Metal policy — MISSED WIN
 
-**Numerics — read this carefully.** With `GGML_LLAMAFILE=ON` the W-column
-`mul_mat` may take a different kernel (tinyBLAS) than the n=1 GEMV, shifting
-logits by accumulation order: **bit-identical** on parakeet-v3's joint shape,
-**≤1.5e-5** max element drift on nemotron's. That is ~6× below the family's
-own ~1e-4 envelope vs the NeMo reference (see the `decoder.cpp` file header),
-and I verified **zero argmax flips over ~3450 tokens across 9 samples / 7
-languages** including a 2067-token long-form, with byte-identical token
-payloads (ids, timestamps, confidences). `TRANSCRIBE_RNNT_BATCH_CHECK=1`
-re-runs the serial joint per consumed column and reports any byte difference
-plus both argmaxes — that hook is permanent, use it.
+The new `detect_conv_dw_direct` used `backend_default = !is_metal` for the
+**in-block** depthwise site. That is the **pre_encode** policy. Every other
+conformer family uses `true` unconditionally at the in-block site (parakeet,
+canary, canary_qwen, gigaam, medasr, sortformer), and the vendored ggml Metal
+backend **does** implement the op — `ggml-metal-device.m`:
 
-**Suspicions:**
-1. **This is the change most likely to bite in a way tests didn't catch**,
-   because "decisions are identical by construction" is an *argument*, not a
-   proof. Re-derive it yourself from the code. Pay particular attention to:
-   the `max_symbols` stuck-frame path (does the window stay valid when
-   `step` advances without an emission?), and the TDT `duration == 0` +
-   `is_local` fast-forward branch which mutates `iter`/`step` in ways the
-   window-validity predicate must respect. TDT defaults to serial so a bug
-   there is latent, not active — but latent bugs behind an env var are worse
-   than active ones.
-2. `decode_rnnt_greedy_streaming` was **deliberately left serial and
-   untouched** (per-feed windows are a handful of frames; it is the
-   latency-critical dictation path). Confirm that was the right call — but
-   note the streaming path is what Handy's primary model actually uses, so
-   if there IS a win there it matters more than the offline one I optimized.
-   Think about whether a small window (W=4?) would help the streaming
-   finalize without hurting per-feed latency.
-3. The `win_valid`/`win_base` state is duplicated between the TDT and RNN-T
-   loops with slightly different surrounding code. Consider whether it can be
-   factored without obscuring the invalidation logic (readability of this
-   loop matters more than DRY — use judgment).
+```c
+case GGML_OP_CONV_2D_DW:
+    return op->src[1]->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32 &&
+           (op->src[0]->type == GGML_TYPE_F16 || op->src[0]->type == GGML_TYPE_F32);
+```
 
-### 5.4 Nemotron language caps — `src/arch/parakeet/model.cpp`
+which is exactly what granite's branch builds (kernel cast to F32, f32 data,
+f32 out). So granite forfeited the −19% encode win on Apple silicon for no
+reason.
 
-Prompt-conditioned variants resolve language hints by **exact string lookup**
-in the GGUF prompt dictionary, which carries short aliases (`"fr"`, `"en"`)
-next to BCP-47 locales (`"fr-FR"`). `caps.languages` only carried
-`general.languages` (region-qualified only), so `-l fr` was rejected by the
-library's language gate and capability-driven hosts silently dropped the
-user's hint and fell back to auto-detect. `load()` now overwrites
-`caps.languages` with the dictionary locales (minus the `"auto"` slot) when
-`has_prompt`. Verified working in the product (Handy's log now shows the full
-120-entry list).
+Root cause: a **stale** claim in the "CANONICAL Metal conv-quirk note"
+(`conformer.cpp`) that `CONV_2D_DW` is unsupported on Metal. That note has
+been corrected, with an explicit warning not to copy the pre_encode
+`!is_metal` default to a 1-D (KH=1) in-block site.
 
-**Suspicions:** this one I am fairly confident in, but check (a) that
-overwriting rather than merging can't *lose* a language that was in
-`general.languages` but not in the dictionary — I believe the dictionary is a
-superset, **verify that assumption** against the GGUF; (b) the interaction
-with `supports_language_detect` and the `"auto"` slot; (c) that non-prompt
-parakeet variants are genuinely untouched.
+Fixed: both granite families default to `true`. Because the policy is no
+longer backend-dependent, the whole `backend_name` parameter added by the
+series was removed — both `encoder.h` files are now byte-identical to
+`16f579b`, and the `= ""` default-argument footgun the previous passover
+worried about is gone by construction rather than by convention.
 
-### 5.5 Qwen3 speculative decode — `src/arch/qwen3_asr/` (**default OFF**)
+**This is the one change made without hardware to verify it on.** The evidence
+is: the op is declared supported by the backend, and six other families
+already run the same op with the same dtypes and the same KH=1 shape on Metal
+in production. Worst case is a scheduler CPU fallback (perf, not
+correctness). If it misbehaves on Apple silicon,
+`TRANSCRIBE_CONV_NO_DIRECT_DW=1` is the kill switch.
 
-A 1-gram-lookup spec-decode path ported from `voxtral_realtime`:
-`build_verify_graph` runs `T = k+1` positions through
-`causal_lm::block_step_n` with per-position argmax; drafts come from a 1-gram
-last-position map; greedy acceptance commits the longest confirmed prefix,
-which keeps the token sequence bit-identical to plain stepping (verified for
-k=0..3). `caps.supports_spec_decode` is now advertised.
+### 2.4 `dec.joint.0` debug dump read a null pointer — LATENT CRASH
 
-**It is default-OFF because it measured as a LOSS**: on CPU the T=2 verify
-costs ~1.5× a single-token step (it leaves the matvec fast path) and at the
-observed ~1.1 tokens/run acceptance it loses; on CUDA it is break-even.
+Both dump sites passed `logits.data()`. On the batched path `logits` is never
+resized (only `joint_step` sizes it, and it is skipped), so `logits.data()` is
+`nullptr` and the dump read `joint_n` floats from it. It was saved *only* by
+`resolve_joint_batch_w()` forcing `W = 1` under `debug::enabled()` — in a
+different function. Raising the batch default or reordering that guard would
+have turned it into a crash.
 
-**Suspicions:** this is ~250 lines of complexity in `model.cpp` paying for
-nothing today. **Seriously consider whether it should be deleted**, on the
-same logic that killed the serializer — dead-by-default complexity in a
-correctness-critical decode loop is a liability. Arguments to keep: it is
-genuinely lossless, it is properly gated, and it may win on long repetitive
-dictation (untested). Arguments to cut: nobody can enable it from Handy, and
-it makes the step loop much harder to read. **Make a call and justify it.**
-If you keep it, at least check the `max_n_kv` headroom fallback (`k_drafts`
-forced to 0 when the context clamp removes the draft slack) and the
-`last_pos_by_tok` update ordering, which is subtle and which I had to fix
-once already (the first version pinned a token's own tail position and got
-1.02 tokens/run instead of 1.11).
+Fixed: both dumps use `frame_logits` (identical value today, no coupling).
 
-### 5.6 CLI `--multi` harness + node profiler
+### 2.5 The `e602020` mistake, repeated — COSMETIC
 
-- `examples/cli/main.cpp`: `--multi m1,m2,… [--multi-serial] --repeat N`
-  loads N models/sessions and transcribes one wav with all of them
-  concurrently (or serially), printing per-model wall/mel/encode/decode and
-  per-round wall. Round 0 is cold. Its header comment records the §4 numbers.
-  This is a dev harness, not a product feature — check it doesn't leak
-  sessions/models on the error paths (`free_all` is called on every early
-  return, but re-verify).
-- `src/transcribe-batch-util.cpp`: `TRANSCRIBE_PERF_DEBUG=nodes` attaches a
-  scheduler eval callback at `configure_sched_n_threads` (the choke point
-  every family crosses before compute) and prints a per-op/per-node table at
-  exit via `atexit`. **Known limitation, stated in its comment: the
-  accumulator is a process global with no locking — single-session
-  diagnostics only.** In a concurrent host (i.e. Handy's multi-STT) enabling
-  it would race. It is inert unless requested, but consider whether "inert
-  unless requested" is a strong enough guard for a data race, or whether it
-  should refuse to attach when a second scheduler shows up.
+`8fecde4`/`e90b0e7` inserted `resolve_joint_batch_w` *between*
+`resolve_decode_threads`'s doc comment and its function, orphaning it — the
+same detached-doc-comment defect that `e602020` was written to fix for
+`run_one_inner`. Reattached. Its stale "(min(8, usable cpus))" text was
+corrected too.
+
+### 2.6 `TRANSCRIBE_RNNT_BATCH_CHECK` was unusable as shipped
+
+The previous passover says of this hook: *"that hook is permanent, use it."*
+As shipped, using it emitted **~500 `[error]` lines per run** — one per
+consumed column — because ~4000 logits drift by ≤3e-5 from the tinyBLAS
+kernel switch, which is the **documented, expected** behavior. Every one of
+those lines also showed `serial_argmax == batch_argmax`, i.e. no divergence.
+
+Fixed: a shared `joint_batch_check()` now logs at ERROR **only on an argmax
+flip** (the thing that changes a decode decision) and at DEBUG for drift. It
+also checks the TDT duration head's argmax, which the old TDT branch did not
+look at at all. Re-run on jfk: **0 error lines**, drift still visible at
+DEBUG.
 
 ---
 
-## 6. Things I deliberately did NOT touch (leave them alone unless you have proof)
+## 3. Audited and found CORRECT (no change made)
 
-- **`cleanup_gpu()` / per-run `safe_sched_free`** (fork commit `c9bd43b`).
-  This frees the scheduler after every run. It looks like an obvious
-  performance target — it is not. It exists to stop CUDA galloc accumulation
-  with 4 models resident on an 8 GB card, and **the user has explicitly ruled
-  it off-limits twice.** Do not touch it, do not benchmark it as a way to
-  argue for touching it.
-- **`ggml/` and `src/third_party/`** — vendored, synced from upstream, never
-  formatted or edited here.
-- The `granite_nar`, `cohere`, `moss`, `medasr`, … families beyond the conv
-  change: no local GGUFs, so anything you change there is unverifiable on
-  this machine. Prefer reasoning + `--check`-style hooks over speculative
-  edits.
+### 3.1 Frame-batched RNN-T joint — the correctness argument holds
+
+Re-derived from the code rather than trusted:
+
+- `decoder_out` contents change **only** when `predictor_step_ggml` runs,
+  which happens only when `predictor_dirty` is set — at exactly the one site
+  that also clears `win_valid`. The `else` branch reads
+  `next_state.h.back().data()`, whose contents the `std::swap` cannot have
+  changed, because the swap always co-occurs with `predictor_dirty = true`.
+- `step` is **monotonically non-decreasing** on every path (blank `+1`, TDT
+  `+= duration` with `duration >= 0`, the `max_symbols` `+1`, and the
+  `is_blank` fast-forward `+1`), so `step < win_base` is unreachable and
+  `step >= win_base + W` catches every forward jump, TDT skips included.
+- Bounds are exact, not lucky: the loop guard caps `step <= T_enc-1`, so a
+  window based there reads through row `T_enc-1+W`;
+  `precompute_enc_proj_ggml` sizes its output to exactly `T_enc*joint_h` and
+  the pad grows it to `(T_enc+W-1)*joint_h`. No truncation, no overread.
+- `ggml_tensor_overhead() * 16` covers the 8 nodes actually built; the joint
+  weights live in `HostJoint`'s context, not this one.
+
+**`decode_rnnt_greedy_streaming` was left serial, and that is right.** The
+graphs are built per decode call; on a per-feed chunk of a handful of frames
+the extra `ggml_init` + backend alloc + graph build would cost more than the
+dispatches it saves. Do not "optimize" it without measuring the real Handy
+streaming flow — that is the §1 lesson.
+
+### 3.2 qwen3 speculative decode — KEEP (the previous passover suggested cutting it)
+
+It was framed as "~250 lines of dead-by-default complexity", to be deleted on
+the same logic that killed the serializer. That framing is wrong:
+
+- `transcribe_run_params::spec_k_drafts` and
+  `transcribe_capabilities::supports_spec_decode` are **pre-existing public
+  ABI** (commit `de857f4`), documented in `include/transcribe.h`, and exposed
+  by the CLI as `--spec-k-drafts`.
+- `voxtral_realtime` already implements the same mechanism. qwen3_asr is the
+  **second implementor of an established contract**, not a private
+  experiment.
+- Deleting it would make `--spec-k-drafts` silently no-op on qwen3 while
+  working on voxtral — the inconsistency users actually hit.
+
+The serializer was categorically different: a *new*, undocumented behavior
+change that harmed the default path. This is default-OFF and inert.
+
+Both subtleties the previous passover flagged were verified:
+
+- **KV headroom guard is correct.** Loop entry requires
+  `generated_ids.size() < max_new`, so `cur_past <= T_prompt + max_new - 2`,
+  hence `cur_past + T_verify <= T_prompt + max_new + k - 1 < max_n_kv`. The
+  window guard can never truncate generation early, so the path stays
+  lossless in the tail case.
+- **`last_pos_by_tok` update order is correct.** `all_ids.size() == cur_past+1`
+  is invariant; the backfill writes index `cur_past+1+j` at position
+  `cur_past+1+j`, and `j + 1 < n_commit` correctly leaves the tail token
+  unpinned so the next iteration's lookup finds an earlier occurrence.
+
+Known inefficiency, left alone because the path is off by default: the verify
+loop refills and re-uploads the entire `[max_n_kv, T_verify]` mask every
+iteration, where only the new columns change.
+
+### 3.3 granite_nar conv — shapes verified analogous
+
+The previous passover called this "the single most likely place for a real bug
+in the series" (no local GGUF to test with). It is correct. `conv_module`'s
+shape flow is identical to granite's: pw1 → `[2*inner_dim, T]`, GLU →
+`[inner_dim, T]`, `cont(permute)` → `[T, inner_dim]`, so
+`reshape_4d(x, T, 1, inner_dim, 1)` is the right `[W, H, C, N]`, and
+`reshape_3d` back is right. All `build_encoder_graph` call sites in both
+families were covered.
+
+### 3.4 nemotron language caps — verified against the real GGUF
+
+Dumped `nemotron-3.5-asr-streaming-0.6b-F16.gguf` directly:
+
+```
+auto_id = 101
+n_locales = 121   n_general.languages = 32
+in general.languages but NOT in dictionary: []      <- superset CONFIRMED
+locales mapping to auto_id: ['auto']                <- string filter == index filter
+```
+
+Overwriting loses nothing, and 121 − 1 = **120** advertised, matching what
+Handy's log showed. Stronger: since `resolve_prompt_id` returns `-1` for
+anything not in the dictionary, **merging would have been the bug** — it would
+advertise languages the model must reject. Non-prompt variants are guarded by
+`has_prompt` and untouched.
+
+### 3.5 `--multi` CLI harness — no leaks
+
+`free_all()` is called on every early return, and `slots` is pre-sized with
+null members so partial teardown is safe.
+
+### 3.6 Linux/macOS `performance_cpu_count()` paths — reviewed, not executed
+
+Still compiled only on MSVC here. Reviewed for the `fast.empty()` semantics
+the previous passover worried about: they are consistent. If
+`/sys/devices/cpu_core/cpus` is absent and no CPU exposes `cpu_capacity`,
+`best_cap` stays `-1` and `fast` is cleared, which correctly means "no class
+info, every usable CPU counts". If affinity excludes every fast-class CPU the
+function returns 0 and the caller falls back to `usable_cpu_count()` — a
+sane degradation. Still unexecuted; treat as review-grade, not tested.
 
 ---
 
-## 7. Verification tools that already exist (use them instead of rebuilding)
+## 4. Open questions deliberately NOT acted on
 
-- `TRANSCRIBE_RNNT_BATCH_CHECK=1` — batched vs serial joint logits, per
-  consumed column, with both argmaxes on mismatch.
+- **The cap of 8 in `default_n_threads`.** A 16-P-core desktop still gets 8.
+  Almost certainly leaving performance on the table, but it is also what stops
+  a 64-core server spawning 64 threads on a tiny graph, and it cannot be
+  measured on this box. Raising it affects every family — do it only with
+  numbers, and say so loudly.
+- **A small joint window for the streaming decode path (W=4?).** See §3.1 for
+  why it is probably a loss. Needs the real Handy streaming flow to settle.
+- **Node profiler.** Now claims a single scheduler via a CAS and warns if a
+  second appears, so the unsynchronized global has exactly one writer. In a
+  concurrent host the report therefore covers one session, not the process.
+
+---
+
+## 5. Things that are off-limits
+
+- **`cleanup_gpu()` / per-run `safe_sched_free`** (fork commit `c9bd43b`). It
+  looks like an obvious performance target. It is not. It exists to stop CUDA
+  galloc accumulation with 4 models resident on an 8 GB card, and the user has
+  ruled it off-limits **three** times now. Do not touch it, and do not
+  benchmark it as a way to argue for touching it.
+- **`ggml/` and `src/third_party/`** — vendored, never formatted or edited.
+- Families with no local GGUF (`granite_nar`, `cohere`, `moss`, `medasr`, …):
+  prefer reasoning and `--check`-style hooks over speculative edits.
+
+---
+
+## 6. Conventions (read `AGENTS.md` first — it is canonical)
+
+- **Python is always `uv run`.** Never bare `python`/`pip`.
+- **Build:** `cmake --build build --target transcribe-cli --config Release`.
+  A CUDA tree exists at `build-cuda` (`CMAKE_CUDA_ARCHITECTURES=89`). Both
+  have `GGML_LLAMAFILE=ON`, which is why the batched joint's kernel switch
+  shows up at all.
+- **Format:** `scripts/ci/clang-format.sh` (writes) / `--check`. Pinned via
+  `uvx`; never a system clang-format.
+- **Teardown lint:** `cmake -DSRC_DIR=$PWD/src -P tests/lint_teardown.cmake`.
+- **C ABI:** no C++ exception escapes a public entry point; teardown uses
+  `transcribe::safe_*`.
+- **Public ABI changes are expensive** — `include/transcribe.abihash` gates
+  five bindings plus a pinned Swift header hash. Avoid.
+- **Do not commit/push/PR unless the user explicitly asks.**
+
+---
+
+## 7. Verification tools
+
+- `TRANSCRIBE_RNNT_BATCH_CHECK=1` — batched vs serial joint. **Now errors only
+  on an argmax flip**; drift is DEBUG. A clean run prints zero errors.
 - `TRANSCRIBE_RNNT_BATCH_W=1` — kill switch back to the serial joint.
 - `TRANSCRIBE_CONV_NO_DIRECT_DW=1` — kill switch back to im2col depthwise.
-- `TRANSCRIBE_PERF_DEBUG=1` — per-family stage breakdowns (several families
-  print detailed tables); `=nodes` — the cross-family per-op/per-node table.
+- `TRANSCRIBE_PERF_DEBUG=1` — per-family stage breakdowns; `=nodes` — the
+  cross-family per-op/per-node table.
 - `--timestamps token` — the byte-diff harness for decode changes. Filter the
-  non-deterministic `realtime:` / `timings:` / `[debug] decoder` lines before
-  diffing; compare the `[ t0 -> t1 ] p=… text` payload lines.
-- `uv run scripts/validate.py all --family <f> [--variant <v>]` and
-  `uv run scripts/preflight.py` — the repo's real numerical gates. **They
-  need reference oracles that are not on this machine**, which is why this
-  session leaned on transcript byte-diffing instead. If you can obtain the
-  oracles, running these is worth more than anything I did.
+  non-deterministic `realtime:` / `timings:` / `[debug]` lines and diff the
+  payload lines. This is what proved the fix set output-neutral across
+  nemotron/parakeet/granite × jfk/german/whole-earth.
+- `uv run scripts/validate.py all --family <f>` and `uv run scripts/preflight.py`
+  — the real numerical gates. **They need reference oracles that are not on
+  this machine.** If you can obtain them, running them is worth more than
+  anything either of these two sessions did.
 
-**Benchmark methodology the user requires** (they were explicit, twice): run
-4+ times, drop the first, average/min the rest, **interleave the arms within
-each round**, prefer the library's stage counters over wall clock, and
-**revert any "win" that lands inside the noise floor**. On this machine the
-noise floor is large — see §3.
+**Benchmark methodology the user requires:** 4+ runs, drop the first,
+average/min the rest, **interleave the arms within each round**, prefer the
+library's stage counters over wall clock, and **revert any "win" inside the
+noise floor**. The box is an i9-13900H (6 P + 8 E, 20 logical) with ~11%
+background load; single measurements swing 2–5×.
 
 ---
 
-## 8. Suggested order of work
+## 8. The lesson, for whoever is next
 
-1. Read §4 so you don't undo the revert. Confirm
-   `git diff 16f579b HEAD -- src/transcribe.cpp` is empty.
-2. Read `AGENTS.md` and `CONTRIBUTING.md`.
-3. Audit in descending risk order: **5.1 (thread detection, unexecuted
-   platform code) → 5.2.1 (granite_nar, unverified) → 5.3 (decode
-   correctness argument) → 5.5 (decide: keep or delete) → 5.4 → 5.6.**
-4. For each: read the diff, reason about it, and either fix it or write down
-   why it is fine. Prefer small, well-argued commits over one big one.
-5. Re-run `scripts/ci/clang-format.sh --check` and both builds before
-   committing. Do not push unless asked.
+The previous passover's most valuable content was §4 — the record of a
+confident, well-benchmarked change that was simply wrong because it was
+measured against the wrong scenario. This audit adds a second, quieter
+failure mode worth the same attention:
 
-Write your own findings back into this file (or replace it) for whoever comes
-after you. The most valuable thing in it is not the list of changes — it is
-§4, the record of a confident, well-benchmarked change that was simply wrong
-because it was measured against the wrong scenario.
+**Every defect in §2 was invisible on the machine it was written on.** The
+Windows core walk dropped an E-core, so the P-core answer stayed right. The
+`parallel_for_all` regression only slowed a path nobody timed. The Metal
+policy only costs hardware that isn't here. The null dump was masked by a
+guard in another function. None of them would have been caught by more
+benchmarking — only by reading.
+
+So: when a change's correctness depends on a platform, a code path, or a
+guard that your test run does not exercise, that is precisely where to look
+hardest. And when you copy a policy from a neighbouring call site, check what
+that policy was *for* — §2.3 is an entire missed optimization that came from
+copying the right-looking line from the wrong site.

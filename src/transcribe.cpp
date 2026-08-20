@@ -2069,7 +2069,6 @@ extern "C" transcribe_status transcribe_stream_get_text(const struct transcribe_
 // below clears batch_results once before delegating here. Every early
 // return preserves the previous result snapshot exactly as the original
 // transcribe_run contract documented (see the inline comments).
-
 static transcribe_status run_one_inner(struct transcribe_session *          session,
                                        const float *                        pcm,
                                        int                                  n_samples,

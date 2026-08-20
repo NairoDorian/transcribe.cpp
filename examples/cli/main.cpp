@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -20,6 +21,7 @@
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -210,13 +212,15 @@ struct cli_args {
     std::string                wav_path;
     std::string                model_path;
     std::string                language;
-    std::string                target_language;   // --target-language: target lang for translation
-    std::string                batch_file;        // --batch: one wav path per line
-    int                        batch_size   = 0;  // --batch-size: >1 groups utterances into
-                                                  // transcribe_run_batch calls (offline only).
-                                                  // 0/1 keeps the per-file serial loop.
-    bool                       translate    = false;
-    bool                       quiet        = false;
+    std::string                target_language;  // --target-language: target lang for translation
+    std::string                batch_file;       // --batch: one wav path per line
+    int                        batch_size = 0;   // --batch-size: >1 groups utterances into
+                                                 // transcribe_run_batch calls (offline only).
+                                                 // 0/1 keeps the per-file serial loop.
+    bool                       translate  = false;
+    bool                       quiet      = false;
+    std::string                multi_models;          // --multi M1,M2,...: concurrent multi-model mode
+    bool                       multi_serial = false;  // --multi-serial: run the set serially instead
     bool                       list_devices = false;  // --list-devices: print devices and exit
     bool                       batch_jsonl  = false;  // --batch-jsonl: output JSONL
     std::string                output_path;           // -o/--output: write raw text here
@@ -409,6 +413,14 @@ bool parse_args(int argc, char ** argv, cli_args & out) {
             std::exit(0);
         } else if (a == "--list-devices") {
             out.list_devices = true;
+        } else if (a == "--multi") {
+            const char * v = take_value(a.c_str());
+            if (!v) {
+                return false;
+            }
+            out.multi_models = v;
+        } else if (a == "--multi-serial") {
+            out.multi_serial = true;
         } else if (a == "-m" || a == "--model") {
             const char * v = take_value(a.c_str());
             if (!v) {
@@ -731,6 +743,171 @@ bool write_output_file(std::ofstream * output, const std::string & path, const c
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// --multi mode: load N models, transcribe ONE wav with all of them
+// concurrently on N threads (one session each) — the Handy Multi-STT
+// pattern — and report per-model stage timings plus the wall clock of each
+// round. --multi-serial runs the same set back-to-back instead, so the
+// concurrency cost (GPU contention, CPU oversubscription) is the difference
+// between the two wall clocks. --repeat R repeats the measurement; the
+// first round is the cold one (galloc warm-up), later rounds are steady
+// state.
+static int multi_main(const cli_args & args) {
+    std::vector<std::string> paths;
+    {
+        std::string cur;
+        for (char ch : args.multi_models) {
+            if (ch == ',') {
+                if (!cur.empty()) {
+                    paths.push_back(cur);
+                }
+                cur.clear();
+            } else {
+                cur.push_back(ch);
+            }
+        }
+        if (!cur.empty()) {
+            paths.push_back(cur);
+        }
+    }
+    if (paths.empty() || args.wav_path.empty()) {
+        std::fprintf(stderr, "--multi needs a comma-separated model list and one wav\n");
+        return EXIT_FAILURE;
+    }
+
+    std::vector<float> pcm;
+    std::string        load_err;
+    if (!transcribe_cli::load_wav_mono_16k(args.wav_path, pcm, load_err)) {
+        std::fprintf(stderr, "wav: %s\n", load_err.c_str());
+        return EXIT_FAILURE;
+    }
+    const double duration_s = static_cast<double>(pcm.size()) / 16000.0;
+    std::printf("multi: %zu models, %s (%.1f s), %s\n", paths.size(), args.wav_path.c_str(), duration_s,
+                args.multi_serial ? "serial" : "concurrent");
+
+    struct Slot {
+        std::string                 path;
+        struct transcribe_model *   model   = nullptr;
+        struct transcribe_session * ctx     = nullptr;
+        bool                        lang_ok = false;
+        std::string                 text;
+        transcribe_status           st      = TRANSCRIBE_OK;
+        double                      wall_ms = 0.0;
+        struct transcribe_timings   tm{};
+    };
+
+    std::vector<Slot> slots(paths.size());
+
+    auto free_all = [&slots]() {
+        for (auto & sl : slots) {
+            if (sl.ctx != nullptr) {
+                transcribe_session_free(sl.ctx);
+            }
+            if (sl.model != nullptr) {
+                transcribe_model_free(sl.model);
+            }
+        }
+    };
+
+    for (size_t i = 0; i < paths.size(); ++i) {
+        slots[i].path = paths[i];
+        struct transcribe_model_load_params mp;
+        transcribe_model_load_params_init(&mp);
+        mp.backend = args.backend;
+        mp.device  = args.device_index >= 0 ? transcribe_device_get(args.device_index) : nullptr;
+        const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+        const transcribe_status st = transcribe_model_load_file(paths[i].c_str(), &mp, &slots[i].model);
+        if (st != TRANSCRIBE_OK) {
+            std::fprintf(stderr, "multi: load failed for %s: %s\n", paths[i].c_str(), transcribe_status_string(st));
+            free_all();
+            return EXIT_FAILURE;
+        }
+        struct transcribe_session_params cp;
+        transcribe_session_params_init(&cp);
+        cp.n_threads = args.n_threads;
+        cp.n_ctx     = args.n_ctx;
+        cp.kv_type   = args.kv_type;
+        if (transcribe_session_init(slots[i].model, &cp, &slots[i].ctx) != TRANSCRIBE_OK) {
+            std::fprintf(stderr, "multi: session init failed for %s\n", paths[i].c_str());
+            free_all();
+            return EXIT_FAILURE;
+        }
+        // Language hint only where advertised (mirrors Handy's filter).
+        if (!args.language.empty()) {
+            struct transcribe_capabilities caps;
+            transcribe_capabilities_init(&caps);
+            if (transcribe_model_get_capabilities(slots[i].model, &caps) == TRANSCRIBE_OK) {
+                for (int L = 0; L < caps.n_languages; ++L) {
+                    if (caps.languages[L] != nullptr && args.language == caps.languages[L]) {
+                        slots[i].lang_ok = true;
+                        break;
+                    }
+                }
+            }
+        }
+        const double load_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        const char * nm      = transcribe_model_meta_val_str(slots[i].model, "general.name");
+        std::printf("  [%zu] %s  (%s, backend %s, load %.0f ms, lang hint %s)\n", i, paths[i].c_str(),
+                    (nm != nullptr && nm[0]) ? nm : "?", transcribe_model_backend(slots[i].model), load_ms,
+                    slots[i].lang_ok ? args.language.c_str() : "auto");
+    }
+
+    auto run_one = [&args, &pcm](Slot & sl) {
+        struct transcribe_run_params rp;
+        transcribe_run_params_init(&rp);
+        if (sl.lang_ok) {
+            rp.language = args.language.c_str();
+        }
+        rp.timestamps                                  = TRANSCRIBE_TIMESTAMPS_NONE;
+        const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+        sl.st      = transcribe_run(sl.ctx, pcm.data(), static_cast<int>(pcm.size()), &rp);
+        sl.wall_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        transcribe_timings_init(&sl.tm);
+        (void) transcribe_get_timings(sl.ctx, &sl.tm);
+        sl.text.clear();
+        if (sl.st == TRANSCRIBE_OK) {
+            if (const char * t = transcribe_full_text(sl.ctx); t != nullptr) {
+                sl.text = t;
+            }
+        }
+    };
+
+    const int rounds = std::max(1, args.repeat);
+    for (int r = 0; r < rounds; ++r) {
+        const std::chrono::steady_clock::time_point t_round = std::chrono::steady_clock::now();
+        if (args.multi_serial) {
+            for (auto & sl : slots) {
+                run_one(sl);
+            }
+        } else {
+            std::vector<std::thread> th;
+            th.reserve(slots.size());
+            for (auto & sl : slots) {
+                th.emplace_back([&sl, &run_one]() { run_one(sl); });
+            }
+            for (auto & t : th) {
+                t.join();
+            }
+        }
+        const double round_ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_round).count();
+        std::printf("round %d: wall=%.1f ms (%.2fx realtime)\n", r, round_ms,
+                    duration_s * 1000.0 / (round_ms > 0.0 ? round_ms : 1.0));
+        for (size_t i = 0; i < slots.size(); ++i) {
+            const Slot & sl = slots[i];
+            std::printf("  [%zu] %-7s wall=%8.1f ms  mel=%6.1f enc=%8.1f dec=%8.1f\n", i,
+                        sl.st == TRANSCRIBE_OK ? "ok" : transcribe_status_string(sl.st), sl.wall_ms, sl.tm.mel_ms,
+                        sl.tm.encode_ms, sl.tm.decode_ms);
+        }
+    }
+    for (size_t i = 0; i < slots.size(); ++i) {
+        std::printf("[%zu] %s\n", i, slots[i].text.c_str());
+    }
+
+    free_all();
+    return EXIT_SUCCESS;
+}
+
 int main(int argc, char ** argv) {
     cli_args args;
     if (!parse_args(argc, argv, args)) {
@@ -752,6 +929,10 @@ int main(int argc, char ** argv) {
     // threading contract in transcribe.h.
     if (!args.quiet) {
         transcribe_log_set(log_cb, nullptr);
+    }
+
+    if (!args.multi_models.empty()) {
+        return multi_main(args);
     }
 
     std::ofstream   output_file;

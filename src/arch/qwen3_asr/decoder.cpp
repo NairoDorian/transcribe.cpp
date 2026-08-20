@@ -330,6 +330,84 @@ StepBuild build_step_graph(ggml_context *                   ctx,
     return sb;
 }
 
+VerifyBuild build_verify_graph(ggml_context *                   ctx,
+                               const QwenAsrWeights &           weights,
+                               const QwenAsrHParams &           hp,
+                               transcribe::causal_lm::KvCache & kv_cache,
+                               int                              T_verify,
+                               int                              max_n_kv,
+                               bool                             use_flash) {
+    VerifyBuild vb{};
+    vb.T_verify = T_verify;
+    vb.max_n_kv = max_n_kv;
+
+    if (ctx == nullptr || T_verify <= 0 || max_n_kv <= 0) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr verify: invalid arg (T_verify=%d max_n_kv=%d)", T_verify,
+                max_n_kv);
+        return vb;
+    }
+    if (kv_cache.self_k == nullptr) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr verify: kv_cache not initialized");
+        return vb;
+    }
+    if (max_n_kv > kv_cache.n_ctx) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr verify: max_n_kv=%d exceeds kv_cache.n_ctx=%d", max_n_kv,
+                kv_cache.n_ctx);
+        return vb;
+    }
+
+    const int64_t vocab   = hp.dec_vocab_size;
+    const int     n_layer = hp.dec_n_layers;
+    const float   rms_eps = hp.dec_rms_norm_eps;
+
+    const auto block_params = to_block_params(hp);
+
+    vb.input_ids_in = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, T_verify);
+    ggml_set_name(vb.input_ids_in, "verify.input_ids");
+    ggml_set_input(vb.input_ids_in);
+
+    vb.positions_in = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, T_verify);
+    ggml_set_name(vb.positions_in, "verify.positions");
+    ggml_set_input(vb.positions_in);
+
+    vb.kv_idx_in = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, T_verify);
+    ggml_set_name(vb.kv_idx_in, "verify.kv_idx");
+    ggml_set_input(vb.kv_idx_in);
+
+    vb.mask_in = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, max_n_kv, T_verify);
+    ggml_set_name(vb.mask_in, "verify.mask");
+    ggml_set_input(vb.mask_in);
+
+    ggml_cgraph * gf = ggml_new_graph_custom(ctx, /*size=*/8192, /*grads=*/false);
+    if (gf == nullptr) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr verify: ggml_new_graph_custom failed");
+        return vb;
+    }
+    vb.graph = gf;
+
+    ggml_tensor * x = ggml_get_rows(ctx, weights.dec_embed.token_w,
+                                    vb.input_ids_in);  // [hidden, T_verify]
+
+    for (int il = 0; il < n_layer; ++il) {
+        x = causal_lm::block_step_n(ctx, gf, x, to_block_view(weights.dec_blocks[il]), block_params, kv_cache, il,
+                                    T_verify, max_n_kv, vb.mask_in, vb.positions_in, vb.kv_idx_in, use_flash);
+    }
+
+    x                    = ggml_mul(ctx, ggml_rms_norm(ctx, x, rms_eps), weights.dec_final.norm_w);
+    ggml_tensor * logits = ggml_mul_mat(ctx, weights.dec_embed.token_w, x);  // [vocab, T_verify]
+    ggml_set_name(logits, "verify.logits");
+
+    // Per-position argmax on-device → T_verify-int readback.
+    ggml_tensor * amax = ggml_argmax(ctx, logits);
+    ggml_set_name(amax, "verify.argmax");
+    vb.out = amax;
+    ggml_set_output(vb.out);
+
+    ggml_build_forward_expand(gf, vb.out);
+    (void) vocab;
+    return vb;
+}
+
 PrefillBuildBatched build_prefill_graph_batched(ggml_context *                   ctx,
                                                 const QwenAsrWeights &           weights,
                                                 const QwenAsrHParams &           hp,

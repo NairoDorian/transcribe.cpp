@@ -898,16 +898,46 @@ transcribe_status run(transcribe_session *          session,
     const int32_t max_new  = k_max_new;
     int           cur_past = T_prompt;
 
+    // params->spec_k_drafts: -1 = family default (=0, disabled), 0 =
+    // disabled, 1..QWEN3_ASR_SPEC_K_MAX = explicit draft length for the
+    // 1-gram-lookup speculative decode below. Greedy acceptance keeps the
+    // committed token sequence bit-identical to plain stepping, so this is a
+    // pure speed knob — but it defaults OFF: measured on short clips the
+    // 1-gram acceptance (~1.1 tokens/verify) does not amortize the verify
+    // pass, which costs ~1.5x a single step on CPU (T=2 leaves the matvec
+    // fast path) and break-even on CUDA. Worth re-testing per workload via
+    // --spec-k-drafts; repetitive long-form dictation accepts more.
+    constexpr int QWEN3_ASR_SPEC_K_MAX = 8;
+    int           k_drafts             = 0;
+    if (params != nullptr &&
+        params->struct_size >= offsetof(transcribe_run_params, spec_k_drafts) + sizeof(params->spec_k_drafts)) {
+        const int requested = params->spec_k_drafts;
+        if (requested == 0) {
+            k_drafts = 0;
+        } else if (requested > 0) {
+            k_drafts = std::min(requested, QWEN3_ASR_SPEC_K_MAX);
+        }
+        // requested == -1 keeps the family default; requested < -1 falls
+        // through to the family default (matches the silent-ignore semantics).
+    }
+
     // Build the step graph ONCE and reuse every step, sized for the actual
     // workload (T_prompt written + up to max_new generated). Metal's flash-attn
     // kernels dispatch ~30% faster (M4 Max) when K/V ne[1] is a power of 2, so
     // round up; floor of 1024 (smaller just hits the slow-misaligned branch).
+    // The verify graph writes up to k_drafts KV rows past the last committed
+    // position, so reserve that slack too.
     int max_n_kv = 1024;
-    while (max_n_kv < T_prompt + max_new) {
+    while (max_n_kv < T_prompt + max_new + k_drafts) {
         max_n_kv *= 2;
     }
     if (max_n_kv > cc->kv_cache.n_ctx) {
         max_n_kv = cc->kv_cache.n_ctx;
+    }
+    // The spec path needs headroom for its draft columns inside the KV
+    // window; if the context clamp removed it, fall back to plain stepping.
+    if (k_drafts > 0 && T_prompt + max_new + k_drafts > max_n_kv) {
+        k_drafts = 0;
     }
     const int64_t t_step_build_start = ggml_time_us();
     if (cc->compute_ctx != nullptr) {
@@ -928,14 +958,25 @@ transcribe_status run(transcribe_session *          session,
             return TRANSCRIBE_ERR_OOM;
         }
     }
-    StepBuild sb = build_step_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache, max_n_kv,
-                                    /*use_flash=*/cc->decoder_use_flash);
-    if (sb.graph == nullptr || sb.out == nullptr) {
-        cleanup_gpu();
-        return TRANSCRIBE_ERR_GGUF;
+    StepBuild   sb{};
+    VerifyBuild vb{};
+    if (k_drafts == 0) {
+        sb = build_step_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache, max_n_kv,
+                              /*use_flash=*/cc->decoder_use_flash);
+        if (sb.graph == nullptr || sb.out == nullptr) {
+            cleanup_gpu();
+            return TRANSCRIBE_ERR_GGUF;
+        }
+    } else {
+        vb = build_verify_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache, /*T_verify=*/k_drafts + 1,
+                                max_n_kv, /*use_flash=*/cc->decoder_use_flash);
+        if (vb.graph == nullptr || vb.out == nullptr) {
+            cleanup_gpu();
+            return TRANSCRIBE_ERR_GGUF;
+        }
     }
     ggml_backend_sched_reset(cc->sched);
-    if (!ggml_backend_sched_alloc_graph(cc->sched, sb.graph)) {
+    if (!ggml_backend_sched_alloc_graph(cc->sched, k_drafts == 0 ? sb.graph : vb.graph)) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "qwen3_asr step: decode graph allocation failed — out of memory. "
                             "Lower transcribe_session_params.n_ctx or shorten the audio.");
@@ -955,44 +996,167 @@ transcribe_status run(transcribe_session *          session,
     int64_t       t_step_comp_us    = 0;
     int64_t       t_step_get_us     = 0;
     const int64_t t_step_loop_start = ggml_time_us();
-    while (next_tok != eos_id && static_cast<int32_t>(generated_ids.size()) < max_new && cur_past + 1 <= max_n_kv) {
-        const int64_t t_set0 = ggml_time_us();
+    int           n_graph_runs      = 0;
+    if (k_drafts == 0) {
+        while (next_tok != eos_id && static_cast<int32_t>(generated_ids.size()) < max_new && cur_past + 1 <= max_n_kv) {
+            const int64_t t_set0 = ggml_time_us();
 
-        ggml_backend_tensor_set(sb.input_id_in, &next_tok, 0, sizeof(int32_t));
-        const int32_t pos_val = cur_past;
-        ggml_backend_tensor_set(sb.position_in, &pos_val, 0, sizeof(int32_t));
-        const int64_t kv_idx_val = cur_past;
-        ggml_backend_tensor_set(sb.kv_idx_in, &kv_idx_val, 0, sizeof(int64_t));
+            ggml_backend_tensor_set(sb.input_id_in, &next_tok, 0, sizeof(int32_t));
+            const int32_t pos_val = cur_past;
+            ggml_backend_tensor_set(sb.position_in, &pos_val, 0, sizeof(int32_t));
+            const int64_t kv_idx_val = cur_past;
+            ggml_backend_tensor_set(sb.kv_idx_in, &kv_idx_val, 0, sizeof(int64_t));
 
-        // Mask: mark the newly-added position as attendable. Positions
-        // [0, cur_past) were zeroed in prior iterations; just set the
-        // new one. (On iter 0, zero everything in [0, cur_past].)
-        if (cur_past == T_prompt) {
-            std::fill(step_mask.begin(), step_mask.begin() + cur_past + 1, mask_zero);
-        } else {
-            step_mask[cur_past] = mask_zero;
+            // Mask: mark the newly-added position as attendable. Positions
+            // [0, cur_past) were zeroed in prior iterations; just set the
+            // new one. (On iter 0, zero everything in [0, cur_past].)
+            if (cur_past == T_prompt) {
+                std::fill(step_mask.begin(), step_mask.begin() + cur_past + 1, mask_zero);
+            } else {
+                step_mask[cur_past] = mask_zero;
+            }
+            ggml_backend_tensor_set(sb.mask_in, step_mask.data(), 0,
+                                    static_cast<size_t>(max_n_kv) * sizeof(ggml_fp16_t));
+
+            const int64_t t_set1 = ggml_time_us();
+            t_step_set_us += t_set1 - t_set0;
+
+            if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, sb.graph);
+                gs != GGML_STATUS_SUCCESS) {
+                log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr step: graph compute failed (%d)", static_cast<int>(gs));
+                cleanup_gpu();
+                return TRANSCRIBE_ERR_GGUF;
+            }
+            const int64_t t_comp1 = ggml_time_us();
+            t_step_comp_us += t_comp1 - t_set1;
+            ++n_graph_runs;
+
+            int32_t argmax_tok = 0;
+            ggml_backend_tensor_get(sb.out, &argmax_tok, 0, sizeof(int32_t));
+            next_tok = argmax_tok;
+            generated_ids.push_back(next_tok);
+            cur_past += 1;
+            cc->kv_cache.n    = cur_past + 1;
+            cc->kv_cache.head = cur_past + 1;
+            t_step_get_us += ggml_time_us() - t_comp1;
         }
-        ggml_backend_tensor_set(sb.mask_in, step_mask.data(), 0, static_cast<size_t>(max_n_kv) * sizeof(ggml_fp16_t));
+    } else {
+        // ---- 1-gram-lookup speculative decode (mechanism as in ----
+        // ---- arch/voxtral_realtime; greedy acceptance = lossless) ----
+        //
+        // all_ids[p] = token at absolute position p (prompt + committed).
+        // last_pos_by_tok[t] = latest position whose token is t. A draft is
+        // the sequence that followed the previous occurrence of next_tok;
+        // when there is none, repeat next_tok (a miss only wastes the draft
+        // columns, whose compute rides along with the mandatory column 0).
+        //
+        // KV hygiene: every verify writes rows [cur_past, cur_past+K]; a
+        // rejected draft leaves stale rows ABOVE the last committed
+        // position, but the next iteration's window starts at the new
+        // cur_past and rewrites each row before any mask column exposes it,
+        // so a stale row is never read.
+        const int T_verify = k_drafts + 1;
 
-        const int64_t t_set1 = ggml_time_us();
-        t_step_set_us += t_set1 - t_set0;
+        std::vector<int32_t> all_ids;
+        all_ids.reserve(static_cast<size_t>(T_prompt) + max_new);
+        all_ids.insert(all_ids.end(), prompt_ids.begin(), prompt_ids.end());
+        all_ids.push_back(next_tok);
 
-        if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, sb.graph); gs != GGML_STATUS_SUCCESS) {
-            log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr step: graph compute failed (%d)", static_cast<int>(gs));
-            cleanup_gpu();
-            return TRANSCRIBE_ERR_GGUF;
+        std::unordered_map<int32_t, int> last_pos_by_tok;
+        last_pos_by_tok.reserve(static_cast<size_t>(T_prompt) + max_new);
+        for (int p = 0; p < T_prompt; ++p) {
+            last_pos_by_tok[prompt_ids[static_cast<size_t>(p)]] = p;
         }
-        const int64_t t_comp1 = ggml_time_us();
-        t_step_comp_us += t_comp1 - t_set1;
 
-        int32_t argmax_tok = 0;
-        ggml_backend_tensor_get(sb.out, &argmax_tok, 0, sizeof(int32_t));
-        next_tok = argmax_tok;
-        generated_ids.push_back(next_tok);
-        cur_past += 1;
-        cc->kv_cache.n    = cur_past + 1;
-        cc->kv_cache.head = cur_past + 1;
-        t_step_get_us += ggml_time_us() - t_comp1;
+        std::vector<int32_t>     in_ids(T_verify, 0);
+        std::vector<int32_t>     positions(T_verify, 0);
+        std::vector<int64_t>     kv_idxs(T_verify, 0);
+        std::vector<ggml_fp16_t> verify_mask(static_cast<size_t>(max_n_kv) * T_verify, mask_neg_inf);
+        std::vector<int32_t>     predicted(T_verify, 0);
+
+        while (next_tok != eos_id && static_cast<int32_t>(generated_ids.size()) < max_new &&
+               cur_past + T_verify <= max_n_kv) {
+            const int64_t t_set0 = ggml_time_us();
+
+            const auto it           = last_pos_by_tok.find(next_tok);
+            const int  draft_origin = (it != last_pos_by_tok.end()) ? it->second : -1;
+
+            in_ids[0]    = next_tok;
+            positions[0] = cur_past;
+            kv_idxs[0]   = cur_past;
+            for (int c = 1; c < T_verify; ++c) {
+                const int src = (draft_origin >= 0) ? (draft_origin + c) : -1;
+                in_ids[c] =
+                    (src >= 0 && src < static_cast<int>(all_ids.size())) ? all_ids[static_cast<size_t>(src)] : next_tok;
+                positions[c] = cur_past + c;
+                kv_idxs[c]   = cur_past + c;
+            }
+
+            // Per-column causal mask: column c (absolute position
+            // cur_past + c) attends to slots [0, cur_past + c].
+            std::fill(verify_mask.begin(), verify_mask.end(), mask_neg_inf);
+            for (int c = 0; c < T_verify; ++c) {
+                std::fill(verify_mask.begin() + static_cast<size_t>(c) * max_n_kv,
+                          verify_mask.begin() + static_cast<size_t>(c) * max_n_kv + cur_past + c + 1, mask_zero);
+            }
+
+            ggml_backend_tensor_set(vb.input_ids_in, in_ids.data(), 0, static_cast<size_t>(T_verify) * sizeof(int32_t));
+            ggml_backend_tensor_set(vb.positions_in, positions.data(), 0,
+                                    static_cast<size_t>(T_verify) * sizeof(int32_t));
+            ggml_backend_tensor_set(vb.kv_idx_in, kv_idxs.data(), 0, static_cast<size_t>(T_verify) * sizeof(int64_t));
+            ggml_backend_tensor_set(vb.mask_in, verify_mask.data(), 0, verify_mask.size() * sizeof(ggml_fp16_t));
+
+            const int64_t t_set1 = ggml_time_us();
+            t_step_set_us += t_set1 - t_set0;
+
+            if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, vb.graph);
+                gs != GGML_STATUS_SUCCESS) {
+                log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr verify: graph compute failed (%d)",
+                        static_cast<int>(gs));
+                cleanup_gpu();
+                return TRANSCRIBE_ERR_GGUF;
+            }
+            const int64_t t_comp1 = ggml_time_us();
+            t_step_comp_us += t_comp1 - t_set1;
+            ++n_graph_runs;
+
+            ggml_backend_tensor_get(vb.out, predicted.data(), 0, static_cast<size_t>(T_verify) * sizeof(int32_t));
+
+            // Commit predicted[0] (the mandatory step) plus every draft the
+            // model confirmed: predicted[i] is valid iff in_ids[i] matched
+            // the previous column's prediction, i.e. accept while
+            // predicted[i-1] == in_ids[i].
+            //
+            // Map update order matters: a token's position may only enter the
+            // map once it is a PREVIOUS occurrence — next_tok is pinned here
+            // (after this iteration's lookup), and the last committed token
+            // (the next iteration's next_tok) is deliberately NOT pinned so
+            // that iteration's lookup can find an earlier occurrence instead
+            // of its own tail position.
+            last_pos_by_tok[next_tok] = cur_past;
+            int n_commit              = 0;
+            for (int i = 0; i < T_verify; ++i) {
+                if (i > 0 && predicted[i - 1] != in_ids[i]) {
+                    break;
+                }
+                const int32_t tok = predicted[i];
+                next_tok          = tok;
+                generated_ids.push_back(tok);
+                all_ids.push_back(tok);
+                ++n_commit;
+                if (tok == eos_id || static_cast<int32_t>(generated_ids.size()) >= max_new) {
+                    break;
+                }
+            }
+            for (int j = 0; j + 1 < n_commit; ++j) {
+                last_pos_by_tok[all_ids[all_ids.size() - static_cast<size_t>(n_commit) + j]] = cur_past + 1 + j;
+            }
+
+            cur_past += n_commit;
+            cc->kv_cache.n    = cur_past + 1;
+            cc->kv_cache.head = cur_past + 1;
+            t_step_get_us += ggml_time_us() - t_comp1;
+        }
     }
     t_step_loop_us = ggml_time_us() - t_step_loop_start;
     n_steps        = static_cast<int>(generated_ids.size()) - 1;
@@ -1092,6 +1256,10 @@ transcribe_status run(transcribe_session *          session,
                 (n_steps > 0) ? (t_step_set_us * ms / n_steps) : 0.0, t_step_comp_us * ms,
                 (n_steps > 0) ? (t_step_comp_us * ms / n_steps) : 0.0, t_step_get_us * ms,
                 (n_steps > 0) ? (t_step_get_us * ms / n_steps) : 0.0, sum_ms);
+        if (k_drafts > 0 && n_graph_runs > 0) {
+            log_msg(TRANSCRIBE_LOG_LEVEL_DEBUG, "  spec: k=%d  graph_runs=%d  tokens/run=%.2f", k_drafts, n_graph_runs,
+                    static_cast<double>(n_steps + 1) / n_graph_runs);
+        }
     }
 
     cc->full_text   = transcript_text;

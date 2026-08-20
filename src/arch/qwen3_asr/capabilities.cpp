@@ -17,6 +17,11 @@ void apply_family_invariants(transcribe_model & model) {
     // lists the BCP-47 codes). Translation is not advertised.
     caps.supports_translate = false;
 
+    // Offline run() uses 1-gram-lookup speculative decode for the step loop
+    // (verify graph at T = spec_k_drafts + 1; greedy acceptance, lossless).
+    // The batched path is not spec-enabled.
+    caps.supports_spec_decode = true;
+
     // Cancellation is wired at the per-run level. No PNC/ITN toggle; the
     // Whisper-specific features do not apply here.
     transcribe::set_feature(&model, TRANSCRIBE_FEATURE_CANCELLATION, true);

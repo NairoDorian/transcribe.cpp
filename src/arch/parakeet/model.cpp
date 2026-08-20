@@ -458,6 +458,28 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
         return st;
     }
 
+    // Prompt-conditioned variants (nemotron-3.5): the prompt dictionary is
+    // the runtime accept-set for language hints (resolve_prompt_id does an
+    // exact-string lookup in it), and it supersets general.languages — it
+    // carries short aliases ("fr", "en") next to the BCP-47 locales
+    // ("fr-FR"). Advertising only general.languages makes the library-level
+    // language gate (and capability-driven hosts) reject or drop hints the
+    // model would happily take, silently degrading them to auto-detect.
+    // Overwrite caps.languages with the dictionary's locales, minus the
+    // "auto" slot (an empty hint already means auto).
+    if (m->hparams.has_prompt && !m->hparams.prompt_dictionary_locales.empty()) {
+        std::vector<std::string> dict_langs;
+        dict_langs.reserve(m->hparams.prompt_dictionary_locales.size());
+        for (const std::string & loc : m->hparams.prompt_dictionary_locales) {
+            if (loc != "auto") {
+                dict_langs.push_back(loc);
+            }
+        }
+        if (!dict_langs.empty()) {
+            m->set_languages(std::move(dict_langs));
+        }
+    }
+
     // Derive supports_streaming from hparams:
     //   ChunkedLimited + (L, R) >= 0 — cache-aware streaming
     //     (nemotron-speech-streaming-en-0.6b).

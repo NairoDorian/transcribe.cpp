@@ -36,6 +36,17 @@ namespace transcribe::granite_nar {
 
 namespace {
 
+// In-block depthwise dispatch: direct ggml_conv_2d_dw_direct everywhere
+// except Metal (CONV_2D_DW unsupported for these shapes in the vendored
+// ggml Metal backend); im2col fallback otherwise. Same env overrides as the
+// shared conformer sites. Mirrors arch/granite/encoder.cpp.
+static bool detect_conv_dw_direct(const char * backend_name) {
+    const bool is_metal = backend_name != nullptr && (std::strstr(backend_name, "Metal") != nullptr ||
+                                                      std::strstr(backend_name, "metal") != nullptr);
+    return transcribe::conformer::resolve_conv_direct("TRANSCRIBE_CONV_DIRECT_DW", "TRANSCRIBE_CONV_NO_DIRECT_DW",
+                                                      /*backend_default=*/!is_metal);
+}
+
 constexpr float kLayerNormEps = 1e-5f;
 
 ggml_tensor * named(ggml_tensor * t, const char * name) {
@@ -165,7 +176,8 @@ ggml_tensor * conv_module(ggml_context *             ctx,
                           ggml_tensor *              bn_fused_scale,
                           ggml_tensor *              bn_fused_bias,
                           int                        conv_kernel,
-                          int                        inner_dim) {
+                          int                        inner_dim,
+                          bool                       conv_dw_direct) {
     const int64_t d_model = x->ne[0];
     const int64_t T       = x->ne[1];
 
@@ -181,12 +193,28 @@ ggml_tensor * conv_module(ggml_context *             ctx,
         x                   = ggml_mul(ctx, gate, ggml_sigmoid(ctx, value));
     }
     x                 = ggml_cont(ctx, ggml_permute(ctx, x, 1, 0, 2, 3));
+    // Direct single-op depthwise instead of the B==1 im2col path — see the
+    // rationale in arch/granite/encoder.cpp granite_conv_module.
     const int padding = (conv_kernel - 1) / 2;
-    x                 = transcribe::conformer::conv_1d_dw_f32(ctx, b.conv_depthwise_w, x,
-                                                              /*stride=*/1, /*padding=*/padding, /*dilation=*/1);
-    x                 = transcribe::conformer::fused_batch_norm(ctx, x, bn_fused_scale, bn_fused_bias);
-    x                 = ggml_silu(ctx, x);
-    x                 = ggml_cont(ctx, ggml_permute(ctx, x, 1, 0, 2, 3));
+    if (conv_dw_direct) {
+        ggml_tensor * knl = b.conv_depthwise_w;
+        if (knl->type != GGML_TYPE_F32) {
+            knl = ggml_cast(ctx, knl, GGML_TYPE_F32);
+        }
+        knl              = ggml_reshape_4d(ctx, knl, conv_kernel, 1, 1, inner_dim);
+        ggml_tensor * d4 = ggml_reshape_4d(ctx, x, x->ne[0], 1, inner_dim, 1);
+        x                = ggml_conv_2d_dw_direct(ctx, knl, d4,
+                                                  /*s0=*/1, /*s1=*/1,
+                                                  /*p0=*/padding, /*p1=*/0,
+                                                  /*d0=*/1, /*d1=*/1);
+        x                = ggml_reshape_3d(ctx, x, x->ne[0], inner_dim, 1);
+    } else {
+        x = transcribe::conformer::conv_1d_dw_f32(ctx, b.conv_depthwise_w, x,
+                                                  /*stride=*/1, /*padding=*/padding, /*dilation=*/1);
+    }
+    x = transcribe::conformer::fused_batch_norm(ctx, x, bn_fused_scale, bn_fused_bias);
+    x = ggml_silu(ctx, x);
+    x = ggml_cont(ctx, ggml_permute(ctx, x, 1, 0, 2, 3));
     {
         ggml_tensor * pw2 = ggml_reshape_2d(ctx, b.conv_pointwise2_w, inner_dim, d_model);
         x                 = ggml_mul_mat(ctx, pw2, x);
@@ -201,7 +229,9 @@ EncoderBuild build_encoder_graph(ggml_context *            ctx,
                                  const GraniteNarWeights & weights,
                                  const GraniteNarHParams & hp,
                                  int                       T_enc,
-                                 bool /*use_flash*/) {
+                                 bool /*use_flash*/,
+                                 const char * backend_name) {
+    const bool   conv_dw_direct = detect_conv_dw_direct(backend_name);
     EncoderBuild eb{};
     eb.n_blocks_local = (T_enc + hp.enc_context_size - 1) / hp.enc_context_size;
     const int T_pad   = eb.n_blocks_local * hp.enc_context_size;
@@ -289,9 +319,9 @@ EncoderBuild build_encoder_graph(ggml_context *            ctx,
             transcribe::debug::mark_tensor_for_dump(x);
         }
 
-        ggml_tensor * conv_out =
-            conv_module(ctx, x, b, b.conv_bn_fused_scale, b.conv_bn_fused_bias, conv_k, static_cast<int>(inner_dim));
-        x = ggml_add(ctx, x, conv_out);
+        ggml_tensor * conv_out = conv_module(ctx, x, b, b.conv_bn_fused_scale, b.conv_bn_fused_bias, conv_k,
+                                             static_cast<int>(inner_dim), conv_dw_direct);
+        x                      = ggml_add(ctx, x, conv_out);
         if (i == 0) {
             named(x, "enc.block.0.post_conv");
             eb.dumps.block_0_post_conv = x;

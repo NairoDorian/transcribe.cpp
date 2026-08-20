@@ -50,6 +50,17 @@ namespace transcribe::granite {
 
 namespace {
 
+// In-block depthwise dispatch: direct ggml_conv_2d_dw_direct everywhere
+// except Metal (CONV_2D_DW unsupported for these shapes in the vendored
+// ggml Metal backend); im2col fallback otherwise. Same env overrides as the
+// shared conformer sites.
+static bool detect_conv_dw_direct(const char * backend_name) {
+    const bool is_metal = backend_name != nullptr && (std::strstr(backend_name, "Metal") != nullptr ||
+                                                      std::strstr(backend_name, "metal") != nullptr);
+    return transcribe::conformer::resolve_conv_direct("TRANSCRIBE_CONV_DIRECT_DW", "TRANSCRIBE_CONV_NO_DIRECT_DW",
+                                                      /*backend_default=*/!is_metal);
+}
+
 // LayerNorm epsilon. Granite's encoder uses nn.LayerNorm whose default
 // eps is 1e-5, matching the conformer helper's kLayerNormEps.
 constexpr float kLayerNormEps = 1e-5f;
@@ -226,7 +237,8 @@ ggml_tensor * granite_conv_module(ggml_context *          ctx,
                                   ggml_tensor *           bn_fused_scale,
                                   ggml_tensor *           bn_fused_bias,
                                   int                     conv_kernel,
-                                  int                     inner_dim) {
+                                  int                     inner_dim,
+                                  bool                    conv_dw_direct) {
     const int64_t d_model = x->ne[0];
     const int64_t T       = x->ne[1];
 
@@ -255,9 +267,34 @@ ggml_tensor * granite_conv_module(ggml_context *          ctx,
 
     // Depthwise conv1d: kernel [k, 1, inner_dim], symmetric pad (k-1)/2
     // (= 7 for k=15). Granite's depthwise has no bias.
+    //
+    // Direct single-op depthwise (ggml_conv_2d_dw_direct with H=1) instead
+    // of conv_1d_dw_f32's B==1 im2col path: im2col materializes a 15x
+    // expansion ([k, T, inner_dim] scratch) and then runs a degenerate
+    // per-channel [1 x k] matmul — measured 2.2 s of a 29 s clip's encode on
+    // CPU. Mirrors the conformer conv_module direct_dw_in_block branch
+    // (parakeet/canary), including the env overrides and the Metal opt-out
+    // (CONV_2D_DW is unsupported for these shapes in the vendored ggml's
+    // Metal backend).
     const int padding = (conv_kernel - 1) / 2;
-    x                 = transcribe::conformer::conv_1d_dw_f32(ctx, b.conv_depthwise_w, x,
-                                                              /*stride=*/1, /*padding=*/padding, /*dilation=*/1);
+    if (conv_dw_direct) {
+        ggml_tensor * knl = b.conv_depthwise_w;
+        if (knl->type != GGML_TYPE_F32) {
+            // ggml_conv_2d_dw_direct misbehaves for non-f32 kernels; the
+            // depthwise kernel is tiny, so cast to f32.
+            knl = ggml_cast(ctx, knl, GGML_TYPE_F32);
+        }
+        knl              = ggml_reshape_4d(ctx, knl, conv_kernel, 1, 1, inner_dim);
+        ggml_tensor * d4 = ggml_reshape_4d(ctx, x, x->ne[0], 1, inner_dim, 1);
+        x                = ggml_conv_2d_dw_direct(ctx, knl, d4,
+                                                  /*s0=*/1, /*s1=*/1,
+                                                  /*p0=*/padding, /*p1=*/0,
+                                                  /*d0=*/1, /*d1=*/1);
+        x                = ggml_reshape_3d(ctx, x, x->ne[0], inner_dim, 1);
+    } else {
+        x = transcribe::conformer::conv_1d_dw_f32(ctx, b.conv_depthwise_w, x,
+                                                  /*stride=*/1, /*padding=*/padding, /*dilation=*/1);
+    }
 
     // Fused BatchNorm: y = x * fused_scale + fused_bias, with 1-D scale
     // and bias broadcast across the time axis.
@@ -288,7 +325,9 @@ EncoderBuild build_encoder_graph(ggml_context *         ctx,
                                  const GraniteWeights & weights,
                                  const GraniteHParams & hp,
                                  int                    T_enc,
-                                 bool /*use_flash*/) {
+                                 bool /*use_flash*/,
+                                 const char * backend_name) {
+    const bool   conv_dw_direct = detect_conv_dw_direct(backend_name);
     EncoderBuild eb{};
     eb.n_blocks_local = (T_enc + hp.enc_context_size - 1) / hp.enc_context_size;
     const int T_pad   = eb.n_blocks_local * hp.enc_context_size;
@@ -384,7 +423,7 @@ EncoderBuild build_encoder_graph(ggml_context *         ctx,
         //   bias  = bn_b - bn_mean * scale
         // into [inner_dim] tensors stashed under conv_bn_fused_*.
         ggml_tensor * conv_out = granite_conv_module(ctx, x, b, b.conv_bn_fused_scale, b.conv_bn_fused_bias, conv_k,
-                                                     static_cast<int>(inner_dim));
+                                                     static_cast<int>(inner_dim), conv_dw_direct);
         x                      = ggml_add(ctx, x, conv_out);
 
         // --- FF2 macaron half ---

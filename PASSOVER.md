@@ -325,6 +325,73 @@ sane degradation. Still unexecuted; treat as review-grade, not tested.
 
 ---
 
+## 3.7 Third pass — every commit since `197833e` (the pre-fork-series base)
+
+A final sweep covered the six commits below the optimization series, i.e.
+everything the first two passes had not read line-by-line.
+
+- **`16f579b` (streaming mel skip + supporting mel work): VERIFIED.** The
+  skip predicate mirrors the emit loop's break test term-for-term
+  (`margin_hops` == `right_edge_margin`, same `advance`, same state, nothing
+  mutates in between), and `n_frames_for()` is exact for parakeet's two
+  normalizers (`per_feature`/`none` return it verbatim; the whisper-mode ones
+  return one less — checked at all four `out_n_frames` sites). On a skipped
+  feed the loop breaks before touching stale `mel_buf`, and the only other
+  `mel_buf` reader (`stream_finalize`) recomputes its own. The mel band-span
+  restriction is bit-exact under the adversarial cases (span end mid-4-group:
+  the containing group still runs in dense order; empty band: begin==end and
+  the sum stays 0.0; all inputs non-negative so no −0.0 subtlety). The
+  threaded no-BLAS matmuls write disjoint rows/columns and join before use.
+  The `KvCache::free()` n_ctx-zeroing (the "voxtral crash fix") was checked
+  against every free/re-init pattern in the tree: qwen3/canary_qwen gate on
+  `ctx != nullptr`, voxtral re-inits inside the same branch, and a free with
+  no immediate re-init now correctly triggers re-init on the next run instead
+  of stepping on null K/V.
+- **`c9bd43b` (cleanup_gpu everywhere): behaviorally verified.** `-r 3` runs
+  three `transcribe_run` calls on ONE session; parakeet, granite, nemotron,
+  and qwen3 (spec path included) all return OK on CPU and CUDA, so the
+  free-at-completion / rebuild-next-run cycle works. Two reviewed-and-accepted
+  deviations in gigaam, recorded here so nobody "fixes" them into the
+  off-limits mechanism: (a) a few failure-path returns in `run()` fire before
+  the cleanup lambda is declared — not leaks, the sched is freed by the next
+  successful run or session teardown; (b) the batch path retains the sched at
+  completion — Handy's product flow uses `run()`, which frees it.
+- **`6f42c20` + `50e7410` (build.rs persistent cache): sound.** mtime
+  fingerprint over exactly the dirs feeding the native build, `build/` trees
+  excluded from the walk (they would self-invalidate), FNV-keyed cache dirs,
+  `TRANSCRIBE_FORCE_REBUILD` escape hatch. Accepted limitation: a pure file
+  deletion does not advance max-mtime (stale hit); quirk: with
+  `TRANSCRIBE_PREBUILT_DIR` set but empty, a miss writes the build into that
+  directory. Neither is worth code.
+- **`8b289ff` / `6b50637` / `c9736a5` (upstream + merge): clean.** The merge's
+  only two-sided file (`gigaam/model.cpp`) resolved correctly; the fork's
+  later mel work layered on top of upstream's #132 mel rewrite and was
+  verified bit-exact above. `zip -qry` is the correct fix for framework
+  symlinks. #132's tolerance loosening is upstream's own validation gate.
+
+## 3.8 P-cores: count, do not pin (measured)
+
+The thread default counts P-cores but does not pin threads to them. That is
+deliberate and now measured (parakeet-v3 encode, arms interleaved per round,
+`start /affinity` on the whole process):
+
+| round | unpinned | P-only (0xFFF) | E-only (0xFF000) |
+|---|---|---|---|
+| 0 | **4679** | 4753 | 12424 |
+| 1 | **5368** | 5709 | 12851 |
+| 2 | **6614** | 7210 | 13605 |
+| 3 | **5623** | 6851 | 12618 |
+| 4 | **5655** | 6738 | 13079 |
+
+E-only ~2.3x slower confirms the asymmetry the count guards against. Unpinned
+beat hard P-pinning 5/5 rounds (~5-15%): the OS already places the 6 threads
+on P-cores (otherwise unpinned would sit near the E-pinned numbers), and
+pinning removes its freedom to migrate off a P-core that another process is
+occupying — under background load one stalled thread holds up ggml's spin
+barrier. ggml's threadpool exposes `cpumask`/`strict_cpu` if anyone wants to
+try anyway; the bar is beating the unpinned column on an interleaved run.
+A note above `performance_cpu_count()` records the same conclusion.
+
 ## 4. Open questions deliberately NOT acted on
 
 - **Seven families hand-roll the fallback `default_n_threads()` gives them.**

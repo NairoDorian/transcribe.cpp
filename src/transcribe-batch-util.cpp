@@ -153,6 +153,17 @@ int read_sysfs_int(const char * fmt, int cpu) {
 // (6 P-cores + 8 E-cores, 20 logical) with the Parakeet v3 encoder: 6 threads
 // pinned to P-cores 1.9 s, 6 threads pinned to E-cores 5.4 s, 12 threads on
 // the 6 P-cores (SMT) 2.9 s.
+//
+// COUNT only — deliberately no affinity pinning. Measured on the same
+// machine (parakeet-v3 encode, arms interleaved per round): a process
+// hard-pinned to the 6 P-cores was SLOWER than unpinned in 5/5 rounds
+// (~5-15%), while E-core-pinned was ~2.3x slower. Two conclusions: the
+// OS's hybrid-aware scheduler already places these 6 threads on P-cores
+// (else unpinned would sit near the E-pinned time), and pinning removes
+// its freedom to migrate off a P-core occupied by another process — under
+// background load one stalled thread holds up ggml's spin barrier. Do not
+// add cpumask/strict_cpu to the ggml threadpools without beating the
+// unpinned numbers on an interleaved benchmark.
 int performance_cpu_count() {
 #if defined(_WIN32)
     DWORD_PTR proc_mask = 0, sys_mask = 0;

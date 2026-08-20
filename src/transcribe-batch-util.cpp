@@ -22,10 +22,7 @@
 #if defined(__linux__)
 #    include <sched.h>
 
-#    include <cstdio>
-#    include <cstdlib>
 #    include <set>
-#    include <utility>
 #elif defined(__APPLE__)
 #    include <sys/sysctl.h>
 #    include <sys/types.h>
@@ -177,13 +174,22 @@ int performance_cpu_count() {
     // only describes group 0, so cores in other processor groups (hosts with
     // >64 logical CPUs) are counted unconditionally — matching
     // usable_cpu_count(), which falls back to hardware_concurrency() there.
-    int best_class = -1;
-    int n_perf     = 0;
+    //
+    // Records are variable-length and `Size` is the stride. Do NOT bound the
+    // walk with sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX): that is the
+    // size of the largest union member (GROUP_RELATIONSHIP, 80 bytes on x64)
+    // while a RelationProcessorCore record is 48, so such a bound silently
+    // drops the trailing record — one core, invisibly, on every homogeneous
+    // CPU. Bound by `len` and validate `Size` instead.
+    constexpr DWORD kRecordHeader = 2 * sizeof(DWORD);                               // Relationship + Size
+    constexpr DWORD kMinCoreSize  = kRecordHeader + sizeof(PROCESSOR_RELATIONSHIP);  // one group: 48 on x64
+    int             best_class    = -1;
+    int             n_perf        = 0;
     for (int pass = 0; pass < 2; ++pass) {
         DWORD off = 0;
-        while (off + sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX) <= len + sizeof(GROUP_AFFINITY)) {
+        while (off + kRecordHeader <= len) {
             auto * e = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *>(buf.data() + off);
-            if (off >= len || e->Size == 0 || off + e->Size > len) {
+            if (e->Size < kMinCoreSize || e->Size > len - off) {
                 break;
             }
             if (e->Relationship == RelationProcessorCore) {
@@ -305,9 +311,11 @@ int default_n_threads(int cap) {
 //
 // Caveats: node-by-node evaluation suppresses fusion and adds two timestamps
 // per node, so numbers are for RELATIVE attribution, not absolute cost — tiny
-// elementwise nodes read inflated. The accumulator is a process global with
-// no synchronization: single-session CLI diagnostics only, never enable in a
-// concurrent host. Inert (no callback installed) unless requested.
+// elementwise nodes read inflated. The accumulator is an unsynchronized
+// process global, so only the FIRST scheduler seen is instrumented (see
+// node_prof_attach); in a concurrent host the report therefore covers one
+// session, not the whole process. Inert (no callback installed) unless
+// requested.
 // ---------------------------------------------------------------------------
 namespace {
 
@@ -395,6 +403,23 @@ void node_prof_attach(ggml_backend_sched_t sched) {
     if (!requested || sched == nullptr) {
         return;
     }
+    // Instrument exactly ONE scheduler. g_node_prof is a lock-free global, so
+    // a second concurrently-computing scheduler (a multi-model host) would
+    // race on it; claiming the slot keeps the accumulator single-writer and
+    // makes the report attributable to one session instead of interleaved.
+    // Re-attaching to the same sched (a family that reconfigures per run) is
+    // a no-op, so the claim survives graph rebuilds.
+    static std::atomic<ggml_backend_sched_t> owner{ nullptr };
+    ggml_backend_sched_t                     expected = nullptr;
+    if (!owner.compare_exchange_strong(expected, sched) && expected != sched) {
+        static std::atomic<bool> warned{ false };
+        if (!warned.exchange(true)) {
+            log_msg(TRANSCRIBE_LOG_LEVEL_WARN,
+                    "[nodeprof] a second scheduler appeared; profiling only the "
+                    "first (the accumulator is not thread-safe)");
+        }
+        return;
+    }
     static const bool registered = [] {
         std::atexit(node_prof_report);
         return true;
@@ -432,9 +457,13 @@ bool parallel_for_all(int n, int n_threads, const std::function<bool(int)> & wor
         return true;
     }
     if (n_threads <= 0) {
-        // Affinity-aware, uncapped: use every CPU the process may run on, then
-        // clamp to the batch size below. (cap <= 0 disables the per-backend cap.)
-        n_threads = default_n_threads(/*cap=*/0);
+        // Every CPU the process may run on, clamped to the batch size below.
+        // Deliberately NOT default_n_threads(): this pool hands out items from
+        // an atomic counter with no barrier, so an SMT sibling or an E-core
+        // still adds throughput instead of stalling the join. The performance-
+        // core restriction exists for ggml's barrier-synchronized op split,
+        // which is the opposite situation.
+        n_threads = usable_cpu_count();
     }
     n_threads = std::max(1, std::min(n, n_threads));
 

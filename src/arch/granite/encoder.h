@@ -100,8 +100,7 @@ EncoderBuild build_encoder_graph(ggml_context *         ctx,
                                  const GraniteWeights & weights,
                                  const GraniteHParams & hp,
                                  int                    T_enc,
-                                 bool                   use_flash,
-                                 const char *           backend_name = "");
+                                 bool                   use_flash);
 
 // Host-side precomputation of the Shaw attention_dists matrix.
 // attention_dists[c, r] = clamp(c - r, -context_size, context_size) + max_pos_emb,

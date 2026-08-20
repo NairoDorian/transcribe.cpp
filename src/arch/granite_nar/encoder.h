@@ -90,8 +90,7 @@ EncoderBuild build_encoder_graph(ggml_context *            ctx,
                                  const GraniteNarWeights & weights,
                                  const GraniteNarHParams & hp,
                                  int                       T_enc,
-                                 bool                      use_flash,
-                                 const char *              backend_name = "");
+                                 bool                      use_flash);
 
 // Shaw bookkeeping helpers (identical to AR granite).
 std::vector<int32_t> precompute_attention_dists(int context_size, int max_pos_emb);

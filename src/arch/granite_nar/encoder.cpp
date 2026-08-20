@@ -36,15 +36,18 @@ namespace transcribe::granite_nar {
 
 namespace {
 
-// In-block depthwise dispatch: direct ggml_conv_2d_dw_direct everywhere
-// except Metal (CONV_2D_DW unsupported for these shapes in the vendored
-// ggml Metal backend); im2col fallback otherwise. Same env overrides as the
-// shared conformer sites. Mirrors arch/granite/encoder.cpp.
-static bool detect_conv_dw_direct(const char * backend_name) {
-    const bool is_metal = backend_name != nullptr && (std::strstr(backend_name, "Metal") != nullptr ||
-                                                      std::strstr(backend_name, "metal") != nullptr);
+// In-block depthwise dispatch. Direct ggml_conv_2d_dw_direct on every
+// backend, matching every other conformer family's in-block site
+// (parakeet, canary, canary_qwen, gigaam, medasr, sortformer): the vendored
+// ggml implements CONV_2D_DW for an f32 kernel / f32 data / f32 output on
+// CPU, CUDA, Vulkan AND Metal (ggml-metal-device.m supports_op), which is
+// exactly what the branch below builds. The Metal opt-out belongs to the
+// pre_encode site's stride-2 2-D depthwise, which granite does not have.
+// TRANSCRIBE_CONV_NO_DIRECT_DW is the kill switch back to im2col.
+// Mirrors arch/granite/encoder.cpp.
+static bool detect_conv_dw_direct() {
     return transcribe::conformer::resolve_conv_direct("TRANSCRIBE_CONV_DIRECT_DW", "TRANSCRIBE_CONV_NO_DIRECT_DW",
-                                                      /*backend_default=*/!is_metal);
+                                                      /*backend_default=*/true);
 }
 
 constexpr float kLayerNormEps = 1e-5f;
@@ -229,9 +232,8 @@ EncoderBuild build_encoder_graph(ggml_context *            ctx,
                                  const GraniteNarWeights & weights,
                                  const GraniteNarHParams & hp,
                                  int                       T_enc,
-                                 bool /*use_flash*/,
-                                 const char * backend_name) {
-    const bool   conv_dw_direct = detect_conv_dw_direct(backend_name);
+                                 bool /*use_flash*/) {
+    const bool   conv_dw_direct = detect_conv_dw_direct();
     EncoderBuild eb{};
     eb.n_blocks_local = (T_enc + hp.enc_context_size - 1) / hp.enc_context_size;
     const int T_pad   = eb.n_blocks_local * hp.enc_context_size;

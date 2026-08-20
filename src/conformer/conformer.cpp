@@ -166,9 +166,17 @@ ggml_tensor * conv_1d_f32(ggml_context * ctx,
 // kernel's real type to im2col). CANONICAL Metal conv-quirk note: vendored
 // ggml's ggml_conv_2d_dw hardcodes F16 im2col, which routes the matmul to
 // a `kernel_mul_mv_f32_f16_short` Metal kernel that isn't compiled in;
-// forcing f32 lands on the available `kernel_mul_mv_f32_f32_short`. The
-// alternative ggml_conv_2d_dw_direct can't help: its CONV_2D_DW op is
-// unsupported on Metal, so the im2col + mul_mat path here is what works.
+// forcing f32 lands on the available `kernel_mul_mv_f32_f32_short`, which is
+// why this helper exists and why it is the fallback everywhere.
+//
+// It is NOT true that ggml_conv_2d_dw_direct is unusable on Metal: the
+// vendored backend declares GGML_OP_CONV_2D_DW supported for an F16/F32
+// kernel with F32 data and F32 output (ggml-metal-device.m, ggml_metal_
+// device_supports_op), and every family's in-block depthwise site runs the
+// direct op there today. The per-site `!is_metal` defaults that remain are
+// for the stride-2 2-D pre_encode shape only, and are unverified-on-Metal
+// conservatism rather than a backend limitation — do not copy them to a
+// 1-D (KH=1) in-block site.
 ggml_tensor * conv_2d_dw_f32(ggml_context * ctx,
                              ggml_tensor *  kernel,  // [KW, KH, 1, C]
                              ggml_tensor *  data,    // [W, H, C, N]

@@ -87,6 +87,10 @@ fn main() {
     println!("cargo:rerun-if-env-changed=TRANSCRIBE_PREBUILT_DIR");
     println!("cargo:rerun-if-env-changed=TRANSCRIBE_CACHE_DIR");
     println!("cargo:rerun-if-env-changed=TRANSCRIBE_FORCE_REBUILD");
+    println!("cargo:rerun-if-env-changed=TRANSCRIBE_CUDA_ARCHITECTURES");
+    println!("cargo:rerun-if-env-changed=CMAKE_CUDA_ARCHITECTURES");
+    println!("cargo:rerun-if-env-changed=TRANSCRIBE_NO_CCACHE");
+    println!("cargo:rerun-if-env-changed=TRANSCRIBE_CCACHE_PATH");
 
     // Explicit escape hatch: skip the persistent cache and compile from source.
     let force_rebuild = env::var_os("TRANSCRIBE_FORCE_REBUILD").is_some();
@@ -126,16 +130,20 @@ fn main() {
         active_features.push("openmp");
     }
 
+    let is_cuda = feature("CUDA");
+    let cuda_arch = resolve_cuda_arch(is_cuda);
+
     // Cache key includes a source-tree fingerprint (max mtime across tracked
-    // source dirs) so the persistent cache invalidates automatically when
-    // transcribe.cpp sources change (git pull, local edit). Without this, a
-    // cache hit would silently reuse stale artifacts after a source change.
+    // source dirs) and targeted CUDA arch so the persistent cache invalidates
+    // automatically when transcribe.cpp sources change (git pull, local edit)
+    // or when switching between dev (single-arch) and release (multi-arch).
     let cache_key = compute_cache_key(
         &root,
         &target_os,
         &target_arch,
         &target_env,
         &active_features,
+        cuda_arch.as_deref(),
     );
     let cache_dir = get_cache_root().join(&cache_key);
 
@@ -246,12 +254,45 @@ fn main() {
     if feature("VULKAN") {
         cfg.define("TRANSCRIBE_VULKAN", "ON");
     }
-    if feature("CUDA") {
+    if is_cuda {
         cfg.define("TRANSCRIBE_CUDA", "ON");
+        if let Some(arch) = &cuda_arch {
+            println!(
+                "cargo:warning=transcribe-cpp-sys: [CUDA DEV] Auto-detected local GPU -> targeting {arch} (fast single-arch build)"
+            );
+            cfg.define("CMAKE_CUDA_ARCHITECTURES", arch);
+        } else {
+            println!(
+                "cargo:warning=transcribe-cpp-sys: [CUDA RELEASE] Targeting full distribution multi-arch set"
+            );
+        }
     }
     if feature("ROCM") {
         cfg.define("TRANSCRIBE_HIP", "ON");
     }
+
+    // ccache: compiler caching to accelerate recompilation on cache misses
+    let ccache_disabled = env::var("TRANSCRIBE_NO_CCACHE").is_ok()
+        || env::var("GGML_CCACHE").as_deref() == Ok("OFF");
+    if !ccache_disabled {
+        if let Some(ccache) = find_ccache() {
+            println!(
+                "cargo:warning=transcribe-cpp-sys: [CCACHE] Enabling compiler caching launcher ({})",
+                ccache.display()
+            );
+            let ccache_str = ccache.to_string_lossy();
+            cfg.define("CMAKE_C_COMPILER_LAUNCHER", &*ccache_str);
+            cfg.define("CMAKE_CXX_COMPILER_LAUNCHER", &*ccache_str);
+            if is_cuda {
+                cfg.define("CMAKE_CUDA_COMPILER_LAUNCHER", &*ccache_str);
+            }
+        } else {
+            cfg.define("GGML_CCACHE", "OFF");
+        }
+    } else {
+        cfg.define("GGML_CCACHE", "OFF");
+    }
+
     // Keep OpenMP OFF unless explicitly opted in. TRANSCRIBE_USE_OPENMP already
     // defaults OFF in CMake (the native ggml threadpool is the default path); we
     // set it explicitly here so `--features openmp` is the single switch. We keep
@@ -663,12 +704,18 @@ fn compute_cache_key(
     target_arch: &str,
     target_env: &str,
     features: &[&str],
+    cuda_arch: Option<&str>,
 ) -> String {
     let mut s = format!("{target_os}-{target_arch}-{target_env}-release-");
     let mut sorted_features = features.to_vec();
     sorted_features.sort();
     for f in sorted_features {
         s.push_str(f);
+        s.push('_');
+    }
+    if let Some(arch) = cuda_arch {
+        s.push_str("cudaarch-");
+        s.push_str(arch);
         s.push('_');
     }
     s.push_str(&format!("src-{}", max_source_mtime(root)));
@@ -678,6 +725,96 @@ fn compute_cache_key(
         hash = hash.wrapping_mul(0x100000001b3);
     }
     format!("{target_os}_{target_arch}_{target_env}_{hash:016x}")
+}
+
+/// Probe the local GPU compute capability via nvidia-smi.
+fn probe_local_gpu_arch() -> Option<String> {
+    let output = std::process::Command::new("nvidia-smi")
+        .args(["--query-gpu=compute_cap", "--format=csv,noheader"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let line = text.lines().next()?.trim();
+    let mut parts = line.split('.');
+    let major: u32 = parts.next()?.parse().ok()?;
+    let minor: u32 = parts.next()?.parse().ok()?;
+
+    let arch = format!("{major}{minor}");
+    if major >= 12 {
+        Some(format!("{arch}a-real"))
+    } else {
+        Some(format!("{arch}-real"))
+    }
+}
+
+/// Resolve the CUDA target architecture policy.
+///
+/// Returns `Some(arch)` for a specific architecture (e.g. "89-real" for local dev),
+/// or `None` when building the full multi-arch distribution set (for release builds).
+fn resolve_cuda_arch(is_cuda: bool) -> Option<String> {
+    if !is_cuda {
+        return None;
+    }
+
+    if let Ok(val) = env::var("TRANSCRIBE_CUDA_ARCHITECTURES").or_else(|_| env::var("CMAKE_CUDA_ARCHITECTURES")) {
+        let val = val.trim();
+        if val == "default" {
+            return None; // None signals CMake default / full multi-arch
+        }
+        if val == "auto" {
+            return probe_local_gpu_arch();
+        }
+        if !val.is_empty() {
+            return Some(val.to_string());
+        }
+    }
+
+    // Default policy:
+    // Dev build (`tauri dev`, `cargo run`, `cargo test` -> PROFILE == "debug" or DEBUG == "true"):
+    // auto-detect local GPU for fast single-architecture compilation.
+    // Release build (`tauri build`, `cargo build --release` -> PROFILE == "release"):
+    // full multi-arch distribution set.
+    let profile = env::var("PROFILE").unwrap_or_default();
+    let debug_var = env::var("DEBUG").unwrap_or_default();
+    let is_dev = profile == "debug" || debug_var == "true" || debug_var == "1" || debug_var == "2";
+
+    if is_dev {
+        probe_local_gpu_arch()
+    } else {
+        None
+    }
+}
+
+/// Find ccache on PATH, from TRANSCRIBE_CCACHE_PATH, or in standard developer tool locations.
+fn find_ccache() -> Option<PathBuf> {
+    if let Ok(p) = env::var("TRANSCRIBE_CCACHE_PATH") {
+        let pb = PathBuf::from(p);
+        if pb.is_file() {
+            return Some(pb);
+        }
+    }
+    if let Ok(output) = std::process::Command::new("ccache").arg("--version").output() {
+        if output.status.success() {
+            return Some(PathBuf::from("ccache"));
+        }
+    }
+    if let Some(userprofile) = env::var_os("USERPROFILE") {
+        let user_path = PathBuf::from(userprofile);
+        let cargo_ccache = user_path.join(".cargo").join("bin").join("ccache.exe");
+        if cargo_ccache.is_file() {
+            return Some(cargo_ccache);
+        }
+        let local_ccache = user_path.join("AppData").join("Local").join("bin").join("ccache.exe");
+        if local_ccache.is_file() {
+            return Some(local_ccache);
+        }
+    }
+    None
 }
 
 /// Walk the source trees that participate in the native build and return the

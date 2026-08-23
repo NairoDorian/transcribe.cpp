@@ -91,6 +91,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CMAKE_CUDA_ARCHITECTURES");
     println!("cargo:rerun-if-env-changed=TRANSCRIBE_NO_CCACHE");
     println!("cargo:rerun-if-env-changed=TRANSCRIBE_CCACHE_PATH");
+    println!("cargo:rerun-if-env-changed=TRANSCRIBE_NO_NINJA");
+    println!("cargo:rerun-if-env-changed=TRANSCRIBE_NINJA_PATH");
 
     // Explicit escape hatch: skip the persistent cache and compile from source.
     let force_rebuild = env::var_os("TRANSCRIBE_FORCE_REBUILD").is_some();
@@ -198,6 +200,39 @@ fn main() {
         .define("TRANSCRIBE_BUILD_EXAMPLES", "OFF")
         .define("TRANSCRIBE_BUILD_TOOLS", "OFF")
         .define("TRANSCRIBE_BUILD_SHARED", if shared { "ON" } else { "OFF" });
+
+    // Ninja Generator Setup:
+    // On Windows with MSVC, setup MSVC environment (via vcvars64.bat if needed)
+    // and configure Ninja for fast parallel compilation if available.
+    let ninja_disabled = env::var("TRANSCRIBE_NO_NINJA").is_ok()
+        || env::var("CMAKE_GENERATOR").as_deref() == Ok("Visual Studio");
+
+    let mut using_ninja = false;
+    if !ninja_disabled {
+        let msvc_ok = setup_msvc_environment();
+        if msvc_ok {
+            if let Some(ninja_path) = find_ninja() {
+                println!(
+                    "cargo:warning=transcribe-cpp-sys: [NINJA] Using Ninja generator ({})",
+                    ninja_path.display()
+                );
+                cfg.generator("Ninja");
+                if ninja_path.is_absolute() {
+                    cfg.define(
+                        "CMAKE_MAKE_PROGRAM",
+                        ninja_path.to_string_lossy().replace('\\', "/"),
+                    );
+                }
+                using_ninja = true;
+            }
+        }
+    }
+
+    if !using_ninja {
+        println!(
+            "cargo:warning=transcribe-cpp-sys: [BUILD] Using default CMake generator"
+        );
+    }
 
     // Force optimization on MSVC. `.profile("Release")` only selects the *config*
     // (and CRT) of the Visual Studio multi-config generator — it does NOT
@@ -337,6 +372,22 @@ fn main() {
     let short = windows_short_out_dir();
     if let Some(short) = &short {
         cfg.out_dir(short);
+    }
+
+    // Clean build directory if generator changed (e.g. Visual Studio -> Ninja)
+    let build_dir = short.as_ref().unwrap_or(&out_dir).join("build");
+    let cache_txt = build_dir.join("CMakeCache.txt");
+    if cache_txt.is_file() {
+        if let Ok(content) = std::fs::read_to_string(&cache_txt) {
+            let has_ninja = content.contains("CMAKE_GENERATOR:INTERNAL=Ninja");
+            if using_ninja != has_ninja {
+                println!(
+                    "cargo:warning=transcribe-cpp-sys: Generator changed -> cleaning build directory {}",
+                    build_dir.display()
+                );
+                let _ = std::fs::remove_dir_all(&build_dir);
+            }
+        }
     }
 
     // Builds + installs into OUT_DIR; the returned path IS the install prefix.
@@ -815,6 +866,151 @@ fn find_ccache() -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Find ninja executable path on PATH, from TRANSCRIBE_NINJA_PATH, or in Visual Studio CMake directory.
+fn find_ninja() -> Option<PathBuf> {
+    if let Ok(p) = env::var("TRANSCRIBE_NINJA_PATH") {
+        let pb = PathBuf::from(p);
+        if pb.is_file() {
+            return Some(pb);
+        }
+    }
+    if let Ok(output) = std::process::Command::new("ninja").arg("--version").output() {
+        if output.status.success() {
+            return Some(PathBuf::from("ninja"));
+        }
+    }
+    // Check known Visual Studio paths
+    let mut vswhere_path = PathBuf::from(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe");
+    if !vswhere_path.is_file() {
+        if let Some(pf86) = env::var_os("ProgramFiles(x86)") {
+            vswhere_path = PathBuf::from(pf86).join(r"Microsoft Visual Studio\Installer\vswhere.exe");
+        }
+    }
+    if vswhere_path.is_file() {
+        if let Ok(output) = std::process::Command::new(&vswhere_path)
+            .args(["-latest", "-products", "*", "-property", "installationPath"])
+            .output()
+        {
+            if output.status.success() {
+                let vs_install = String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if !vs_install.is_empty() {
+                    let vs_ninja = PathBuf::from(vs_install)
+                        .join(r"Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe");
+                    if vs_ninja.is_file() {
+                        return Some(vs_ninja);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Setup MSVC environment on Windows if cl.exe is not in PATH.
+/// Returns true if MSVC environment is active/ready.
+fn setup_msvc_environment() -> bool {
+    if !cfg!(windows) {
+        return true;
+    }
+    // If cl.exe is already runnable, environment is already set up.
+    if std::process::Command::new("cl.exe").output().is_ok() {
+        return true;
+    }
+
+    // Locate vswhere.exe
+    let mut vswhere_path = PathBuf::from(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe");
+    if !vswhere_path.is_file() {
+        if let Some(pf86) = env::var_os("ProgramFiles(x86)") {
+            vswhere_path = PathBuf::from(pf86).join(r"Microsoft Visual Studio\Installer\vswhere.exe");
+        }
+    }
+    if !vswhere_path.is_file() {
+        println!("cargo:warning=transcribe-cpp-sys: [MSVC] vswhere.exe not found at {}", vswhere_path.display());
+        return false;
+    }
+
+    let output = match std::process::Command::new(&vswhere_path)
+        .args([
+            "-latest",
+            "-products",
+            "*",
+            "-requires",
+            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+            "-property",
+            "installationPath",
+        ])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            println!("cargo:warning=transcribe-cpp-sys: [MSVC] vswhere failed with status {:?}", o.status);
+            return false;
+        }
+        Err(e) => {
+            println!("cargo:warning=transcribe-cpp-sys: [MSVC] vswhere execution error: {e}");
+            return false;
+        }
+    };
+
+    let vs_install = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if vs_install.is_empty() {
+        println!("cargo:warning=transcribe-cpp-sys: [MSVC] vswhere returned empty installation path");
+        return false;
+    }
+
+    let vcvars_bat = PathBuf::from(&vs_install).join(r"VC\Auxiliary\Build\vcvars64.bat");
+    if !vcvars_bat.is_file() {
+        println!("cargo:warning=transcribe-cpp-sys: [MSVC] vcvars64.bat not found at {}", vcvars_bat.display());
+        return false;
+    }
+
+    // Execute vcvars64.bat and capture environment
+    #[cfg(windows)]
+    use std::os::windows::process::CommandExt;
+
+    let mut cmd = std::process::Command::new("cmd");
+    cmd.args(["/d", "/s", "/c"]);
+    #[cfg(windows)]
+    cmd.raw_arg(format!("\"\"{}\" >nul && set\"", vcvars_bat.display()));
+
+    let cmd_output = match cmd.output() {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            println!("cargo:warning=transcribe-cpp-sys: [MSVC] vcvars64.bat failed with status {:?}: {}", o.status, stderr.trim());
+            return false;
+        }
+        Err(e) => {
+            println!("cargo:warning=transcribe-cpp-sys: [MSVC] cmd.exe execution error: {e}");
+            return false;
+        }
+    };
+
+    let env_text = String::from_utf8_lossy(&cmd_output.stdout);
+    let mut count = 0;
+    for line in env_text.lines() {
+        if let Some((k, v)) = line.split_once('=') {
+            let key = k.trim();
+            if !key.is_empty() && key != "PROMPT" {
+                env::set_var(key, v.trim());
+                count += 1;
+            }
+        }
+    }
+    println!("cargo:warning=transcribe-cpp-sys: [MSVC] Loaded {count} environment variables from vcvars64.bat");
+    true
 }
 
 /// Walk the source trees that participate in the native build and return the

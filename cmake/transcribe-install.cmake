@@ -61,10 +61,32 @@ if(TRANSCRIBE_BUILD_SHARED)
         endif()
     endforeach()
 endif()
-install(TARGETS transcribe
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+# In shared/embed builds we install LIBRARY (.so/.dylib), RUNTIME (Windows
+# .dll), and ARCHIVE. On Linux ARCHIVE is the .a static archive (~1GB for
+# CUDA) which prebuilt consumers never need, so we skip it. On Windows ARCHIVE
+# is the .lib import library (tiny, ~5KB-5MB) which IS needed for linking, so
+# it must be installed. CMake classifies a Windows .dll's companion .lib as
+# ARCHIVE, not LIBRARY -- hence the platform split.
+#
+# In static builds the .a IS the primary artifact, so ARCHIVE is always
+# installed there.
+if(TRANSCRIBE_BUILD_SHARED OR TRANSCRIBE_SHARED_EMBED)
+    if(WIN32)
+        install(TARGETS transcribe
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    else()
+        install(TARGETS transcribe
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    endif()
+else()
+    install(TARGETS transcribe
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 
 # Install the ggml backend MODULE libraries beside libtranscribe on Windows.
 # In CMake's install() model a MODULE library is a LIBRARY artifact on EVERY
@@ -91,7 +113,7 @@ set(_system_libs "")
 set(_frameworks "")
 set(_link_flags "")
 
-if(NOT TRANSCRIBE_BUILD_SHARED)
+if(NOT TRANSCRIBE_BUILD_SHARED AND NOT TRANSCRIBE_SHARED_EMBED)
     # Static: the consumer links the whole archive set. Order is
     # single-pass-ld safe: each archive's undefined refs resolve in a later
     # one (transcribe -> ggml -> backends -> ggml-base).
@@ -206,7 +228,7 @@ set(_metal_embed false)
 if("metal" IN_LIST _kinds AND GGML_METAL_EMBED_LIBRARY)
     set(_metal_embed true)
 endif()
-if(TRANSCRIBE_BUILD_SHARED)
+if(TRANSCRIBE_BUILD_SHARED OR TRANSCRIBE_SHARED_EMBED)
     set(_shared_json true)
 else()
     set(_shared_json false)
@@ -264,6 +286,14 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/transcribe-link.json"
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/transcribe-link.json"
     DESTINATION ${CMAKE_INSTALL_LIBDIR})
 
+if(TRANSCRIBE_SHARED_EMBED)
+    set(_install_mode "shared-embed")
+elseif(TRANSCRIBE_BUILD_SHARED)
+    set(_install_mode "shared")
+else()
+    set(_install_mode "static")
+endif()
+
 message(STATUS
-    "transcribe install: ${PROJECT_VERSION} shared=${TRANSCRIBE_BUILD_SHARED} "
+    "transcribe install: ${PROJECT_VERSION} mode=${_install_mode} "
     "backends: ${_kinds} (link manifest: lib/transcribe-link.json)")

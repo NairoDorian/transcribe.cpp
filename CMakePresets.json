@@ -65,6 +65,53 @@
       "cacheVariables": {
         "TRANSCRIBE_ENABLE_VALIDATION_HOOKS": "ON"
       }
+    },
+    {
+      "name": "windows-cpu-release",
+      "displayName": "Windows CPU Release (Single DLL Shared Embed)",
+      "description": "Release build for Windows CPU backend, single self-contained transcribe.dll (SHARED_EMBED=ON).",
+      "binaryDir": "${sourceDir}/build/windows-cpu-release",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "TRANSCRIBE_SHARED_EMBED": "ON",
+        "GGML_NATIVE": "ON",
+        "GGML_LLAMAFILE": "ON",
+        "TRANSCRIBE_BUILD_TESTS": "OFF",
+        "TRANSCRIBE_BUILD_EXAMPLES": "ON"
+      }
+    },
+    {
+      "name": "windows-cuda-release",
+      "displayName": "Windows CUDA Release",
+      "description": "Release build with CUDA + CUDA Graphs enabled.",
+      "binaryDir": "${sourceDir}/build/windows-cuda-release",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "TRANSCRIBE_CUDA": "ON",
+        "GGML_CUDA_GRAPHS": "ON",
+        "GGML_NATIVE": "ON",
+        "GGML_LLAMAFILE": "ON",
+        "TRANSCRIBE_BUILD_TESTS": "OFF",
+        "TRANSCRIBE_BUILD_EXAMPLES": "ON"
+      }
+    },
+    {
+      "name": "windows-cuda-debug",
+      "displayName": "Windows CUDA Debug with Tests",
+      "description": "Debug build with CUDA + CUDA Graphs + tests enabled.",
+      "binaryDir": "${sourceDir}/build/windows-cuda-debug",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "TRANSCRIBE_CUDA": "ON",
+        "GGML_CUDA_GRAPHS": "ON",
+        "GGML_NATIVE": "ON",
+        "GGML_LLAMAFILE": "ON",
+        "TRANSCRIBE_BUILD_TESTS": "ON",
+        "TRANSCRIBE_BUILD_EXAMPLES": "ON"
+      }
     }
   ]
 }

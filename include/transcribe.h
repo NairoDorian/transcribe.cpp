@@ -321,16 +321,28 @@ TRANSCRIBE_API const char * transcribe_status_string(int status);
  * also available at compile time as TRANSCRIBE_VERSION_MAJOR/MINOR/PATCH (and
  * the composed string as TRANSCRIBE_VERSION) near the top of this header.
  *
- * Both return borrowed pointers into static storage: never free them, and
+ * All return borrowed pointers into static storage: never free them, and
  * treat them as valid for the life of the process.
  */
-/* "MAJOR.MINOR.PATCH", e.g. "0.1.0". Equals the TRANSCRIBE_VERSION macro the
- * caller compiled against; a mismatch means the header and the linked library
- * disagree. */
+/* Full build provenance in one string:
+ *   "MAJOR.MINOR.PATCH <commit> <branch> <build-time> <backend>"
+ * e.g. "0.2.1 8648bbb main 2026-08-23T01:54:53Z cuda". The leading release
+ * segment equals the TRANSCRIBE_VERSION macro the caller compiled against; a
+ * mismatch means the header and the linked library disagree. <commit> is the
+ * short git SHA the library was built from ("unknown" in a non-git build),
+ * <branch> the git branch, <build-time> the ISO-8601 UTC configure timestamp,
+ * and <backend> the primary build backend tag (cuda/rocm/sycl/vulkan/cpu). */
 TRANSCRIBE_API const char * transcribe_version(void);
 /* Short git commit the library was built from, or "unknown" when the build
  * tree carried no git metadata (e.g. an unpacked source tarball). */
 TRANSCRIBE_API const char * transcribe_version_commit(void);
+/* Build-ID string (borrowed pointer into static storage, do NOT free): a single
+ * grep-able line "transcribe-build-id: <version> <commit> <branch> <date> <backend>".
+ * Also embedded verbatim in the binary, so the same value is recoverable from
+ * the file alone via `strings <lib> | grep transcribe-build-id` without loading
+ * or calling it. <version> mirrors transcribe_version() and the rest come from
+ * the configure-time git capture. */
+TRANSCRIBE_API const char * transcribe_build_id(void);
 
 /* ----------------------------------------------------------------------- */
 /* ABI metadata                                                            */

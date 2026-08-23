@@ -28,23 +28,89 @@ project(transcribe
     VERSION ${TRANSCRIBE_VERSION_MAJOR}.${TRANSCRIBE_VERSION_MINOR}.${TRANSCRIBE_VERSION_PATCH}
     LANGUAGES C CXX)
 
-# Short git commit for transcribe_version_commit(), captured at configure time.
-# Best-effort: source tarballs and non-git trees fall back to "unknown". This is
-# a configure-time snapshot (same posture as ggml's GGML_COMMIT); reconfigure to
-# refresh it.
+# Build provenance captured at configure time: short git commit (for
+# transcribe_version_commit()), the git branch, and an ISO-8601 UTC build
+# timestamp. Best-effort: source tarballs and non-git trees fall back to
+# "unknown". This is a configure-time snapshot (same posture as ggml's
+# GGML_COMMIT); reconfigure to refresh it. The values feed three outlets that
+# surface the build version WITHOUT loading the DLL:
+#   1. The Windows VS_VERSION_INFO resource (file Properties > Details).
+#   2. A strong-symbol build-id string in src/transcribe.cpp (strings/readelf).
+#   3. transcribe_version() / transcribe_version_commit() (runtime API).
+# All three derive from cmake/transcribe-build-info.h.in below, so they stay
+# in sync with the library version parsed from include/transcribe.h. The
+# primary build-backend tag is appended to the provenance; it is resolved from
+# the TRANSCRIBE_* options, which are declared further down, so the generated
+# header is configured after the options block (see "Build backend tag").
 set(TRANSCRIBE_BUILD_COMMIT "unknown")
+set(TRANSCRIBE_BUILD_BRANCH "unknown")
 find_package(Git QUIET)
-if(GIT_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
+# find_package(Git) can silently fail to set GIT_FOUND in some CI containers
+# (e.g. the nvidia/cuda image) even when git is installed, leaving the build-id
+# all-"unknown". Fall back to a direct PATH lookup so the configure-time git
+# capture works in every environment.
+if(NOT GIT_FOUND)
+    find_program(GIT_EXECUTABLE NAMES git git.exe)
+    if(GIT_EXECUTABLE)
+        set(GIT_FOUND TRUE)
+    endif()
+endif()
+# Probe for a usable git worktree. actions/checkout on GitHub runners runs
+# OUTSIDE the Docker container (e.g. nvidia/cuda, rocm) and only bind-mounts
+# the working tree into it; the .git directory is absent in-container, so a
+# literal EXISTS check fails and git commands return rc=128. Resolve the
+# worktree via `git rev-parse --git-dir` (which succeeds whenever git can
+# operate at all, regardless of where .git lives) and gate on that.
+set(_transcribe_in_git_worktree FALSE)
+if(GIT_FOUND)
     execute_process(
-        COMMAND ${GIT_EXECUTABLE} -C "${CMAKE_CURRENT_SOURCE_DIR}" rev-parse --short HEAD
+        COMMAND ${GIT_EXECUTABLE} -c safe.directory=* -C "${CMAKE_CURRENT_SOURCE_DIR}" rev-parse --git-dir
+        OUTPUT_VARIABLE _transcribe_git_dir
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+        RESULT_VARIABLE _transcribe_gitdir_rc)
+    if(_transcribe_gitdir_rc EQUAL 0)
+        set(_transcribe_in_git_worktree TRUE)
+    endif()
+endif()
+if(_transcribe_in_git_worktree)
+    # `-c safe.directory=*` bypasses git's "dubious ownership" refusal when the
+    # checkout's owner doesn't match the running user (common in CI containers).
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} -c safe.directory=* -C "${CMAKE_CURRENT_SOURCE_DIR}" rev-parse --short HEAD
         OUTPUT_VARIABLE _transcribe_git_sha
         OUTPUT_STRIP_TRAILING_WHITESPACE
         ERROR_QUIET)
     if(_transcribe_git_sha)
         set(TRANSCRIBE_BUILD_COMMIT "${_transcribe_git_sha}")
     endif()
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} -c safe.directory=* -C "${CMAKE_CURRENT_SOURCE_DIR}" rev-parse --abbrev-ref HEAD
+        OUTPUT_VARIABLE _transcribe_git_branch
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(_transcribe_git_branch)
+        set(TRANSCRIBE_BUILD_BRANCH "${_transcribe_git_branch}")
+    endif()
 endif()
-message(STATUS "transcribe version: ${PROJECT_VERSION} (commit ${TRANSCRIBE_BUILD_COMMIT})")
+# CI fallback: when .git is absent (Docker-container checkouts) the GitHub
+# Actions runner still exposes the commit and branch via environment variables
+# that are inherited by the container. Use them so the build-id carries real
+# provenance instead of "unknown". GITHUB_SHA is the full 40-char commit; trim
+# it to the short form so it matches the `git rev-parse --short HEAD` shape
+# captured above.
+if(TRANSCRIBE_BUILD_COMMIT STREQUAL "unknown" AND DEFINED ENV{GITHUB_SHA})
+    string(SUBSTRING "$ENV{GITHUB_SHA}" 0 7 TRANSCRIBE_BUILD_COMMIT)
+endif()
+if(TRANSCRIBE_BUILD_BRANCH STREQUAL "unknown" AND DEFINED ENV{GITHUB_REF_NAME})
+    set(TRANSCRIBE_BUILD_BRANCH "$ENV{GITHUB_REF_NAME}")
+endif()
+string(TIMESTAMP TRANSCRIBE_BUILD_DATE "%Y-%m-%dT%H:%M:%SZ" UTC)
+
+# Full version string ("MAJOR.MINOR.PATCH") composed from the parsed integer
+# vars so the generated header and .rc carry the same value transcribe_version()
+# reports, without re-stringizing the TRANSCRIBE_VERSION macro on the C++ side.
+set(TRANSCRIBE_VERSION "${TRANSCRIBE_VERSION_MAJOR}.${TRANSCRIBE_VERSION_MINOR}.${TRANSCRIBE_VERSION_PATCH}")
 
 # -----------------------------------------------------------------------------
 # Standards
@@ -147,6 +213,15 @@ option(TRANSCRIBE_BUILD_SHARED    "Build libtranscribe + ggml as shared librarie
 option(TRANSCRIBE_USE_OPENMP      "Use OpenMP for ggml's CPU threadpool"             OFF)
 option(TRANSCRIBE_USE_SYSTEM_BLAS "Link non-Apple system BLAS for the host decoder"  ON)
 
+# Single-artifact shared library: libtranscribe.so/.dll embeds ggml + all
+# backends statically (like libaudiocpp.so does). ggml is built STATIC (so
+# its .o land inside libtranscribe at link time), but libtranscribe itself
+# is SHARED. This produces ONE self-contained shared lib with no libggml*.so
+# to chase at runtime — ideal for prebuilt consumers. Implies the same
+# install/link-manifest posture as TRANSCRIBE_BUILD_SHARED, but the manifest's
+# `libraries` lists only `transcribe` (the single shared lib).
+option(TRANSCRIBE_SHARED_EMBED "Build libtranscribe as a shared lib with ggml embedded (single .so/.dll)" OFF)
+
 # Dynamic ggml backends: each backend (CPU, Vulkan, CUDA, ...) becomes a
 # separate loadable module living NEXT TO libtranscribe instead of being
 # compiled in. This is the provider-directory artifact shape the Python
@@ -197,6 +272,41 @@ option(TRANSCRIBE_INSTALL
 # environment at run time. See tests/parakeet_real_smoke.cpp.
 option(TRANSCRIBE_BUILD_REAL_MODEL_TESTS
     "Build tests that load real (multi-GB) model files via env var" OFF)
+
+# -----------------------------------------------------------------------------
+# Build backend tag (build-id / version-string provenance)
+# -----------------------------------------------------------------------------
+#
+# The single accelerated backend a build is "for", stamped into the generated
+# provenance header and from there into the Windows VS_VERSION_INFO resource
+# and the build-id string. One primary tag, first enabled backend wins in the
+# order cuda > rocm > sycl > vulkan; a build with no accelerator enabled
+# reports "cpu". Naming matches the collapsed kinds in
+# cmake/transcribe-backend-kinds.cmake (hip -> rocm; the Intel backend is
+# ggml's SYCL, hence "sycl"). GGML_SYCL is read straight from the cache
+# because the project maps only CUDA/HIP/Vulkan/Metal through TRANSCRIBE_*
+# options — SYCL users pass -DGGML_SYCL=ON directly.
+set(TRANSCRIBE_BUILD_BACKEND "cpu")
+if(TRANSCRIBE_CUDA)
+    set(TRANSCRIBE_BUILD_BACKEND "cuda")
+elseif(TRANSCRIBE_HIP)
+    set(TRANSCRIBE_BUILD_BACKEND "rocm")
+elseif(GGML_SYCL)
+    set(TRANSCRIBE_BUILD_BACKEND "sycl")
+elseif(TRANSCRIBE_VULKAN)
+    set(TRANSCRIBE_BUILD_BACKEND "vulkan")
+endif()
+
+# Generated header carrying the captured provenance. Consumed by the build-id
+# string in src/transcribe.cpp. Generated into the build tree (not the source
+# tree) so it never appears in git status; src/CMakeLists.txt adds the dir to
+# the transcribe target's PRIVATE include path.
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/transcribe-build-info.h.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/transcribe-build-info.h"
+    @ONLY)
+
+message(STATUS "transcribe version: ${TRANSCRIBE_VERSION} (commit ${TRANSCRIBE_BUILD_COMMIT}, branch ${TRANSCRIBE_BUILD_BRANCH}, built ${TRANSCRIBE_BUILD_DATE}, backend ${TRANSCRIBE_BUILD_BACKEND})")
 
 # -----------------------------------------------------------------------------
 # Warnings (no -Werror in v1 per PLAN.md)
@@ -360,7 +470,21 @@ set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 # libtranscribe follow this single switch. Symbol visibility is already hidden
 # by default (set above), so a shared lib exports only the TRANSCRIBE_API
 # surface.
-set(BUILD_SHARED_LIBS ${TRANSCRIBE_BUILD_SHARED} CACHE BOOL "" FORCE)
+#
+# TRANSCRIBE_SHARED_EMBED overrides this: ggml stays STATIC (so its .o are
+# embedded into libtranscribe at link time), but libtranscribe itself is
+# SHARED. The result is a single self-contained .so/.dll (like libaudiocpp.so).
+if(TRANSCRIBE_SHARED_EMBED)
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    # ggml builds as STATIC, but its .o are linked into the SHARED libtranscribe.
+    # On Linux/Unix a shared library requires position-independent code; without
+    # -fPIC the static .o trigger "relocation R_X86_64_32 ... recompile with
+    # -fPIC" at link time. Force PIC globally BEFORE add_subdirectory(ggml) so
+    # every ggml target compiles with -fPIC. (No-op on Windows/MSVC.)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+else()
+    set(BUILD_SHARED_LIBS ${TRANSCRIBE_BUILD_SHARED} CACHE BOOL "" FORCE)
+endif()
 
 # Dynamic backend modules (see the option's comment above). ggml requires
 # shared libs for GGML_BACKEND_DL, so gate it on TRANSCRIBE_BUILD_SHARED

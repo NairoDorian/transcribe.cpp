@@ -1,0 +1,33 @@
+/**
+ * transcribe-build-info.h — build provenance for libtranscribe / transcribe.dll.
+ *
+ * Generated at CMake configure time from cmake/transcribe-build-info.h.in.
+ * Do not edit the generated file; edit the .in template or the git-capture
+ * block at the top of CMakeLists.txt instead. Captures git state + build date
+ * + the primary build backend tag so the embedded Windows version resource
+ * and the strings-grep-able build-id stay in sync with the library version
+ * parsed from include/transcribe.h.
+ *
+ * This is the single source of truth shared by the three build-version outlets:
+ *   1. Windows VS_VERSION_INFO resource (file Properties > Details, no load)
+ *   2. Strong-symbol build-id string (strings/readelf, every platform)
+ *   3. transcribe_version() / transcribe_version_commit() runtime API
+ */
+#ifndef TRANSCRIBE_BUILD_INFO_H
+#define TRANSCRIBE_BUILD_INFO_H
+
+/* "MAJOR.MINOR.PATCH", e.g. "0.2.1" — mirrors TRANSCRIBE_VERSION from
+ * include/transcribe.h, but resolved to a plain string literal here so it
+ * composes into the build-id without macro-stringize plumbing. */
+#define TRANSCRIBE_BUILD_VERSION "@TRANSCRIBE_VERSION@"
+/* Short git sha, e.g. "8648bbb" or "8648bbb-dirty"; "unknown" for tarballs. */
+#define TRANSCRIBE_BUILD_COMMIT  "@TRANSCRIBE_BUILD_COMMIT@"
+/* Git branch name, e.g. "main"; "unknown" when git is unavailable. */
+#define TRANSCRIBE_BUILD_BRANCH  "@TRANSCRIBE_BUILD_BRANCH@"
+/* ISO-8601 UTC build timestamp, e.g. "2026-08-23T01:54:00Z". */
+#define TRANSCRIBE_BUILD_DATE    "@TRANSCRIBE_BUILD_DATE@"
+/* Primary build-backend tag: "cuda", "rocm", "sycl", "vulkan", or "cpu"
+ * (first enabled accelerator wins; see the options block in CMakeLists.txt). */
+#define TRANSCRIBE_BUILD_BACKEND "@TRANSCRIBE_BUILD_BACKEND@"
+
+#endif /* TRANSCRIBE_BUILD_INFO_H */

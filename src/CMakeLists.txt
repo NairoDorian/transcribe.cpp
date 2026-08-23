@@ -7,10 +7,15 @@
 #
 # Backend libraries (Metal, Vulkan, ...) are compiled into ggml by the
 # top-level CMake via GGML_METAL / GGML_VULKAN. This target discovers
-# them at runtime via the ggml device registry; no per-backend compile
-# defs are needed on libtranscribe itself.
-
-add_library(transcribe
+# TRANSCRIBE_SHARED_EMBED: build libtranscribe as SHARED while ggml stays
+# STATIC, so ggml's .o (incl. CUDA/Vulkan backends) are embedded into the
+# single libtranscribe.so/.dll at link time. Otherwise follow BUILD_SHARED_LIBS.
+if(TRANSCRIBE_SHARED_EMBED)
+    set(_transcribe_lib_type SHARED)
+else()
+    set(_transcribe_lib_type "")
+endif()
+add_library(transcribe ${_transcribe_lib_type}
     transcribe.cpp
     transcribe-loader.cpp
     transcribe-arch.cpp
@@ -145,6 +150,10 @@ target_include_directories(transcribe
         # alongside the .cpp files. PRIVATE so they never escape into the
         # public include path.
         ${CMAKE_CURRENT_SOURCE_DIR}
+        # Generated build-provenance header (transcribe-build-info.h), produced
+        # by the top-level CMakeLists.txt. PRIVATE: it is an internal detail of
+        # the build-id string in transcribe.cpp, not part of the public API.
+        ${CMAKE_BINARY_DIR}/generated
 )
 
 target_compile_definitions(transcribe
@@ -179,7 +188,10 @@ endif()
 # MSVC consumer that includes transcribe.h links against __imp_* thunks the
 # archive never provides (LNK2019). Bindgen/Python FFIs carry no __declspec and
 # are unaffected. No-op off Windows/MSVC (the header guard is _WIN32-only).
-if(NOT TRANSCRIBE_BUILD_SHARED)
+#
+# TRANSCRIBE_SHARED_EMBED builds a SHARED lib, so it must NOT define
+# TRANSCRIBE_STATIC (the .dll needs dllexport to generate the .lib import lib).
+if(NOT TRANSCRIBE_BUILD_SHARED AND NOT TRANSCRIBE_SHARED_EMBED)
     target_compile_definitions(transcribe PUBLIC TRANSCRIBE_STATIC)
 endif()
 
@@ -189,6 +201,31 @@ target_link_libraries(transcribe
     PRIVATE
         ggml
 )
+
+# TRANSCRIBE_SHARED_EMBED: ggml is STATIC, so its .o (incl. SYCL/CUDA backends)
+# link into libtranscribe.so/.dll. Backend targets (ggml-sycl, ggml-cuda, ...)
+# set their runtime deps (-fsycl, CUDA::cudart, IntelSYCL::SYCL_CXX, Level Zero,
+# DNNL, MKL) as PRIVATE on themselves. `target_link_libraries(ggml PUBLIC
+# <backend>)` propagates the backend's .o to ggml's consumers, but PRIVATE
+# link deps/options do NOT cross that boundary — so the merged libtranscribe
+# link is missing them.
+#
+# Fix: link the backend targets DIRECTLY to transcribe. This brings each
+# backend's own PRIVATE link line (-fsycl, cudart, ...) onto transcribe's link
+# step, exactly as a static consumer would need (see transcribe-link.json's
+# static `libraries` list: transcribe + ggml + backends + ggml-base).
+if(TRANSCRIBE_SHARED_EMBED)
+    # transcribe_backend_kinds is defined in cmake/transcribe-backend-kinds.cmake
+    # (included later by transcribe-install.cmake at the top level). Include it
+    # here so we can resolve backend target names during the src/ configure pass.
+    include("${CMAKE_SOURCE_DIR}/cmake/transcribe-backend-kinds.cmake")
+    transcribe_backend_kinds(_embed_kinds _embed_backend_targets)
+    foreach(_be ${_embed_backend_targets})
+        if(TARGET ${_be})
+            target_link_libraries(transcribe PRIVATE ${_be})
+        endif()
+    endforeach()
+endif()
 
 # BLAS for the host decoder (cblas_sgemv in decoder.cpp). On Apple we
 # link Accelerate directly; elsewhere we probe for OpenBLAS / MKL /
@@ -284,6 +321,27 @@ if(WIN32)
     # (used by the mel frontends and Whisper's bin loader). MSVC and MinGW
     # both honor it — MinGW's strict-C++17 mode hides M_PI the same way.
     target_compile_definitions(transcribe PRIVATE _USE_MATH_DEFINES)
+endif()
+
+# ──────────────────────────────────────────────────────────────────────────
+# Embed a Windows VS_VERSION_INFO resource so the build version is viewable
+# via file Properties > Details (right-click transcribe.dll) WITHOUT loading
+# the DLL. Only the SHARED library gets it: a static archive has no
+# file-level Properties view, and the resource would be dead weight there.
+# Numeric FILEVERSION derives directly from the integer
+# TRANSCRIBE_VERSION_MAJOR/MINOR/PATCH parsed in the top-level CMakeLists.txt
+# (no describe-parse fallback needed); the string fields carry the full
+# provenance (version | commit | branch | date) for tools that read strings.
+# ──────────────────────────────────────────────────────────────────────────
+if(WIN32 AND MSVC AND (TRANSCRIBE_BUILD_SHARED OR TRANSCRIBE_SHARED_EMBED))
+    set(TRANSCRIBE_RC_FILEVERSION
+        "${TRANSCRIBE_VERSION_MAJOR},${TRANSCRIBE_VERSION_MINOR},${TRANSCRIBE_VERSION_PATCH},0")
+    set(TRANSCRIBE_RC_FILE "${CMAKE_BINARY_DIR}/generated/transcribe-version.rc")
+    configure_file(
+        "${CMAKE_SOURCE_DIR}/cmake/transcribe-version.rc.in"
+        "${TRANSCRIBE_RC_FILE}"
+        @ONLY)
+    target_sources(transcribe PRIVATE "${TRANSCRIBE_RC_FILE}")
 endif()
 
 transcribe_apply_warnings(transcribe)

@@ -36,9 +36,11 @@ import type {
   ExtSlot,
   FamilyExtension,
   Feature,
+  Itn,
   KvType,
   ModelOptions,
   PcmLike,
+  Pnc,
   Segment,
   SpeakerSegment,
   SessionLimits,
@@ -50,6 +52,7 @@ import type {
   Timings,
   TimestampKind,
   Token,
+  Transcript,
   TranscribeOptions,
   TranscriptionResult,
   Word,
@@ -89,6 +92,16 @@ const TIMESTAMPS: Record<TimestampKind, number> = {
 const TIMESTAMP_NAMES: Record<number, TimestampKind> = Object.fromEntries(
   Object.entries(TIMESTAMPS).map(([k, v]) => [v, k as TimestampKind]),
 );
+const PNC: Record<Pnc, number> = {
+  default: g.TRANSCRIBE_PNC_MODE_DEFAULT,
+  off: g.TRANSCRIBE_PNC_MODE_OFF,
+  on: g.TRANSCRIBE_PNC_MODE_ON,
+};
+const ITN: Record<Itn, number> = {
+  default: g.TRANSCRIBE_ITN_MODE_DEFAULT,
+  off: g.TRANSCRIBE_ITN_MODE_OFF,
+  on: g.TRANSCRIBE_ITN_MODE_ON,
+};
 const DIARIZE: Record<Diarize, number> = {
   default: g.TRANSCRIBE_DIARIZE_MODE_DEFAULT,
   off: g.TRANSCRIBE_DIARIZE_MODE_OFF,
@@ -429,10 +442,7 @@ function batchAccessors(n: Native, h: any, i: number): Accessors {
   };
 }
 
-function materialize(
-  n: Native,
-  acc: Accessors,
-): Omit<TranscriptionResult, "aborted" | "truncated"> {
+function materialize(n: Native, acc: Accessors): Transcript {
   const F = n.F;
 
   const segments: Segment[] = [];
@@ -683,6 +693,7 @@ const STREAM_TEARDOWN = new WeakMap<
 interface SessionControl {
   enterCompute(kind: string): void;
   leaveCompute(kind: string): void;
+  currentCompute(): string | null;
   isCurrentStream(stream: Stream): boolean;
   replaceCurrentStream(stream: Stream): void;
   clearCurrentStream(stream: Stream): void;
@@ -722,6 +733,7 @@ export class Session {
       leaveCompute: (kind) => {
         if (this.#inFlight === kind) this.#inFlight = null;
       },
+      currentCompute: () => this.#inFlight,
       isCurrentStream: (stream) => this.#activeStream === stream,
       replaceCurrentStream: (stream) => {
         if (this.#activeStream && this.#activeStream !== stream) {
@@ -828,6 +840,8 @@ export class Session {
     // whisper resolves it to "segment" (its robust path), no-timestamp
     // families resolve to "none".
     p.timestamps = lookup(TIMESTAMPS, opts.timestamps ?? "auto", "timestamps");
+    p.pnc = lookup(PNC, opts.pnc ?? "default", "pnc");
+    p.itn = lookup(ITN, opts.itn ?? "default", "itn");
     p.diarize = lookup(DIARIZE, opts.diarize ?? "default", "diarize");
     if (opts.language !== undefined) p.language = opts.language;
     if (opts.targetLanguage !== undefined)
@@ -929,6 +943,8 @@ export class Session {
       language: opts.language,
       targetLanguage: opts.targetLanguage,
       timestamps: opts.timestamps,
+      pnc: opts.pnc,
+      itn: opts.itn,
       diarize: opts.diarize,
       keepSpecialTags: opts.keepSpecialTags,
       specKDrafts: -1,
@@ -1039,7 +1055,6 @@ export class Stream {
   #keepalive: unknown[] | null;
   #active = true;
   #stale = false; // true once the session has begun a newer native stream
-  #inFlight = false; // true while a feed/finalize native call runs on a worker
   #holdsLease = true; // born holding the model's compute lease (claimed at begin)
 
   /** @internal */
@@ -1108,9 +1123,8 @@ export class Stream {
       // The native feed runs on a libuv worker. While it is in flight the
       // session must not be touched from the main thread — the C session API
       // is single-threaded (transcribe.h), and stream_get_text hands back
-      // pointers the feed may free/realloc. Flag it so the read getters fail
-      // fast instead of racing into a use-after-free.
-      this.#inFlight = true;
+      // pointers the feed may free/realloc. Flag the owning session so every
+      // result getter fails fast instead of racing into a use-after-free.
       this.#sessionControl.enterCompute("feed()/finalize()");
       try {
         const status = await callAsync<number>(
@@ -1128,7 +1142,6 @@ export class Stream {
         }
         check(n, status, "transcribe_stream_feed");
       } finally {
-        this.#inFlight = false;
         this.#sessionControl.leaveCompute("feed()/finalize()");
       }
       return toStreamUpdate(u);
@@ -1144,7 +1157,6 @@ export class Stream {
     return this.#lock.run(async () => {
       const u: any = {};
       n.F.streamUpdateInit(u);
-      this.#inFlight = true; // see feed(): worker-thread compute, no concurrent reads
       this.#sessionControl.enterCompute("feed()/finalize()");
       try {
         check(
@@ -1153,7 +1165,6 @@ export class Stream {
           "transcribe_stream_finalize",
         );
       } finally {
-        this.#inFlight = false;
         this.#sessionControl.leaveCompute("feed()/finalize()");
         // Finalize ends the active stream (FINISHED on success, FAILED on
         // error), so the model is free again — release the lease either way.
@@ -1164,16 +1175,15 @@ export class Stream {
   }
 
   /**
-   * Reads borrow session-owned snapshot memory, so they are forbidden while a
-   * feed()/finalize() is computing on a worker thread (concurrent use of a
-   * single session is undefined per transcribe.h). The natural pattern —
-   * `await stream.feed(chunk)` then read — is unaffected; this only rejects a
-   * read issued against an un-awaited feed.
+   * Reads borrow session-owned snapshot memory, so they are forbidden while
+   * any worker call is computing on this session (concurrent use is undefined
+   * per transcribe.h). The natural await-then-read pattern is unaffected.
    */
-  #assertNotFeeding(what: string): void {
-    if (this.#inFlight) {
+  #assertNotComputing(what: string): void {
+    const compute = this.#sessionControl.currentCompute();
+    if (compute) {
       throw new TranscribeError(
-        `cannot read stream ${what} while a feed()/finalize() is in flight; await it first`,
+        `cannot read stream ${what} while ${compute} is in flight; await it first`,
       );
     }
   }
@@ -1182,7 +1192,7 @@ export class Stream {
   get text(): StreamText {
     const h = this.#session.handle; // throws if the session was disposed
     this.#assertCurrent("read stream text");
-    this.#assertNotFeeding("text");
+    this.#assertNotComputing("text");
     const n = this.#n;
     const t: any = {};
     n.F.streamTextInit(t);
@@ -1194,18 +1204,27 @@ export class Stream {
     };
   }
 
+  /** Full structured snapshot of the current hypothesis (owned copies). */
+  get snapshot(): Transcript {
+    const h = this.#session.handle; // throws if the session was disposed
+    this.#assertCurrent("read stream snapshot");
+    if (!this.#active) throw new TranscribeError("stream has been reset");
+    this.#assertNotComputing("snapshot");
+    return materialize(this.#n, singleAccessors(this.#n, h));
+  }
+
   get state(): StreamState {
     const h = this.#session.handle; // throws if the session was disposed
     this.#assertCurrent("read stream state");
     if (!this.#active) return "idle"; // reset() returns to idle; native reset may still be queued
-    this.#assertNotFeeding("state");
+    this.#assertNotComputing("state");
     return STREAM_STATES[this.#n.F.streamGetState(h)] ?? "idle";
   }
 
   get revision(): number {
     const h = this.#session.handle; // throws if the session was disposed
     this.#assertCurrent("read stream revision");
-    this.#assertNotFeeding("revision");
+    this.#assertNotComputing("revision");
     return this.#n.F.streamRevision(h);
   }
 
@@ -1217,7 +1236,7 @@ export class Stream {
   get lastStatus(): TranscribeError | null {
     const h = this.#session.handle; // throws if the session was disposed
     this.#assertCurrent("read stream lastStatus");
-    this.#assertNotFeeding("lastStatus");
+    this.#assertNotComputing("lastStatus");
     const n = this.#n;
     const status = n.F.streamLastStatus(h);
     if (status === g.TRANSCRIBE_OK) return null;

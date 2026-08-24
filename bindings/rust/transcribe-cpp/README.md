@@ -36,6 +36,32 @@ println!("{}", result.text);
 # Ok::<(), transcribe_cpp::Error>(())
 ```
 
+### Punctuation, capitalization, and text normalization
+
+`RunOptions::pnc` and `RunOptions::itn` default to preserving each model
+family's shipped behavior. Probe `model.supports(Feature::Pnc)` or
+`Feature::Itn` before selecting `Pnc::Off`/`On` or `Itn::Off`/`On`. The same
+`RunOptions` is used by single runs, batches, streams, and `transcribe()`.
+
+```rust
+use transcribe_cpp::{Itn, Pnc, RunOptions};
+let options = RunOptions { pnc: Pnc::Off, itn: Itn::On, ..Default::default() };
+let result = session.run(&pcm, &options)?;
+# Ok::<(), transcribe_cpp::Error>(())
+```
+
+Streaming exposes both UI-stable text and a fully materialized structured
+snapshot:
+
+```rust
+let mut stream = session.stream(&RunOptions::default(), &Default::default())?;
+stream.feed(&chunk)?;
+println!("{}", stream.text().committed);
+stream.finalize()?;
+let transcript = stream.snapshot(); // language, segments, words, tokens, timings
+# Ok::<(), transcribe_cpp::Error>(())
+```
+
 Runnable examples:
 
 ```sh

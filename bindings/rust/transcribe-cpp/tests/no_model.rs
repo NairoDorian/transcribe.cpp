@@ -13,7 +13,9 @@ use transcribe_cpp::{
 fn version_gate_agrees() {
     // The pre-1.0 base-version lock: the linked library and the generated
     // bindings must report the same MAJOR.MINOR.PATCH.
-    assert_eq!(version(), compiled_version());
+    let ver = version();
+    let base_ver = ver.split_whitespace().next().unwrap_or(&ver);
+    assert_eq!(base_ver, compiled_version());
     assert!(!version().is_empty());
 }
 

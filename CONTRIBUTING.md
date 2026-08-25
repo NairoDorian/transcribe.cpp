@@ -301,6 +301,34 @@ TRANSCRIBE_<FAMILY>_MODEL=models/<variant>/<variant>-<quant>.gguf \
     ctest --test-dir build -R <family>
 ```
 
+## Updating GGML Dependency
+
+`transcribe.cpp` vendors `ggml` directly under `ggml/` (not as a submodule). Upstream changes in [ggml-org/ggml](https://github.com/ggml-org/ggml) frequently bring backend bugfixes, new hardware acceleration paths, kernel performance improvements, and threadpool fixes. Therefore, **`ggml` should be regularly updated to the latest upstream master commit.**
+
+### How to Sync GGML
+
+Use [`scripts/sync-ggml.sh`](scripts/sync-ggml.sh) to re-vendor GGML. The script handles fetching the upstream tree, excluding non-source directories (e.g. `.github`, `.pi`), applying downstream patches from `patches/ggml/`, and updating `ggml/UPSTREAM`.
+
+```bash
+# 1. Preview changes (dry run)
+scripts/sync-ggml.sh master --dry-run
+
+# 2. Re-vendor to upstream default-branch HEAD (or a specific commit/tag)
+scripts/sync-ggml.sh master
+
+# 3. Rebuild and verify
+cmake --build build --target transcribe-cli
+
+# 4. Run teardown lint and tests
+cmake -DSRC_DIR=src -P tests/lint_teardown.cmake
+ctest --test-dir build --output-on-failure
+```
+
+### Best Practices
+- **Downstream Patches**: Any permanent downstream patches must reside in `patches/ggml/` as `.patch` files. `sync-ggml.sh` automatically checks and applies them in alphabetical order.
+- **Verification Gates**: Always verify the build, run `lint_teardown.cmake` (enforces exception/teardown discipline), and run numerical validation before committing.
+- **No Hand-Edits in `ggml/`**: Never make manual edits directly inside `ggml/`. All changes must either come from upstream or be recorded as patch files in `patches/ggml/`.
+
 ## Policies
 
 - CPU validation is required for every accepted family.

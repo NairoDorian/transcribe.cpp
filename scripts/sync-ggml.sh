@@ -41,7 +41,7 @@ UPSTREAM_FILE="${GGML_DIR}/UPSTREAM"
 PATCH_DIR="${REPO_ROOT}/patches/ggml"
 
 # Upstream paths to drop from the snapshot (relative to the ggml tree root).
-EXCLUDES=( ".github" )
+EXCLUDES=( ".github" ".pi" )
 
 shopt -s nullglob
 PATCHES=( "${PATCH_DIR}"/*.patch )
@@ -108,7 +108,11 @@ RESOLVED="$(git -C "$CLONE_DIR" rev-parse "FETCH_HEAD^{commit}")"
 
 # ---- materialize tracked tree, minus excludes -------------------------------
 mkdir -p "$STAGE_DIR"
-git -C "$CLONE_DIR" archive --format=tar "$RESOLVED" | tar -x -C "$STAGE_DIR"
+EXCLUDE_ARGS=()
+for ex in "${EXCLUDES[@]}"; do
+    EXCLUDE_ARGS+=( "--exclude=${ex}" "--exclude=./${ex}" )
+done
+git -C "$CLONE_DIR" archive --format=tar "$RESOLVED" | tar -x "${EXCLUDE_ARGS[@]}" -C "$STAGE_DIR"
 for ex in "${EXCLUDES[@]}"; do
     rm -rf "${STAGE_DIR:?}/${ex}"
 done

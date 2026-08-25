@@ -92,6 +92,25 @@ porting-1-intake -> porting-2-oracle -> porting-3-convert -> porting-4-cpp
 -> porting-5-quants -> porting-6-bench -> porting-7-wer -> porting-8-ship
 ```
 
+## GGML Dependency Sync
+
+Keep `ggml` updated regularly against upstream HEAD (`ggml-org/ggml`).
+
+```bash
+# Preview bump
+scripts/sync-ggml.sh master --dry-run
+
+# Perform sync
+scripts/sync-ggml.sh master
+
+# Post-sync verification
+cmake --build build --target transcribe-cli
+cmake -DSRC_DIR=src -P tests/lint_teardown.cmake
+```
+
+- Pinned upstream commit is recorded in `ggml/UPSTREAM`.
+- Downstream patches live in `patches/ggml/`. Never edit `ggml/` manually.
+
 ## Git Hygiene
 
 - Do not commit, push, create pull requests, or comment on pull requests unless

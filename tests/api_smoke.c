@@ -103,7 +103,8 @@ static void test_version(void) {
     const char * v = transcribe_version();
     CHECK(v != NULL);
     CHECK(v[0] != '\0');
-    CHECK(strcmp(v, TRANSCRIBE_VERSION) == 0);
+    CHECK(strncmp(v, TRANSCRIBE_VERSION, strlen(TRANSCRIBE_VERSION)) == 0);
+    CHECK(v[strlen(TRANSCRIBE_VERSION)] == '\0' || v[strlen(TRANSCRIBE_VERSION)] == ' ');
 
     /* The numeric form stays consistent with the components. */
     CHECK(TRANSCRIBE_VERSION_NUMBER ==

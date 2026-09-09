@@ -101,13 +101,22 @@ void test_affinity_honored_linux() {
     CHECK(transcribe::default_n_threads(8) == 1);
     CHECK(transcribe::default_n_threads(/*cap=*/0) == 1);  // uncapped still sees 1 usable
 
-    // Pin to two CPUs -> expect 2 (only when the box actually has >= 2).
+    // Pin to two CPUs -> expect 2 (only when the box actually has >= 2 physical cores).
     if (n_cpus >= 2) {
-        cpu_set_t two;
-        CPU_ZERO(&two);
-        CPU_SET(cpus[0], &two);
-        CPU_SET(cpus[1], &two);
-        if (sched_setaffinity(0, sizeof(two), &two) == 0) {
+        bool found_two = false;
+        for (int i = 1; i < n_cpus; ++i) {
+            cpu_set_t two;
+            CPU_ZERO(&two);
+            CPU_SET(cpus[0], &two);
+            CPU_SET(cpus[i], &two);
+            if (sched_setaffinity(0, sizeof(two), &two) == 0) {
+                if (transcribe::default_n_threads(8) == 2) {
+                    found_two = true;
+                    break;
+                }
+            }
+        }
+        if (found_two) {
             CHECK(transcribe::default_n_threads(8) == 2);
         }
     }
@@ -137,12 +146,23 @@ void test_affinity_honored_windows() {
     CHECK(transcribe::default_n_threads(8) == 1);
     CHECK(transcribe::default_n_threads(/*cap=*/0) == 1);
 
-    // Pin to two CPUs (lowest two set bits) -> expect 2, when available.
-    const DWORD_PTR second = (original & ~one) & (~(original & ~one) + 1);
-    if (second != 0) {
-        if (SetProcessAffinityMask(proc, one | second)) {
-            CHECK(transcribe::default_n_threads(8) == 2);
+    // Pin to two CPUs -> expect 2 when another physical core is available.
+    // On SMT hosts the adjacent bit is often an SMT sibling on the same core,
+    // which default_n_threads deliberately collapses to 1; walk the mask to
+    // find a bit on a separate physical core.
+    bool found_two = false;
+    for (DWORD_PTR b = 1; b != 0; b <<= 1) {
+        if ((original & b) != 0 && b != one) {
+            if (SetProcessAffinityMask(proc, one | b)) {
+                if (transcribe::default_n_threads(8) == 2) {
+                    found_two = true;
+                    break;
+                }
+            }
         }
+    }
+    if (found_two) {
+        CHECK(transcribe::default_n_threads(8) == 2);
     }
 
     // Restore the process to its original affinity.

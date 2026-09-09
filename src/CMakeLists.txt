@@ -311,7 +311,7 @@ target_compile_definitions(transcribe PRIVATE
 # Silence warnings for this one translation unit only (-w / MSVC /w wins over
 # the project flags transcribe_apply_warnings appends to the whole target).
 if(MSVC)
-    set_source_files_properties(third_party/miniz/miniz.c PROPERTIES COMPILE_OPTIONS "/w")
+    set_source_files_properties(third_party/miniz/miniz.c PROPERTIES COMPILE_OPTIONS "/W0")
 else()
     set_source_files_properties(third_party/miniz/miniz.c PROPERTIES COMPILE_OPTIONS "-w")
 endif()

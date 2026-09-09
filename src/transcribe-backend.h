@@ -96,4 +96,11 @@ void safe_backend_free(ggml_backend_t backend) noexcept;
 void safe_buffer_free(ggml_backend_buffer_t buffer) noexcept;
 void safe_sched_free(ggml_backend_sched_t sched) noexcept;
 
+// Release a session's per-run compute scratch: the scheduler (whose
+// allocator only ever grows) first, then the no_alloc graph context. Both
+// are nulled; families re-create them lazily on the next run. Used by
+// transcribe_session::release_scratch and the base destructor, keeping the
+// sched / compute_ctx free order in one place. NULLs are no-ops.
+void release_compute_scratch(ggml_backend_sched_t & sched, struct ggml_context *& compute_ctx) noexcept;
+
 }  // namespace transcribe

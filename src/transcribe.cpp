@@ -2114,16 +2114,40 @@ extern "C" transcribe_status transcribe_stream_get_text(const struct transcribe_
     return TRANSCRIBE_OK;
 }
 
+// Scope guard that calls transcribe_session::release_scratch on exit once
+// armed. Both offline entry points use it so release also happens when a
+// family hook throws and the api_guard unwinds the stack, including the path
+// where memory pressure matters most. release_scratch is noexcept, so running
+// it during unwinding is safe.
+namespace {
+
+struct scratch_release_guard {
+    transcribe_session * session = nullptr;
+    bool                 armed   = false;
+
+    ~scratch_release_guard() {
+        if (armed && session != nullptr) {
+            session->release_scratch();
+        }
+    }
+};
+
+}  // namespace
+
 // Shared one-utterance run body. Does NOT touch session->batch_results, so
 // the batch dispatcher can call it once per utterance inside a loop without
 // erasing already-accumulated entries; the public transcribe_run wrapper
 // below clears batch_results once before delegating here. Every early
 // return preserves the previous result snapshot exactly as the original
 // transcribe_run contract documented (see the inline comments).
+// `committed` (optional) is set true once the call passes the pre-clear
+// gates and commits to replacing the result. The caller uses it to decide
+// whether compute scratch needs releasing.
 static transcribe_status run_one_inner(struct transcribe_session *          session,
                                        const float *                        pcm,
                                        int                                  n_samples,
-                                       const struct transcribe_run_params * params) {
+                                       const struct transcribe_run_params * params,
+                                       bool *                               committed = nullptr) {
     // Parameter-shape validation runs first and does not touch session
     // state. A caller that passes NULL pointers or a non-positive sample
     // count gets ERR_INVALID_ARG back without any visible side effect
@@ -2234,6 +2258,9 @@ static transcribe_status run_one_inner(struct transcribe_session *          sess
     // their own front-matter checks succeed; that call is now
     // redundant but idempotent, and removing it is a refactor
     // deferred to a later pass.
+    if (committed != nullptr) {
+        *committed = true;
+    }
     session->clear_result();
     session->t_mel_us      = 0;
     session->t_encode_us   = 0;
@@ -2269,7 +2296,12 @@ static transcribe_status transcribe_run_impl(struct transcribe_session *        
     if (session != nullptr && pcm != nullptr && n_samples > 0) {
         session->batch_results.clear();
     }
-    return run_one_inner(session, pcm, n_samples, params);
+    // run_one_inner arms the guard at its commit point, so a pre-clear
+    // rejection never releases and everything after (family error, abort,
+    // throw) always does.
+    scratch_release_guard scratch_release;
+    scratch_release.session = session;
+    return run_one_inner(session, pcm, n_samples, params, &scratch_release.armed);
 }
 
 // Batch run (offline)
@@ -2378,6 +2410,13 @@ static transcribe_status transcribe_run_batch_impl(struct transcribe_session *  
     session->was_truncated = false;
     session->stream_state  = TRANSCRIBE_STREAM_IDLE;
     session->batch_results.clear();
+
+    // Release the compute scratch once the batch has run, whichever path it
+    // took (see transcribe_session::release_scratch). Once per call, not per
+    // utterance, so the serial fallback keeps its workspace across the loop.
+    scratch_release_guard scratch_release;
+    scratch_release.session = session;
+    scratch_release.armed   = true;
 
     // Fast path: a family with a batched compute graph owns the whole loop.
     if (session->model->arch->run_batch != nullptr) {

@@ -70,14 +70,7 @@ DiarStreamScratch::~DiarStreamScratch() {
     }
 }
 
-SortformerSession::~SortformerSession() {
-    if (sched != nullptr) {
-        transcribe::safe_sched_free(sched);
-    }
-    if (compute_ctx != nullptr) {
-        ggml_free(compute_ctx);
-    }
-}
+SortformerSession::~SortformerSession() = default;
 
 namespace {
 

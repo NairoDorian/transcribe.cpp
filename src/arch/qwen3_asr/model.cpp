@@ -43,14 +43,6 @@ static_assert(std::is_base_of_v<transcribe_session, QwenAsrSession>);
 QwenAsrSession::~QwenAsrSession() {
     kv_cache.free();
     kv_cache_batch.free();
-    if (sched != nullptr) {
-        safe_sched_free(sched);
-        sched = nullptr;
-    }
-    if (compute_ctx != nullptr) {
-        ggml_free(compute_ctx);
-        compute_ctx = nullptr;
-    }
 }
 
 QwenAsrModel::~QwenAsrModel() {

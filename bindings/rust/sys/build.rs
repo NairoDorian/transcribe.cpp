@@ -1,11 +1,17 @@
 //! Build script for `transcribe-cpp-sys`.
 //!
-//! Source build is the primary (and currently only) path: the `cmake` crate
-//! drives the vendored C++ tree with `TRANSCRIBE_INSTALL=ON`, and the link
-//! line is reconstructed from NOTHING but the installed
-//! `lib/transcribe-link.json` manifest — the same artifact the `link_smoke`
-//! CI lane compiles a toy C consumer against. No per-platform link lists are
-//! hardcoded here (the whisper-rs drift class this avoids).
+//! Source build is the primary path: the `cmake` crate drives the vendored
+//! C++ tree with `TRANSCRIBE_INSTALL=ON`, and the link line is reconstructed
+//! from NOTHING but the installed `lib/transcribe-link.json` manifest — the
+//! same artifact the `link_smoke` CI lane compiles a toy C consumer against.
+//! No per-platform link lists are hardcoded here (the whisper-rs drift class
+//! this avoids).
+//!
+//! Prebuilt path: setting TRANSCRIBE_DIR (OPENSSL_DIR-style) to an install
+//! prefix produced by `cmake --install` of a TRANSCRIBE_INSTALL=ON build
+//! skips the source build entirely and links against that prefix's manifest
+//! instead. Cargo features are inert there: the prebuilt already decided its
+//! configuration (static/shared, backends), and the manifest records it.
 //!
 //! Cargo features map directly to CMake options:
 //!   `shared`           -> TRANSCRIBE_BUILD_SHARED=ON (default: static)
@@ -84,7 +90,31 @@ fn main() {
         println!("cargo:rerun-if-changed={}", root.join(p).display());
     }
 
+    // Prebuilt path: TRANSCRIBE_DIR (or TRANSCRIBE_PREBUILT_DIR) points at an existing install prefix (a
+    // `cmake --install` tree from a TRANSCRIBE_INSTALL=ON configure). Skip the
+    // source build and emit the link line from that prefix's manifest; the
+    // manifest records the install's own posture (static/shared, backends), so
+    // the Cargo features below never apply here.
+    println!("cargo:rerun-if-env-changed=TRANSCRIBE_DIR");
     println!("cargo:rerun-if-env-changed=TRANSCRIBE_PREBUILT_DIR");
+    let prebuilt_dir = env::var_os("TRANSCRIBE_DIR").or_else(|| env::var_os("TRANSCRIBE_PREBUILT_DIR"));
+    if let Some(dir) = prebuilt_dir {
+        let prefix = PathBuf::from(dir);
+        let manifest = find_manifest(&prefix).unwrap_or_else(|| {
+            panic!(
+                "TRANSCRIBE_DIR is set but no lib/transcribe-link.json (or lib64/) exists \
+                 under {}. It must point at an install prefix of this library, produced by \
+                 `cmake -B build -DTRANSCRIBE_INSTALL=ON && cmake --build build && \
+                 cmake --install build --prefix <dir>`. Unset TRANSCRIBE_DIR to build \
+                 the vendored sources instead.",
+                prefix.display()
+            )
+        });
+        println!("cargo:rerun-if-changed={}", manifest.display());
+        emit_link_lines(&prefix, &manifest);
+        return;
+    }
+
     println!("cargo:rerun-if-env-changed=TRANSCRIBE_CACHE_DIR");
     println!("cargo:rerun-if-env-changed=TRANSCRIBE_FORCE_REBUILD");
     println!("cargo:rerun-if-env-changed=TRANSCRIBE_CUDA_ARCHITECTURES");
@@ -719,8 +749,6 @@ fn stage_windows_dlls(prefix: &Path) {
             }
         }
     }
-    // Re-stage when the built DLLs change.
-    println!("cargo:rerun-if-changed={}", bin_dir.display());
 }
 
 /// Root directory for persistent out-of-tree transcribe.cpp build artifacts.

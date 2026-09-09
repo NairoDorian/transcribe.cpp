@@ -41,15 +41,10 @@ extern const Arch arch;
 static_assert(std::is_base_of_v<transcribe_model, GigaamModel>);
 static_assert(std::is_base_of_v<transcribe_session, GigaamSession>);
 
-GigaamSession::~GigaamSession() {
-    if (sched != nullptr) {
-        safe_sched_free(sched);
-        sched = nullptr;
-    }
-    if (compute_ctx != nullptr) {
-        ggml_free(compute_ctx);
-        compute_ctx = nullptr;
-    }
+GigaamSession::~GigaamSession() = default;
+
+// Base release_scratch has freed sched/compute_ctx; drop what pointed into them.
+void GigaamSession::on_scratch_released() noexcept {
     encoder_out = nullptr;
 }
 
@@ -321,7 +316,6 @@ transcribe_status run(transcribe_session * session, const float * pcm, int n_sam
     if (gm == nullptr || gm->plan.scheduler_list.empty()) {
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
-
     if (gc->poll_abort()) {
         return TRANSCRIBE_ERR_ABORTED;
     }

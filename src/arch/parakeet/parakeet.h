@@ -233,18 +233,10 @@ struct ParakeetStreamingDecoderState {
     bool initialized = false;
 };
 
-// Concrete context. Owns a per-call compute context and a persistent
-// multi-backend scheduler that dispatches encoder graph ops to the best
-// available backend.
+// Concrete context. The per-call compute context and the multi-backend
+// scheduler that dispatches encoder graph ops to the best available backend
+// are owned by the transcribe_session base (sched / compute_ctx).
 struct ParakeetSession final : public transcribe_session {
-    // Compute context: cgraph + intermediate tensor metadata. no_alloc;
-    // data lives in sched-managed buffers. Reset each run().
-    ggml_context * compute_ctx = nullptr;
-
-    // Multi-backend scheduler. Persists across calls; manages compute
-    // buffer allocation and reuses buffers when topology is unchanged.
-    ggml_backend_sched_t sched = nullptr;
-
     // Encoder forward output, borrowed into compute_ctx; invalidated when
     // compute_ctx is reset next run().
     ggml_tensor * encoder_out = nullptr;
@@ -272,6 +264,8 @@ struct ParakeetSession final : public transcribe_session {
     // clear_result (the family owns its per-utterance audio scratch).
     std::vector<float>    stream_pcm_buffer;
     transcribe_run_params stream_run_params{};
+    // Convert from cumulative samples so odd feed sizes do not lose fractions.
+    int64_t               stream_audio_input_samples = 0;
 
     // ---- incremental streaming state (cache-aware) ----
     //
@@ -285,13 +279,10 @@ struct ParakeetSession final : public transcribe_session {
     //
     // Mirrors NeMo's StreamingBatchedAudioBuffer + reference inference
     // loop. Variable-stride: step 0 consumes samples_chunk + samples_right
-    // of new audio; subsequent feeds consume samples_chunk; finalize's
-    // last step consumes the rest (chunk slot absorbs the trailing right
-    // context, no zero-pad). The buf_* geometry reflects the active
-    // (L, C, R) tuple; the ctx_* fields track the buffer's internal
-    // ContextSize, updated per-chunk via buf_ctx_add_frames (NeMo's
-    // add_frames_get_removed_). The RNN-T state rides on stream_dec_state
-    // (same predictor/joint path, no per-layer encoder cache).
+    // of new audio; subsequent feeds consume samples_chunk. Finalize folds
+    // retained right context into the decoded chunk and appends right-context
+    // silence without advancing the real-audio cursor. The RNN-T state rides
+    // on stream_dec_state (same predictor/joint path, no per-layer encoder cache).
     int32_t buf_left_frames     = 0;  // L (expected)
     int32_t buf_chunk_frames    = 0;  // C
     int32_t buf_right_frames    = 0;  // R
@@ -317,6 +308,7 @@ struct ParakeetSession final : public transcribe_session {
 
     ParakeetSession() = default;
     ~ParakeetSession() override;
+    void on_scratch_released() noexcept override;
 };
 
 // ---- Multitalker (bundle) internals ----------------------------------- //

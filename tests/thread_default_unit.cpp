@@ -17,6 +17,7 @@
 #include "transcribe-batch-util.h"
 
 #include <cstdio>
+#include <thread>
 
 #if defined(__linux__)
 #    include <sched.h>
@@ -68,6 +69,52 @@ void test_configure_resolution_null_sched() {
     CHECK(transcribe::configure_sched_n_threads(nullptr, -5) == def);
 }
 
+// Verify that performance_cpu_ids selects P-cores, excludes Core 0 (CPUs 0, 1),
+// and uses distinct physical cores.
+void test_topology_p_cores_and_exclude_core0() {
+    const std::vector<int> cpus = transcribe::performance_cpu_ids();
+    CHECK(!cpus.empty());
+
+    // On hosts with >= 2 physical cores, Core 0 (logical CPU 0 and its SMT sibling)
+    // MUST NOT be present in performance_cpu_ids.
+    if (std::thread::hardware_concurrency() > 2) {
+        for (int c : cpus) {
+            CHECK(c != 0);  // Core 0 primary must never be included
+            CHECK(c != 1);  // Core 0 SMT sibling must never be included
+        }
+    }
+
+    // Verify all primary CPUs are distinct (different physical cores)
+    for (size_t i = 0; i < cpus.size(); ++i) {
+        for (size_t j = i + 1; j < cpus.size(); ++j) {
+            CHECK(cpus[i] != cpus[j]);
+        }
+    }
+
+    const int n_perf = transcribe::performance_cpu_count();
+    CHECK(n_perf == static_cast<int>(cpus.size()));
+    CHECK(transcribe::default_n_threads(100) == n_perf);
+}
+
+// Verify that make_threadpool_params configures strict placement and sets
+// the correct cpumask bits without Core 0.
+void test_make_threadpool_params() {
+    const int                    n_req = 3;
+    const ggml_threadpool_params tpp   = transcribe::make_threadpool_params(n_req);
+    CHECK(tpp.n_threads == n_req);
+    CHECK(tpp.strict_cpu == true);
+
+    if (std::thread::hardware_concurrency() > 2) {
+        CHECK(tpp.cpumask[0] == false);  // Core 0 excluded
+        CHECK(tpp.cpumask[1] == false);  // Core 0 sibling excluded
+    }
+
+    const std::vector<int> expected_cpus = transcribe::performance_cpu_ids(n_req);
+    for (int c : expected_cpus) {
+        CHECK(tpp.cpumask[c] == true);
+    }
+}
+
 #if defined(__linux__)
 // The actual bug: default_n_threads() must honor the process affinity mask,
 // not the host core count. Pin to K CPUs and expect K. Skips gracefully if the
@@ -102,21 +149,13 @@ void test_affinity_honored_linux() {
     CHECK(transcribe::default_n_threads(/*cap=*/0) == 1);  // uncapped still sees 1 usable
 
     // Pin to two CPUs -> expect 2 (only when the box actually has >= 2 physical cores).
-    if (n_cpus >= 2) {
-        bool found_two = false;
-        for (int i = 1; i < n_cpus; ++i) {
-            cpu_set_t two;
-            CPU_ZERO(&two);
-            CPU_SET(cpus[0], &two);
-            CPU_SET(cpus[i], &two);
-            if (sched_setaffinity(0, sizeof(two), &two) == 0) {
-                if (transcribe::default_n_threads(8) == 2) {
-                    found_two = true;
-                    break;
-                }
-            }
-        }
-        if (found_two) {
+    const std::vector<int> perf_cpus = transcribe::performance_cpu_ids();
+    if (perf_cpus.size() >= 2) {
+        cpu_set_t two;
+        CPU_ZERO(&two);
+        CPU_SET(perf_cpus[0], &two);
+        CPU_SET(perf_cpus[1], &two);
+        if (sched_setaffinity(0, sizeof(two), &two) == 0) {
             CHECK(transcribe::default_n_threads(8) == 2);
         }
     }
@@ -146,23 +185,17 @@ void test_affinity_honored_windows() {
     CHECK(transcribe::default_n_threads(8) == 1);
     CHECK(transcribe::default_n_threads(/*cap=*/0) == 1);
 
-    // Pin to two CPUs -> expect 2 when another physical core is available.
-    // On SMT hosts the adjacent bit is often an SMT sibling on the same core,
-    // which default_n_threads deliberately collapses to 1; walk the mask to
-    // find a bit on a separate physical core.
-    bool found_two = false;
-    for (DWORD_PTR b = 1; b != 0; b <<= 1) {
-        if ((original & b) != 0 && b != one) {
-            if (SetProcessAffinityMask(proc, one | b)) {
-                if (transcribe::default_n_threads(8) == 2) {
-                    found_two = true;
-                    break;
-                }
-            }
+    // Restore the process to its original affinity before querying performance cores.
+    CHECK(SetProcessAffinityMask(proc, original) != 0);
+
+    // Pin to two distinct usable performance cores -> expect 2.
+    const std::vector<int> perf_cpus = transcribe::performance_cpu_ids();
+    if (perf_cpus.size() >= 2 && perf_cpus[0] < 64 && perf_cpus[1] < 64) {
+        const DWORD_PTR two =
+            (static_cast<DWORD_PTR>(1ULL) << perf_cpus[0]) | (static_cast<DWORD_PTR>(1ULL) << perf_cpus[1]);
+        if (SetProcessAffinityMask(proc, two)) {
+            CHECK(transcribe::default_n_threads(8) == 2);
         }
-    }
-    if (found_two) {
-        CHECK(transcribe::default_n_threads(8) == 2);
     }
 
     // Restore the process to its original affinity.
@@ -175,6 +208,8 @@ void test_affinity_honored_windows() {
 int main() {
     test_default_range_and_cap();
     test_configure_resolution_null_sched();
+    test_topology_p_cores_and_exclude_core0();
+    test_make_threadpool_params();
 #if defined(__linux__)
     test_affinity_honored_linux();
 #elif defined(_WIN32)

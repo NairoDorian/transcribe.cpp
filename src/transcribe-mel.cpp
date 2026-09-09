@@ -514,12 +514,22 @@ transcribe_status MelFrontend::compute(const float *        pcm,
             worker(0);
             return;
         }
+        const std::vector<int>   target_cpus = performance_cpu_ids(stft_threads);
         std::vector<std::thread> pool;
         pool.reserve(static_cast<size_t>(stft_threads - 1));
         for (int tid = 1; tid < stft_threads; ++tid) {
-            pool.emplace_back(worker, tid);
+            const int cpu = (tid < static_cast<int>(target_cpus.size())) ? target_cpus[static_cast<size_t>(tid)] : -1;
+            pool.emplace_back([&worker, tid, cpu]() {
+                if (cpu >= 0) {
+                    bind_thread_to_cpu(cpu);
+                }
+                worker(tid);
+            });
         }
+        const int             main_cpu = (!target_cpus.empty()) ? target_cpus[0] : -1;
+        thread_affinity_guard guard(main_cpu);
         worker(0);
+
         for (auto & th : pool) {
             th.join();
         }

@@ -3,7 +3,9 @@
 #include "transcribe-batch-util.h"
 
 #include "ggml-backend.h"
+#include "ggml-cpu.h"
 #include "ggml.h"
+#include "transcribe-backend.h"
 #include "transcribe-log.h"
 #include "transcribe-session.h"
 
@@ -135,116 +137,120 @@ int read_sysfs_int(const char * fmt, int cpu) {
 }
 #endif  // __linux__
 
-// Number of *performance* physical cores the process may run on, or 0 when
-// the platform query is unavailable (the caller falls back to
-// usable_cpu_count()).
-//
-// "Performance" means one entry per physical core (SMT siblings collapsed)
-// and, on a hybrid CPU, only the fastest core class. On a homogeneous CPU
-// every core is in the fastest class, so this degenerates to the physical-
-// core count.
-//
-// Why not the logical-CPU count: ggml's CPU backend splits each op's rows
-// evenly across threads and joins on a spin barrier, so every thread waits
-// for the slowest. An SMT sibling contributes far less than a full core, and
-// an Intel E-core / ARM little core is several times slower than a P-core.
-// Either asymmetry makes the barrier wait on the stragglers, so one thread
-// per performance core beats one per logical CPU. Measured on an i9-13900H
-// (6 P-cores + 8 E-cores, 20 logical) with the Parakeet v3 encoder: 6 threads
-// pinned to P-cores 1.9 s, 6 threads pinned to E-cores 5.4 s, 12 threads on
-// the 6 P-cores (SMT) 2.9 s.
-//
-// COUNT only — deliberately no affinity pinning. Measured on the same
-// machine (parakeet-v3 encode, arms interleaved per round): a process
-// hard-pinned to the 6 P-cores was SLOWER than unpinned in 5/5 rounds
-// (~5-15%), while E-core-pinned was ~2.3x slower. Two conclusions: the
-// OS's hybrid-aware scheduler already places these 6 threads on P-cores
-// (else unpinned would sit near the E-pinned time), and pinning removes
-// its freedom to migrate off a P-core occupied by another process — under
-// background load one stalled thread holds up ggml's spin barrier. Do not
-// add cpumask/strict_cpu to the ggml threadpools without beating the
-// unpinned numbers on an interleaved benchmark.
-int performance_cpu_count() {
+struct CoreLogicalInfo {
+    std::vector<int> primary;    // 1 primary logical CPU per physical core
+    std::vector<int> secondary;  // SMT siblings on those same physical cores
+};
+
 #if defined(_WIN32)
-    DWORD_PTR proc_mask = 0, sys_mask = 0;
+static CoreLogicalInfo query_platform_cores() {
+    CoreLogicalInfo res;
+    DWORD_PTR       proc_mask = 0, sys_mask = 0;
     if (!GetProcessAffinityMask(GetCurrentProcess(), &proc_mask, &sys_mask) || proc_mask == 0) {
-        return 0;
+        return res;
     }
     DWORD len = 0;
     if (GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &len) ||
         GetLastError() != ERROR_INSUFFICIENT_BUFFER || len == 0) {
-        return 0;
+        return res;
     }
     std::vector<unsigned char> buf(len);
     if (!GetLogicalProcessorInformationEx(
             RelationProcessorCore, reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *>(buf.data()), &len)) {
-        return 0;
+        return res;
     }
-    // Pass 0 finds the highest EfficiencyClass among the cores this process
-    // may use; pass 1 counts the cores in that class. GetProcessAffinityMask
-    // only describes group 0, so cores in other processor groups (hosts with
-    // >64 logical CPUs) are counted unconditionally — matching
-    // usable_cpu_count(), which falls back to hardware_concurrency() there.
-    //
-    // Records are variable-length and `Size` is the stride. Do NOT bound the
-    // walk with sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX): that is the
-    // size of the largest union member (GROUP_RELATIONSHIP, 80 bytes on x64)
-    // while a RelationProcessorCore record is 48, so such a bound silently
-    // drops the trailing record — one core, invisibly, on every homogeneous
-    // CPU. Bound by `len` and validate `Size` instead.
+
     constexpr DWORD kRecordHeader = 2 * sizeof(DWORD);                               // Relationship + Size
     constexpr DWORD kMinCoreSize  = kRecordHeader + sizeof(PROCESSOR_RELATIONSHIP);  // one group: 48 on x64
-    int             best_class    = -1;
-    int             n_perf        = 0;
-    for (int pass = 0; pass < 2; ++pass) {
-        DWORD off = 0;
-        while (off + kRecordHeader <= len) {
-            auto * e = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *>(buf.data() + off);
-            if (e->Size < kMinCoreSize || e->Size > len - off) {
-                break;
-            }
-            if (e->Relationship == RelationProcessorCore) {
-                bool usable = false;
-                for (WORD g = 0; g < e->Processor.GroupCount; ++g) {
-                    const GROUP_AFFINITY & ga = e->Processor.GroupMask[g];
-                    if (ga.Group != 0 || (static_cast<DWORD_PTR>(ga.Mask) & proc_mask) != 0) {
-                        usable = true;
+
+    struct CoreEntry {
+        int              eff_class = 0;
+        WORD             group     = 0;
+        KAFFINITY        mask      = 0;
+        std::vector<int> cpus;
+    };
+
+    std::vector<CoreEntry> cores;
+    int                    best_class = -1;
+
+    DWORD off = 0;
+    while (off + kRecordHeader <= len) {
+        auto * e = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *>(buf.data() + off);
+        if (e->Size < kMinCoreSize || e->Size > len - off) {
+            break;
+        }
+        if (e->Relationship == RelationProcessorCore) {
+            bool      usable = false;
+            CoreEntry entry;
+            entry.eff_class = static_cast<int>(e->Processor.EfficiencyClass);
+            for (WORD g = 0; g < e->Processor.GroupCount; ++g) {
+                const GROUP_AFFINITY & ga = e->Processor.GroupMask[g];
+                if (ga.Group == 0) {
+                    KAFFINITY active = ga.Mask & proc_mask;
+                    if (active != 0) {
+                        entry.group = ga.Group;
+                        entry.mask  = active;
+                        usable      = true;
+                        for (int b = 0; b < 64; ++b) {
+                            if ((active & (1ULL << b)) != 0) {
+                                entry.cpus.push_back(b);
+                            }
+                        }
                         break;
                     }
-                }
-                if (usable) {
-                    const int cls = static_cast<int>(e->Processor.EfficiencyClass);
-                    if (pass == 0) {
-                        best_class = std::max(best_class, cls);
-                    } else if (cls == best_class) {
-                        ++n_perf;
+                } else {
+                    // Non-zero processor group (hosts with > 64 CPUs)
+                    usable      = true;
+                    entry.group = ga.Group;
+                    entry.mask  = ga.Mask;
+                    for (int b = 0; b < 64; ++b) {
+                        if ((ga.Mask & (1ULL << b)) != 0) {
+                            entry.cpus.push_back(b);
+                        }
                     }
+                    break;
                 }
             }
-            off += e->Size;
+            if (usable) {
+                best_class = std::max(best_class, entry.eff_class);
+                cores.push_back(std::move(entry));
+            }
+        }
+        off += e->Size;
+    }
+
+    // Filter to performance cores (eff_class == best_class)
+    std::vector<CoreEntry> p_cores;
+    for (auto & c : cores) {
+        if (c.eff_class == best_class) {
+            p_cores.push_back(std::move(c));
         }
     }
-    return n_perf;
-#elif defined(__APPLE__)
-    // perflevel0 is the fastest cluster on Apple silicon; absent on Intel Macs.
-    for (const char * key : { "hw.perflevel0.physicalcpu", "hw.physicalcpu" }) {
-        int    v  = 0;
-        size_t sz = sizeof(v);
-        if (sysctlbyname(key, &v, &sz, nullptr, 0) == 0 && v > 0) {
-            return v;
+
+    // Exclude 1st CPU core (Core 0 / core containing CPU 0) when >= 2 physical cores exist.
+    // Core 0 is reserved for Windows system/OS duties, hardware interrupts, and DPCs.
+    const bool exclude_first = (p_cores.size() >= 2);
+    for (const auto & c : p_cores) {
+        if (exclude_first && c.group == 0 && (c.mask & 1ULL) != 0) {
+            continue;
+        }
+        if (!c.cpus.empty()) {
+            res.primary.push_back(c.cpus[0]);
+            for (size_t i = 1; i < c.cpus.size(); ++i) {
+                res.secondary.push_back(c.cpus[i]);
+            }
         }
     }
-    return 0;
+    return res;
+}
 #elif defined(__linux__)
-    cpu_set_t set;
+static CoreLogicalInfo query_platform_cores() {
+    CoreLogicalInfo res;
+    cpu_set_t       set;
     CPU_ZERO(&set);
     if (sched_getaffinity(0, sizeof(set), &set) != 0) {
-        return 0;
+        return res;
     }
-    // Restrict to the fastest core class when the kernel exposes one: Intel
-    // hybrid publishes the P-core CPU list under the cpu_core PMU, ARM
-    // big.LITTLE publishes a per-CPU capacity. An empty `fast` means "no
-    // class information — every usable CPU counts".
     std::set<int> fast;
     if (!read_cpu_list("/sys/devices/cpu_core/cpus", fast)) {
         int best_cap = -1;
@@ -265,9 +271,10 @@ int performance_cpu_count() {
             fast.clear();
         }
     }
-    // Collapse SMT siblings: count distinct (package, core) pairs.
-    std::set<std::pair<int, int>> cores;
-    int                           n_untopologized = 0;
+
+    std::map<std::pair<int, int>, std::vector<int>> core_map;
+    std::vector<int>                                untopologized;
+
     for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
         if (!CPU_ISSET(cpu, &set)) {
             continue;
@@ -278,28 +285,126 @@ int performance_cpu_count() {
         const int core = read_sysfs_int("/sys/devices/system/cpu/cpu%d/topology/core_id", cpu);
         const int pkg  = read_sysfs_int("/sys/devices/system/cpu/cpu%d/topology/physical_package_id", cpu);
         if (core < 0 || pkg < 0) {
-            ++n_untopologized;  // sysfs unavailable (some containers): count the CPU itself
+            untopologized.push_back(cpu);
             continue;
         }
-        cores.insert({ pkg, core });
+        core_map[{ pkg, core }].push_back(cpu);
     }
-    return static_cast<int>(cores.size()) + n_untopologized;
-#else
-    return 0;
-#endif
+
+    std::vector<std::vector<int>> distinct_cores;
+    for (auto & kv : core_map) {
+        std::sort(kv.second.begin(), kv.second.end());
+        distinct_cores.push_back(std::move(kv.second));
+    }
+    for (int u : untopologized) {
+        distinct_cores.push_back({ u });
+    }
+
+    const bool exclude_first = (distinct_cores.size() >= 2);
+    for (const auto & c : distinct_cores) {
+        if (exclude_first && !c.empty() && c[0] == 0) {
+            continue;
+        }
+        if (!c.empty()) {
+            res.primary.push_back(c[0]);
+            for (size_t i = 1; i < c.size(); ++i) {
+                res.secondary.push_back(c[i]);
+            }
+        }
+    }
+    return res;
 }
+#elif defined(__APPLE__)
+static CoreLogicalInfo query_platform_cores() {
+    CoreLogicalInfo res;
+    int             n = 0;
+    for (const char * key : { "hw.perflevel0.physicalcpu", "hw.physicalcpu" }) {
+        int    v  = 0;
+        size_t sz = sizeof(v);
+        if (sysctlbyname(key, &v, &sz, nullptr, 0) == 0 && v > 0) {
+            n = v;
+            break;
+        }
+    }
+    if (n <= 0) {
+        n = usable_cpu_count();
+    }
+    if (n >= 2) {
+        for (int i = 1; i < n; ++i) {
+            res.primary.push_back(i);
+        }
+    } else if (n == 1) {
+        res.primary.push_back(0);
+    }
+    return res;
+}
+#else
+static CoreLogicalInfo query_platform_cores() {
+    CoreLogicalInfo res;
+    const int       n = usable_cpu_count();
+    if (n >= 2) {
+        for (int i = 1; i < n; ++i) {
+            res.primary.push_back(i);
+        }
+    } else if (n == 1) {
+        res.primary.push_back(0);
+    }
+    return res;
+}
+#endif
 
 }  // namespace
 
-int default_n_threads(int cap) {
-    // Performance cores when the platform can tell us, clamped by the affinity
-    // mask so taskset/cpuset still wins; otherwise every usable CPU.
-    int n = performance_cpu_count();
-    if (n > 0) {
-        n = std::min(n, usable_cpu_count());
-    } else {
-        n = usable_cpu_count();
+std::vector<int> performance_cpu_ids(int n_threads) {
+    CoreLogicalInfo info = query_platform_cores();
+    if (info.primary.empty()) {
+        const int n = usable_cpu_count();
+        if (n >= 2) {
+            for (int i = 1; i < n; ++i) {
+                info.primary.push_back(i);
+            }
+        } else {
+            info.primary.push_back(0);
+        }
     }
+
+    if (n_threads <= 0) {
+        return info.primary;
+    }
+
+    std::vector<int> out;
+    out.reserve(static_cast<size_t>(n_threads));
+
+    // First, assign primary CPUs (1 per physical P-core)
+    for (int cpu : info.primary) {
+        if (static_cast<int>(out.size()) < n_threads) {
+            out.push_back(cpu);
+        }
+    }
+    // If more threads requested than physical P-cores, use SMT siblings on those same P-cores
+    for (int cpu : info.secondary) {
+        if (static_cast<int>(out.size()) < n_threads) {
+            out.push_back(cpu);
+        }
+    }
+    // If still more requested, wrap around available P-core logical CPUs (never touching Core 0 or E-cores)
+    if (!out.empty()) {
+        const size_t base_count = out.size();
+        size_t       idx        = 0;
+        while (static_cast<int>(out.size()) < n_threads) {
+            out.push_back(out[idx % base_count]);
+            ++idx;
+        }
+    }
+    return out;
+}
+
+int performance_cpu_count() {
+    return static_cast<int>(performance_cpu_ids(0).size());
+}
+
+int default_n_threads(int cap) {
+    int n = performance_cpu_count();
     if (n < 1) {
         n = 1;
     }
@@ -307,6 +412,85 @@ int default_n_threads(int cap) {
         n = cap;
     }
     return n;
+}
+
+struct ggml_threadpool_params make_threadpool_params(int n_threads) {
+    if (n_threads <= 0) {
+        n_threads = default_n_threads();
+    }
+    struct ggml_threadpool_params tpp;
+    ggml_threadpool_params_init(&tpp, n_threads);
+    tpp.strict_cpu = true;
+    tpp.poll       = 50;
+    tpp.prio       = GGML_SCHED_PRIO_NORMAL;
+
+    const std::vector<int> cpus = performance_cpu_ids(n_threads);
+    for (int cpu : cpus) {
+        if (cpu >= 0 && cpu < GGML_MAX_N_THREADS) {
+            tpp.cpumask[cpu] = true;
+        }
+    }
+    return tpp;
+}
+
+void bind_thread_to_cpu(int cpu_id) {
+    if (cpu_id < 0) {
+        return;
+    }
+#if defined(_WIN32)
+    if (cpu_id < 64) {
+        const DWORD_PTR mask = static_cast<DWORD_PTR>(1ULL << cpu_id);
+        SetThreadAffinityMask(GetCurrentThread(), mask);
+
+#    if _WIN32_WINNT >= 0x0602
+        THREAD_POWER_THROTTLING_STATE t;
+        ZeroMemory(&t, sizeof(t));
+        t.Version     = THREAD_POWER_THROTTLING_CURRENT_VERSION;
+        t.ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
+        t.StateMask   = 0;
+        SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &t, sizeof(t));
+#    endif
+    }
+#elif defined(__linux__)
+    if (cpu_id < CPU_SETSIZE) {
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(cpu_id, &cpuset);
+        pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
+    }
+#endif
+}
+
+thread_affinity_guard::thread_affinity_guard(int cpu_id) {
+    if (cpu_id < 0) {
+        return;
+    }
+#if defined(_WIN32)
+    if (cpu_id < 64) {
+        const DWORD_PTR mask = static_cast<DWORD_PTR>(1ULL << cpu_id);
+        const DWORD_PTR prev = SetThreadAffinityMask(GetCurrentThread(), mask);
+        prev_mask_           = static_cast<uint64_t>(prev);
+
+#    if _WIN32_WINNT >= 0x0602
+        THREAD_POWER_THROTTLING_STATE t;
+        ZeroMemory(&t, sizeof(t));
+        t.Version     = THREAD_POWER_THROTTLING_CURRENT_VERSION;
+        t.ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
+        t.StateMask   = 0;
+        SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &t, sizeof(t));
+#    endif
+    }
+#elif defined(__linux__)
+    bind_thread_to_cpu(cpu_id);
+#endif
+}
+
+thread_affinity_guard::~thread_affinity_guard() {
+#if defined(_WIN32)
+    if (prev_mask_ != 0) {
+        SetThreadAffinityMask(GetCurrentThread(), static_cast<DWORD_PTR>(prev_mask_));
+    }
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -459,6 +643,9 @@ int configure_sched_n_threads(ggml_backend_sched_t sched, int requested) {
         if (fn != nullptr) {
             fn(be, n_threads);
         }
+        if (ggml_backend_is_cpu(be)) {
+            safe_set_cpu_backend_threadpool(be, n_threads);
+        }
     }
     return n_threads;
 }
@@ -468,15 +655,11 @@ bool parallel_for_all(int n, int n_threads, const std::function<bool(int)> & wor
         return true;
     }
     if (n_threads <= 0) {
-        // Every CPU the process may run on, clamped to the batch size below.
-        // Deliberately NOT default_n_threads(): this pool hands out items from
-        // an atomic counter with no barrier, so an SMT sibling or an E-core
-        // still adds throughput instead of stalling the join. The performance-
-        // core restriction exists for ggml's barrier-synchronized op split,
-        // which is the opposite situation.
-        n_threads = usable_cpu_count();
+        n_threads = default_n_threads();
     }
     n_threads = std::max(1, std::min(n, n_threads));
+
+    const std::vector<int> target_cpus = performance_cpu_ids(n_threads);
 
     std::atomic<int>  next{ 0 };
     std::atomic<bool> all_ok{ true };
@@ -492,9 +675,19 @@ bool parallel_for_all(int n, int n_threads, const std::function<bool(int)> & wor
     std::vector<std::thread> pool;
     pool.reserve(static_cast<size_t>(n_threads - 1));
     for (int w = 0; w < n_threads - 1; ++w) {
-        pool.emplace_back(worker);
+        const int cpu = (w < static_cast<int>(target_cpus.size())) ? target_cpus[static_cast<size_t>(w)] : -1;
+        pool.emplace_back([&worker, cpu]() {
+            if (cpu >= 0) {
+                bind_thread_to_cpu(cpu);
+            }
+            worker();
+        });
     }
+
+    const int             main_cpu = (!target_cpus.empty()) ? target_cpus.back() : -1;
+    thread_affinity_guard guard(main_cpu);
     worker();  // the calling thread participates
+
     for (auto & th : pool) {
         th.join();
     }

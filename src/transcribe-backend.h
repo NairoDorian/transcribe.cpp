@@ -86,6 +86,14 @@ struct BackendPlan {
     std::vector<ggml_backend_t> scheduler_list;
 };
 
+// Attach or update a topology-aware persistent threadpool on a CPU backend.
+// Reuses the existing threadpool if parameters match; otherwise frees the previous
+// threadpool and instantiates a new one configured for performance cores.
+void safe_set_cpu_backend_threadpool(ggml_backend_t backend, int n_threads);
+
+// Detach and cleanly free any threadpool associated with the backend.
+void cleanup_cpu_backend_threadpool(ggml_backend_t backend) noexcept;
+
 // No-throw wrappers for ggml backend teardown. Family destructors are
 // implicitly noexcept, so raw backend frees must not appear in library code;
 // tests/lint_teardown.cmake enforces this. NULL is a no-op.

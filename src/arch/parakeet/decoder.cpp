@@ -641,7 +641,7 @@ bool build_pred_graph(PredGraph & g, const HostPredictor & p, int n_threads) {
         auto tp_new = (pfn_threadpool_new) cpu_backend_proc(g.backend, "ggml_threadpool_new");
         auto tp_set = (pfn_set_threadpool) cpu_backend_proc(g.backend, "ggml_backend_cpu_set_threadpool");
         if (tp_new != nullptr && tp_set != nullptr) {
-            ggml_threadpool_params tpp = ggml_threadpool_params_default(std::max(1, n_threads));
+            ggml_threadpool_params tpp = transcribe::make_threadpool_params(std::max(1, n_threads));
             g.tp                       = tp_new(&tpp);
             if (g.tp != nullptr) {
                 tp_set(g.backend, g.tp);

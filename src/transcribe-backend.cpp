@@ -6,12 +6,16 @@
 
 #include "transcribe-backend.h"
 
+#include "ggml-cpu.h"
 #include "ggml.h"
+#include "transcribe-batch-util.h"
 #include "transcribe-log.h"
 
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace transcribe {
 
@@ -126,12 +130,76 @@ template <typename Fn> void contained_free(const char * what, Fn && do_free) noe
     }
 }
 
+struct BackendTpEntry {
+    ggml_threadpool_t      tp = nullptr;
+    ggml_threadpool_params params{};
+};
+
+std::mutex                                         g_backend_tp_mutex;
+std::unordered_map<ggml_backend_t, BackendTpEntry> g_backend_tps;
+
 }  // namespace
+
+void safe_set_cpu_backend_threadpool(ggml_backend_t backend, int n_threads) {
+    if (backend == nullptr || !ggml_backend_is_cpu(backend)) {
+        return;
+    }
+    if (n_threads <= 0) {
+        n_threads = default_n_threads();
+    }
+    const ggml_threadpool_params desired = make_threadpool_params(n_threads);
+
+    std::lock_guard<std::mutex> lock(g_backend_tp_mutex);
+    auto                        it = g_backend_tps.find(backend);
+    if (it != g_backend_tps.end()) {
+        if (ggml_threadpool_params_match(&it->second.params, &desired)) {
+            return;
+        }
+        ggml_backend_cpu_set_threadpool(backend, nullptr);
+        if (it->second.tp != nullptr) {
+            ggml_threadpool_free(it->second.tp);
+        }
+        g_backend_tps.erase(it);
+    }
+
+    ggml_threadpool_params params_copy = desired;
+    ggml_threadpool_t      tp          = ggml_threadpool_new(&params_copy);
+    if (tp != nullptr) {
+        ggml_backend_cpu_set_threadpool(backend, tp);
+        g_backend_tps[backend] = { tp, desired };
+    }
+}
+
+void cleanup_cpu_backend_threadpool(ggml_backend_t backend) noexcept {
+    if (backend == nullptr) {
+        return;
+    }
+    ggml_threadpool_t to_free = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_backend_tp_mutex);
+        auto                        it = g_backend_tps.find(backend);
+        if (it != g_backend_tps.end()) {
+            to_free = it->second.tp;
+            g_backend_tps.erase(it);
+        }
+    }
+    if (to_free != nullptr) {
+        try {
+            if (ggml_backend_is_cpu(backend)) {
+                ggml_backend_cpu_set_threadpool(backend, nullptr);
+            }
+            ggml_threadpool_free(to_free);
+        } catch (...) {
+            // Teardown containment
+        }
+    }
+}
 
 void safe_backend_free(ggml_backend_t backend) noexcept {
     if (backend == nullptr) {
         return;
     }
+    cleanup_cpu_backend_threadpool(backend);
     contained_free("ggml_backend_free", [&] { ggml_backend_free(backend); });
 }
 

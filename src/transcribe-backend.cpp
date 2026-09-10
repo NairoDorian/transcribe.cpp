@@ -138,10 +138,34 @@ struct BackendTpEntry {
 std::mutex                                         g_backend_tp_mutex;
 std::unordered_map<ggml_backend_t, BackendTpEntry> g_backend_tps;
 
+typedef ggml_threadpool_t (*pfn_threadpool_new)(ggml_threadpool_params *);
+typedef void (*pfn_threadpool_free)(ggml_threadpool_t);
+typedef void (*pfn_set_threadpool)(ggml_backend_t, ggml_threadpool_t);
+
+static void * cpu_backend_proc(ggml_backend_t backend, const char * name) {
+    ggml_backend_dev_t dev = backend != nullptr ? ggml_backend_get_device(backend) : nullptr;
+    ggml_backend_reg_t reg = dev != nullptr ? ggml_backend_dev_backend_reg(dev) : nullptr;
+    return reg != nullptr ? ggml_backend_reg_get_proc_address(reg, name) : nullptr;
+}
+
 }  // namespace
 
+bool is_cpu_backend(ggml_backend_t backend) {
+    if (backend == nullptr) {
+        return false;
+    }
+    ggml_backend_dev_t dev = ggml_backend_get_device(backend);
+    return dev != nullptr && ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU;
+}
+
 void safe_set_cpu_backend_threadpool(ggml_backend_t backend, int n_threads) {
-    if (backend == nullptr || !ggml_backend_is_cpu(backend)) {
+    if (!is_cpu_backend(backend)) {
+        return;
+    }
+    auto tp_set  = reinterpret_cast<pfn_set_threadpool>(cpu_backend_proc(backend, "ggml_backend_cpu_set_threadpool"));
+    auto tp_free = reinterpret_cast<pfn_threadpool_free>(cpu_backend_proc(backend, "ggml_threadpool_free"));
+    auto tp_new  = reinterpret_cast<pfn_threadpool_new>(cpu_backend_proc(backend, "ggml_threadpool_new"));
+    if (tp_set == nullptr || tp_free == nullptr || tp_new == nullptr) {
         return;
     }
     if (n_threads <= 0) {
@@ -155,17 +179,17 @@ void safe_set_cpu_backend_threadpool(ggml_backend_t backend, int n_threads) {
         if (ggml_threadpool_params_match(&it->second.params, &desired)) {
             return;
         }
-        ggml_backend_cpu_set_threadpool(backend, nullptr);
+        tp_set(backend, nullptr);
         if (it->second.tp != nullptr) {
-            ggml_threadpool_free(it->second.tp);
+            tp_free(it->second.tp);
         }
         g_backend_tps.erase(it);
     }
 
     ggml_threadpool_params params_copy = desired;
-    ggml_threadpool_t      tp          = ggml_threadpool_new(&params_copy);
+    ggml_threadpool_t      tp          = tp_new(&params_copy);
     if (tp != nullptr) {
-        ggml_backend_cpu_set_threadpool(backend, tp);
+        tp_set(backend, tp);
         g_backend_tps[backend] = { tp, desired };
     }
 }
@@ -185,10 +209,14 @@ void cleanup_cpu_backend_threadpool(ggml_backend_t backend) noexcept {
     }
     if (to_free != nullptr) {
         try {
-            if (ggml_backend_is_cpu(backend)) {
-                ggml_backend_cpu_set_threadpool(backend, nullptr);
+            if (is_cpu_backend(backend)) {
+                if (auto tp_set = reinterpret_cast<pfn_set_threadpool>(cpu_backend_proc(backend, "ggml_backend_cpu_set_threadpool"))) {
+                    tp_set(backend, nullptr);
+                }
             }
-            ggml_threadpool_free(to_free);
+            if (auto tp_free = reinterpret_cast<pfn_threadpool_free>(cpu_backend_proc(backend, "ggml_threadpool_free"))) {
+                tp_free(to_free);
+            }
         } catch (...) {
             // Teardown containment
         }

@@ -643,7 +643,7 @@ int configure_sched_n_threads(ggml_backend_sched_t sched, int requested) {
         if (fn != nullptr) {
             fn(be, n_threads);
         }
-        if (ggml_backend_is_cpu(be)) {
+        if (is_cpu_backend(be)) {
             safe_set_cpu_backend_threadpool(be, n_threads);
         }
     }

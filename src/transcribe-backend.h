@@ -86,6 +86,9 @@ struct BackendPlan {
     std::vector<ggml_backend_t> scheduler_list;
 };
 
+// Check if a backend device is the CPU backend. DL-safe (uses ggml_backend_dev_type).
+bool is_cpu_backend(ggml_backend_t backend);
+
 // Attach or update a topology-aware persistent threadpool on a CPU backend.
 // Reuses the existing threadpool if parameters match; otherwise frees the previous
 // threadpool and instantiates a new one configured for performance cores.

@@ -13,7 +13,7 @@ import ctypes as _c
 # Stable digest of the ABI surface below (structs, enums, macros, layout,
 # prototypes). A native provider package echoes this back so the API
 # package can reject an ABI-mismatched provider before dlopen.
-PUBLIC_HEADER_HASH = "7df72bf9e667b8c2"
+PUBLIC_HEADER_HASH = "7b32fd3376361b54"
 
 # === enum constants ===
 TRANSCRIBE_OK = 0
@@ -271,6 +271,8 @@ def configure(lib):
     lib.transcribe_batch_returned_timestamp_kind.argtypes = [_c.c_void_p, _c.c_int]
     lib.transcribe_batch_status.restype = _c.c_int
     lib.transcribe_batch_status.argtypes = [_c.c_void_p, _c.c_int]
+    lib.transcribe_build_id.restype = _c.c_char_p
+    lib.transcribe_build_id.argtypes = []
     lib.transcribe_capabilities_init.restype = None
     lib.transcribe_capabilities_init.argtypes = [_c.POINTER(transcribe_capabilities)]
     lib.transcribe_close.restype = None
@@ -309,6 +311,8 @@ def configure(lib):
     lib.transcribe_init_backends.argtypes = [_c.c_char_p]
     lib.transcribe_init_backends_default.restype = _c.c_int
     lib.transcribe_init_backends_default.argtypes = []
+    lib.transcribe_load_arch_plugin.restype = _c.c_int
+    lib.transcribe_load_arch_plugin.argtypes = [_c.c_char_p]
     lib.transcribe_log_set.restype = None
     lib.transcribe_log_set.argtypes = [_c.CFUNCTYPE(None, _c.c_int, _c.c_char_p, _c.c_void_p), _c.c_void_p]
     lib.transcribe_model_accepts_ext_kind.restype = _c.c_bool
@@ -353,6 +357,8 @@ def configure(lib):
     lib.transcribe_print_timings.argtypes = [_c.c_void_p]
     lib.transcribe_raw_text.restype = _c.c_char_p
     lib.transcribe_raw_text.argtypes = [_c.c_void_p]
+    lib.transcribe_register_arch_dir.restype = _c.c_int
+    lib.transcribe_register_arch_dir.argtypes = [_c.c_char_p]
     lib.transcribe_reset_timings.restype = None
     lib.transcribe_reset_timings.argtypes = [_c.c_void_p]
     lib.transcribe_returned_timestamp_kind.restype = _c.c_int

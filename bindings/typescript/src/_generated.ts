@@ -11,7 +11,7 @@
 // Stable digest of the ABI surface (structs, enums, macros, layout,
 // prototypes), computed by the Python oracle and pinned here so a header
 // ABI change turns this binding's drift check red for conscious review.
-export const PUBLIC_HEADER_HASH = "7df72bf9e667b8c2";
+export const PUBLIC_HEADER_HASH = "7b32fd3376361b54";
 
 // === enum constants ===
 export const TRANSCRIBE_OK = 0;
@@ -207,6 +207,7 @@ export const FUNCTION_SIGNATURES: Record<string, FnSig> = {
   'transcribe_batch_raw_text': { ret: 'const char *', args: ['const struct transcribe_session *', 'int'] },
   'transcribe_batch_returned_timestamp_kind': { ret: 'transcribe_timestamp_kind', args: ['const struct transcribe_session *', 'int'] },
   'transcribe_batch_status': { ret: 'transcribe_status', args: ['const struct transcribe_session *', 'int'] },
+  'transcribe_build_id': { ret: 'const char *', args: [] },
   'transcribe_capabilities_init': { ret: 'void', args: ['struct transcribe_capabilities *'] },
   'transcribe_close': { ret: 'void', args: ['struct transcribe_session *'] },
   'transcribe_detected_language': { ret: 'const char *', args: ['const struct transcribe_session *'] },
@@ -226,6 +227,7 @@ export const FUNCTION_SIGNATURES: Record<string, FnSig> = {
   'transcribe_get_word': { ret: 'transcribe_status', args: ['const struct transcribe_session *', 'int', 'struct transcribe_word *'] },
   'transcribe_init_backends': { ret: 'transcribe_status', args: ['const char *'] },
   'transcribe_init_backends_default': { ret: 'transcribe_status', args: [] },
+  'transcribe_load_arch_plugin': { ret: 'transcribe_status', args: ['const char *'] },
   'transcribe_log_set': { ret: 'void', args: ['transcribe_log_callback', 'void *'] },
   'transcribe_model_accepts_ext_kind': { ret: '_Bool', args: ['const struct transcribe_model *', 'transcribe_ext_slot', 'uint32_t'] },
   'transcribe_model_arch_string': { ret: 'const char *', args: ['const struct transcribe_model *'] },
@@ -248,6 +250,7 @@ export const FUNCTION_SIGNATURES: Record<string, FnSig> = {
   'transcribe_parakeet_stream_ext_init': { ret: 'void', args: ['struct transcribe_parakeet_stream_ext *'] },
   'transcribe_print_timings': { ret: 'void', args: ['const struct transcribe_session *'] },
   'transcribe_raw_text': { ret: 'const char *', args: ['const struct transcribe_session *'] },
+  'transcribe_register_arch_dir': { ret: 'transcribe_status', args: ['const char *'] },
   'transcribe_reset_timings': { ret: 'void', args: ['struct transcribe_session *'] },
   'transcribe_returned_timestamp_kind': { ret: 'transcribe_timestamp_kind', args: ['const struct transcribe_session *'] },
   'transcribe_run': { ret: 'transcribe_status', args: ['struct transcribe_session *', 'const float *', 'int', 'const struct transcribe_run_params *'] },

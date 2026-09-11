@@ -475,6 +475,12 @@ if(TRANSCRIBE_ARCH_DL)
 
     add_custom_target(transcribe-plugins COMMENT "Build all enabled architecture plugins")
 
+    # The install rules live at the TOP level (cmake/transcribe-install.cmake,
+    # included after add_subdirectory(src)), so the target list has to be
+    # promoted out of this directory scope — add_subdirectory() gives this file
+    # its own scope and nothing set here is visible there otherwise.
+    set(_arch_plugin_targets "")
+
     foreach(_fam IN LISTS _enabled_families)
         add_library(transcribe-arch-${_fam} SHARED
             ${_srcs_${_fam}}
@@ -521,5 +527,8 @@ if(TRANSCRIBE_ARCH_DL)
             POSITION_INDEPENDENT_CODE ON
         )
         transcribe_apply_warnings(transcribe-arch-${_fam})
+        list(APPEND _arch_plugin_targets transcribe-arch-${_fam})
     endforeach()
+
+    set(TRANSCRIBE_ARCH_PLUGIN_TARGETS "${_arch_plugin_targets}" PARENT_SCOPE)
 endif()

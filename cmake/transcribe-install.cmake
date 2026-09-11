@@ -11,6 +11,10 @@
 #   lib/       libtranscribe (static or shared per TRANSCRIBE_BUILD_SHARED)
 #              + ggml/ggml-base/backend libs (ggml's own install rules)
 #              + transcribe-link.json (the link manifest, see below)
+#   bin/       transcribe-arch-<family> plugins on Windows (RUNTIME), beside
+#              transcribe.dll; on Unix they land in lib/ beside libtranscribe
+#              (TRANSCRIBE_ARCH_DL builds only — see the architecture-plugin
+#              block below)
 #
 # transcribe-link.json is the machine-readable link interface for non-CMake
 # consumers: which archives to link in which order, plus the system
@@ -104,6 +108,52 @@ if(WIN32 AND TRANSCRIBE_GGML_BACKEND_DL AND _backend_targets)
     install(TARGETS ${_backend_targets}
             LIBRARY DESTINATION ${GGML_BACKEND_DIR}
             RUNTIME DESTINATION ${GGML_BACKEND_DIR})
+endif()
+
+# --- architecture plugins (TRANSCRIBE_ARCH_DL) --------------------------------
+# The architecture plugins ARE the model support in a DL build: libtranscribe
+# ships with no architectures compiled in and resolves every one of them by
+# loading `transcribe-arch-<family>` at model-open time. Without an install
+# rule here the core installs alone, and every model fails to open with "no
+# architecture for ..." — the plugin dirs the runtime probes (next to
+# libtranscribe, <app_dir>/arch, TRANSCRIBE_ARCH_DIR) stay empty forever, so the
+# `cmake --install`-then-consume path (the Rust -sys crate's staging, the wheel,
+# any non-CMake consumer) silently produces a runtime that can load nothing.
+#
+# Destination mirrors libtranscribe exactly, because "next to libtranscribe" is
+# the first directory the loader probes and the one both Handy's DLL staging and
+# the link manifest point at: RUNTIME (the .dll) -> BINDIR on Windows, which is
+# where GGML_BACKEND_DIR puts transcribe.dll; LIBRARY (.so/.dylib) -> LIBDIR
+# everywhere else, where libtranscribe.so lives. CMake classifies a Windows
+# .dll's companion import library as ARCHIVE, so that goes to LIBDIR beside
+# transcribe's own import lib (see the TRANSCRIBE_BUILD_SHARED block above).
+if(TRANSCRIBE_ARCH_DL AND TRANSCRIBE_ARCH_PLUGIN_TARGETS)
+    # Each plugin links libtranscribe, so on Unix it needs the same
+    # self-referential rpath its dependency has (the loop above only covers
+    # transcribe/ggml/backends).
+    if(APPLE)
+        set_property(TARGET ${TRANSCRIBE_ARCH_PLUGIN_TARGETS}
+            PROPERTY INSTALL_RPATH "@loader_path")
+    elseif(UNIX)
+        set_property(TARGET ${TRANSCRIBE_ARCH_PLUGIN_TARGETS}
+            PROPERTY INSTALL_RPATH "$ORIGIN")
+    endif()
+
+    if(WIN32)
+        install(TARGETS ${TRANSCRIBE_ARCH_PLUGIN_TARGETS}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+        set(_arch_plugin_dir_json "\"${CMAKE_INSTALL_BINDIR}\"")
+    else()
+        install(TARGETS ${TRANSCRIBE_ARCH_PLUGIN_TARGETS}
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+        set(_arch_plugin_dir_json "\"${CMAKE_INSTALL_LIBDIR}\"")
+    endif()
+    message(STATUS
+        "transcribe install: ${TRANSCRIBE_ARCH_PLUGIN_TARGETS} "
+        "(architecture plugins)")
+else()
+    set(_arch_plugin_dir_json null)
 endif()
 
 # --- the link manifest (transcribe-link.json) --------------------------------
@@ -244,6 +294,11 @@ if(TRANSCRIBE_BUILD_SHARED OR TRANSCRIBE_SHARED_EMBED)
 else()
     set(_shared_json false)
 endif()
+if(TRANSCRIBE_ARCH_DL)
+    set(_arch_dl_json true)
+else()
+    set(_arch_dl_json false)
+endif()
 if(TRANSCRIBE_GGML_BACKEND_DL)
     set(_backend_dl_json true)
     # ggml installs backend MODULES to GGML_BACKEND_DIR when set, else to
@@ -275,6 +330,7 @@ _transcribe_json_strings(_library_paths_json ${_library_paths})
 _transcribe_json_strings(_system_libs_json ${_system_libs})
 _transcribe_json_strings(_frameworks_json ${_frameworks})
 _transcribe_json_strings(_link_flags_json ${_link_flags})
+_transcribe_json_strings(_arch_plugins_json ${TRANSCRIBE_ARCH_PLUGIN_TARGETS})
 
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/transcribe-link.json"
 "{
@@ -283,6 +339,9 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/transcribe-link.json"
   \"shared\": ${_shared_json},
   \"backend_dl\": ${_backend_dl_json},
   \"module_dir\": ${_module_dir_json},
+  \"arch_dl\": ${_arch_dl_json},
+  \"arch_plugins\": [${_arch_plugins_json}],
+  \"arch_plugin_dir\": ${_arch_plugin_dir_json},
   \"backends\": [${_kinds_json}],
   \"metal_embed\": ${_metal_embed},
   \"include_dir\": \"${CMAKE_INSTALL_INCLUDEDIR}\",

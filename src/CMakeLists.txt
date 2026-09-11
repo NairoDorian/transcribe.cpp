@@ -111,6 +111,16 @@ set(TRANSCRIBE_SRCS
 )
 
 # Per-family source definitions
+#
+# Each list must name EVERY shared helper the family's files link against —
+# conformer/, sanm/, granite_conformer/, causal_lm/ — and not just the ones
+# under arch/<family>/. Under TRANSCRIBE_ARCH_DL the list becomes the complete
+# source set of a standalone transcribe-arch-<family> module (see the plugin
+# block at the bottom of this file), so nothing else supplies those symbols.
+# The static build hides the omission: there every enabled family's list is
+# concatenated into TRANSCRIBE_SRCS and REMOVE_DUPLICATES leaves one copy of
+# each helper, which resolves the references of every family that happens to
+# be enabled alongside it.
 set(_srcs_parakeet
     arch/parakeet/model.cpp
     arch/parakeet/multitalker.cpp
@@ -127,6 +137,7 @@ set(_srcs_cohere
     arch/cohere/weights.cpp
     arch/cohere/encoder.cpp
     arch/cohere/decoder.cpp
+    conformer/conformer.cpp
     causal_lm/causal_lm.cpp
 )
 
@@ -155,6 +166,8 @@ set(_srcs_moss
     arch/moss/weights.cpp
     arch/moss/encoder.cpp
     arch/moss/decoder.cpp
+    conformer/conformer.cpp
+    causal_lm/causal_lm.cpp
 )
 
 set(_srcs_sortformer
@@ -171,6 +184,7 @@ set(_srcs_voxtral
     arch/voxtral/weights.cpp
     arch/voxtral/encoder.cpp
     arch/voxtral/decoder.cpp
+    conformer/conformer.cpp
     causal_lm/causal_lm.cpp
 )
 
@@ -180,6 +194,7 @@ set(_srcs_voxtral_realtime
     arch/voxtral_realtime/weights.cpp
     arch/voxtral_realtime/encoder.cpp
     arch/voxtral_realtime/decoder.cpp
+    conformer/conformer.cpp
     causal_lm/causal_lm.cpp
 )
 
@@ -189,6 +204,7 @@ set(_srcs_canary_qwen
     arch/canary_qwen/weights.cpp
     arch/canary_qwen/encoder.cpp
     arch/canary_qwen/decoder.cpp
+    conformer/conformer.cpp
     causal_lm/causal_lm.cpp
 )
 
@@ -200,6 +216,7 @@ set(_srcs_whisper
     arch/whisper/decoder.cpp
     arch/whisper/bin_load.cpp
     arch/whisper/public.cpp
+    conformer/conformer.cpp
     third_party/miniz/miniz.c
 )
 
@@ -209,6 +226,7 @@ set(_srcs_moonshine
     arch/moonshine/weights.cpp
     arch/moonshine/encoder.cpp
     arch/moonshine/decoder.cpp
+    conformer/conformer.cpp
 )
 
 set(_srcs_moonshine_streaming
@@ -217,6 +235,7 @@ set(_srcs_moonshine_streaming
     arch/moonshine_streaming/weights.cpp
     arch/moonshine_streaming/encoder.cpp
     arch/moonshine_streaming/decoder.cpp
+    conformer/conformer.cpp
 )
 
 set(_srcs_sensevoice
@@ -225,6 +244,7 @@ set(_srcs_sensevoice
     arch/sensevoice/weights.cpp
     arch/sensevoice/encoder.cpp
     sanm/sanm.cpp
+    conformer/conformer.cpp
 )
 
 set(_srcs_funasr_nano
@@ -235,6 +255,8 @@ set(_srcs_funasr_nano
     arch/funasr_nano/decoder.cpp
     arch/funasr_nano/adaptor.cpp
     sanm/sanm.cpp
+    conformer/conformer.cpp
+    causal_lm/causal_lm.cpp
 )
 
 set(_srcs_gigaam
@@ -278,6 +300,31 @@ set(_srcs_medasr
     arch/medasr/encoder.cpp
     conformer/conformer.cpp
 )
+
+# parakeet and sortformer call into each other, so under TRANSCRIBE_ARCH_DL
+# neither can be a module on its own — each one's plugin is built from this
+# union instead (see the plugin block at the bottom of this file).
+#
+#   parakeet -> sortformer: parakeet's multitalker models embed a Sortformer
+#     diarizer. multitalker.cpp calls sf::resolve_stream_params,
+#     run_diar_streaming_core and probs_to_speaker_segments, and model.cpp
+#     calls init_embedded_diarizer / fuse_embedded_diar_bn — all defined in
+#     arch/sortformer/. The calls sit behind TRANSCRIBE_ENABLE_ARCH_SORTFORMER,
+#     which the static build can honour because one binary holds both families.
+#   sortformer -> parakeet: sortformer's encoder reuses parakeet's Conformer
+#     frontend — ParakeetWeights / ParakeetHParams / ParakeetBlock (types) and
+#     build_encoder_graph, defined in arch/parakeet/encoder.cpp. These calls
+#     are unconditional.
+#
+# Compiling the sibling's sources also emits its `arch` object (defined
+# unconditionally in each family's model.cpp). Nothing references it: a
+# plugin's entry point (transcribe-plugin-entry.cpp) names exactly one
+# namespace, the one this plugin is being built for.
+set(_srcs_parakeet_sortformer
+    ${_srcs_parakeet}
+    ${_srcs_sortformer}
+)
+list(REMOVE_DUPLICATES _srcs_parakeet_sortformer)
 
 if(NOT TRANSCRIBE_ARCH_DL)
     foreach(_fam IN LISTS _enabled_families)
@@ -482,8 +529,15 @@ if(TRANSCRIBE_ARCH_DL)
     set(_arch_plugin_targets "")
 
     foreach(_fam IN LISTS _enabled_families)
+        set(_fam_srcs ${_srcs_${_fam}})
+        # The mutually-dependent pair shares one source set: a parakeet plugin
+        # without sortformer's diarizer and a sortformer plugin without
+        # parakeet's encoder would each fail to link.
+        if(_fam STREQUAL "parakeet" OR _fam STREQUAL "sortformer")
+            set(_fam_srcs ${_srcs_parakeet_sortformer})
+        endif()
         add_library(transcribe-arch-${_fam} SHARED
-            ${_srcs_${_fam}}
+            ${_fam_srcs}
             transcribe-plugin-entry.cpp
         )
         add_dependencies(transcribe-plugins transcribe-arch-${_fam})

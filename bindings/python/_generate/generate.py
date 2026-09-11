@@ -46,6 +46,24 @@ OUTPUT_TS = REPO / "bindings" / "typescript" / "src" / "_generated.ts"
 # fails when either file is stale.
 ABIHASH = INCLUDE / "transcribe.abihash"
 
+
+# Host-independent I/O. Path.read_text()/write_text() default to the *locale*
+# codec and to os.linesep translation, so on a cp1252 Windows host the em dash
+# in the banner is written as a lone 0x97 byte and every line ends CRLF — a
+# file CI (UTF-8, LF) would then reject forever, with a `--check` diff that
+# looks like mojibake rather than a real ABI change. Pin both explicitly so the
+# committed bytes are identical on every platform.
+def write_source(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
+def read_source(path: Path) -> str:
+    if not path.exists():
+        return ""
+    # Universal newlines on read: a CRLF working copy (core.autocrlf) still
+    # compares equal to the LF the generator emits.
+    return path.read_text(encoding="utf-8")
+
 # Fixed-width / size typedefs map to fixed-width ctypes so the generated layout
 # is correct on every target (never c_long, whose width differs LP64 vs LLP64).
 _SPELLING_INT = {
@@ -503,13 +521,13 @@ def main() -> int:
 
     if args.check:
         stale = []
-        current = OUTPUT.read_text() if OUTPUT.exists() else ""
+        current = read_source(OUTPUT)
         if current != text:
             stale.append(str(OUTPUT))
-        current_hash = ABIHASH.read_text() if ABIHASH.exists() else ""
+        current_hash = read_source(ABIHASH)
         if current_hash != hash_text:
             stale.append(str(ABIHASH))
-        current_ts = OUTPUT_TS.read_text() if OUTPUT_TS.exists() else ""
+        current_ts = read_source(OUTPUT_TS)
         if current_ts != ts_text:
             stale.append(str(OUTPUT_TS))
         if stale:
@@ -520,10 +538,10 @@ def main() -> int:
         print(f"{OUTPUT.name}, {ABIHASH.name} and {OUTPUT_TS.name} are up to date")
         return 0
 
-    OUTPUT.write_text(text)
-    ABIHASH.write_text(hash_text)
+    write_source(OUTPUT, text)
+    write_source(ABIHASH, hash_text)
     OUTPUT_TS.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT_TS.write_text(ts_text)
+    write_source(OUTPUT_TS, ts_text)
     print(f"wrote {OUTPUT}")
     print(f"wrote {ABIHASH} ({digest})")
     print(f"wrote {OUTPUT_TS}")

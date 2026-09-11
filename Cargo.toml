@@ -78,6 +78,19 @@ dynamic-backends = ["shared"]
 # `minimal-multilingual` builds only Nemotron Streaming 3.5, Parakeet TDT,
 # Granite Speech, and Qwen3-ASR (< 1 MB binary footprint instead of all 18 archs).
 minimal-multilingual = []
+# `arch-dl` builds every enabled architecture as a separate loadable plugin
+# (`transcribe-arch-<family>.dll/.so/.dylib`) around a core libtranscribe that
+# carries NONE of them, so one core serves any model set and a family can be
+# shipped, swapped or added without rebuilding the core. The plugins land beside
+# libtranscribe (bin/ on Windows, lib/ elsewhere) and are discovered at
+# model-open time — see transcribe_register_arch_dir / transcribe_load_arch_plugin.
+# The plugin SET is what TRANSCRIBE_MODEL_SET selects, so `arch-dl` composes with
+# `minimal-multilingual` (3 plugins) or the `full` default (18).
+#
+# Requires a shared library (the plugins load the core's symbols at runtime), so
+# it implies `shared` exactly as `dynamic-backends` does — CMake hard-errors on
+# TRANSCRIBE_ARCH_DL without it.
+arch-dl = ["shared"]
 
 [build-dependencies]
 cmake = "0.1"

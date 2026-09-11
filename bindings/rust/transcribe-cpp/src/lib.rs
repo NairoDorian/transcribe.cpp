@@ -32,6 +32,16 @@
 //!   calls from many sessions queue rather than race. For real parallelism, use
 //!   one [`Model`] per worker today.
 //!
+//! # Architecture plugins (`arch-dl`)
+//!
+//! In a build with the `arch-dl` feature the model architectures are not
+//! compiled into libtranscribe; each family is a loadable module beside it, and
+//! the library finds them on its own. [`register_arch_dir`] and
+//! [`load_arch_plugin`] exist for a layout the default search cannot cover, and
+//! to turn a missing plugin into a startup error instead of a failure on the
+//! first model load. Both are unreachable in a conventional build — the module
+//! is `arch-dl`-gated, so no code that does not opt in carries the API.
+//!
 //! # ABI verification
 //!
 //! The per-field struct-layout check that the ctypes binding performs is
@@ -47,6 +57,8 @@ pub use transcribe_cpp_sys as sys;
 
 mod backend;
 mod cancel;
+#[cfg(feature = "arch-dl")]
+mod arch;
 mod error;
 mod family;
 mod logging;
@@ -57,6 +69,8 @@ mod streaming;
 mod types;
 mod version;
 
+#[cfg(feature = "arch-dl")]
+pub use arch::{load_arch_plugin, register_arch_dir};
 pub use backend::{
     backend_available, device_count, devices, init_backends, init_backends_default, Device,
     DeviceType,

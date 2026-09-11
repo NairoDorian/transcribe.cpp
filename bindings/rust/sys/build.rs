@@ -134,7 +134,14 @@ fn main() {
     // so it implies `shared`. The Cargo manifest already encodes that implication
     // (`dynamic-backends = ["shared"]`), but treat it as load-bearing here too.
     let dynamic_backends = feature("DYNAMIC_BACKENDS");
-    let shared = feature("SHARED") || dynamic_backends;
+    let arch_dl = feature("ARCH_DL");
+    // Both loadable-plugin postures need a shared library: dynamic-backends
+    // loads ggml backends, arch-dl loads architecture plugins, and each
+    // resolves symbols out of libtranscribe at runtime. The Cargo manifests
+    // already encode the implication (`… = ["shared"]`); treat it as
+    // load-bearing here too, since CMake hard-errors on TRANSCRIBE_ARCH_DL
+    // without a shared build.
+    let shared = feature("SHARED") || dynamic_backends || arch_dl;
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
@@ -147,6 +154,9 @@ fn main() {
     }
     if dynamic_backends {
         active_features.push("dynamic-backends");
+    }
+    if arch_dl {
+        active_features.push("arch-dl");
     }
     if feature("METAL") {
         active_features.push("metal");
@@ -237,7 +247,12 @@ fn main() {
         .define("TRANSCRIBE_BUILD_TESTS", "OFF")
         .define("TRANSCRIBE_BUILD_EXAMPLES", "OFF")
         .define("TRANSCRIBE_BUILD_TOOLS", "OFF")
-        .define("TRANSCRIBE_BUILD_SHARED", if shared { "ON" } else { "OFF" });
+        .define("TRANSCRIBE_BUILD_SHARED", if shared { "ON" } else { "OFF" })
+        // Each enabled architecture is built as a separate loadable plugin
+        // rather than compiled into libtranscribe. The plugin SET comes from
+        // TRANSCRIBE_MODEL_SET (defined below), so this composes with
+        // `minimal-multilingual` (3 plugins) or the `full` default (18).
+        .define("TRANSCRIBE_ARCH_DL", if arch_dl { "ON" } else { "OFF" });
 
     // Ninja Generator Setup:
     // On Windows with MSVC, setup MSVC environment (via vcvars64.bat if needed)

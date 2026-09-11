@@ -34,6 +34,11 @@ openmp = ["transcribe-cpp-sys/openmp"]
 # via the -sys feature). See notes/rust-dynamic-backends-plan.md.
 shared = ["transcribe-cpp-sys/shared"]
 dynamic-backends = ["shared", "transcribe-cpp-sys/dynamic-backends"]
+# `arch-dl` builds each enabled model architecture as a loadable plugin around a
+# core with none of them compiled in, and implies `shared` for the same reason
+# dynamic-backends does (both listed so CARGO_FEATURE_SHARED is set for this
+# crate's build.rs rpath gate as well as for -sys).
+arch-dl = ["shared", "transcribe-cpp-sys/arch-dl"]
 minimal-multilingual = ["transcribe-cpp-sys/minimal-multilingual"]
 
 [dependencies]

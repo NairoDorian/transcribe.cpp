@@ -201,6 +201,32 @@ const Arch * load_plugin_file(const std::filesystem::path & file_path, const cha
         return nullptr;
     }
 
+    // Already loaded -> hand back the SAME Arch instead of dlopen-ing again.
+    // Without this, a host that registers several plugin directories (the
+    // documented layout: next to libtranscribe, <app_dir>/arch,
+    // TRANSCRIBE_ARCH_DIR, ...) and scans each one loads a plugin visible in
+    // more than one of them once PER directory: the module's refcount climbs,
+    // g_loaded_plugins grows a duplicate entry per load, and every duplicate
+    // re-runs the plugin's static initializers. The canonical path is the
+    // identity, so two spellings of one file still collapse to one load.
+    //
+    // Caller must hold g_plugin_mutex. Both call sites (load_arch_plugin and
+    // find_arch) take it and keep it held across this call, so this reads the
+    // vector under the same lock rather than re-acquiring it — g_plugin_mutex
+    // is a plain std::mutex, and a nested lock_guard here would self-deadlock.
+    std::filesystem::path canonical = std::filesystem::weakly_canonical(file_path, ec);
+    if (ec) {
+        canonical = std::filesystem::absolute(file_path, ec);
+    }
+    if (ec) {
+        canonical = file_path;
+    }
+    for (const auto & item : g_loaded_plugins) {
+        if (item.path == canonical) {
+            return item.arch;
+        }
+    }
+
     void * module_handle = nullptr;
 #if defined(_WIN32)
     module_handle = LoadLibraryW(file_path.c_str());
@@ -251,7 +277,11 @@ const Arch * load_plugin_file(const std::filesystem::path & file_path, const cha
 
     LoadedArchPlugin loaded;
     loaded.name   = plugin->arch_name ? plugin->arch_name : (arch->name ? arch->name : "");
-    loaded.path   = file_path;
+    // Store the canonical path — it is the identity the dedup guard above
+    // compares against, so a plugin reached by two different spellings (a
+    // relative one from a scan, an absolute one from an explicit load) still
+    // resolves to a single entry.
+    loaded.path   = canonical;
     loaded.handle = module_handle;
     loaded.arch   = arch;
 

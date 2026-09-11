@@ -87,8 +87,13 @@ fn generate(root: &Path) -> String {
         })
         .prepend_enum_name(false)
         // Only emit declarations from our own headers (skip stdint/stddef).
-        .allowlist_file(r".*/include/transcribe\.h")
-        .allowlist_file(r".*/include/transcribe/.*\.h")
+        // Separator-agnostic: libclang reports the path with the HOST separator,
+        // so a forward-slash-only pattern matches nothing on Windows and bindgen
+        // silently emits an EMPTY surface that still passes its own `--check`
+        // against itself. `[/\\]` matches on every platform and leaves the
+        // Linux/macOS output byte-identical.
+        .allowlist_file(r".*[/\\]include[/\\]transcribe\.h")
+        .allowlist_file(r".*[/\\]include[/\\]transcribe[/\\].*\.h")
         // Version macros are deliberately NOT emitted: a version-only bump must
         // not churn the committed bindings or the abihash (notes/releasing.md
         // §8 P0 #1). The runtime version comes from CARGO_PKG_VERSION instead
@@ -112,5 +117,38 @@ fn generate(root: &Path) -> String {
          pub const PUBLIC_HEADER_HASH: &str = \"{abihash}\";\n\
          \n"
     );
-    format!("{banner}{bindings}")
+    format!("{banner}{}", normalize_enum_newtype_signedness(bindings.to_string()))
+}
+
+/// Rewrite bindgen's enum newtypes to the canonical (unsigned) form.
+///
+/// The C header declares `typedef enum { … } transcribe_foo;` with an
+/// all-non-negative enumerator set. GCC/Clang therefore pick `unsigned int` as
+/// the underlying type, but libclang on Windows runs in MSVC-compatibility
+/// mode and picks `int`; bindgen mirrors whatever it parsed, so the SAME header
+/// yields `c_int` on Windows and `c_uint` on Linux. Unnormalized, a Windows run
+/// of `cargo xtask bindgen` would commit a file that the Linux `--check` gate
+/// (rust-ci.yml) rejects forever, and the diff would look like a real ABI
+/// change rather than a host artifact. The committed surface is the `c_uint`
+/// one, so pin it here and the output is byte-identical in both places.
+///
+/// Only the `#[repr(transparent)]` newtype declaration matches: the same
+/// spelling inside a function signature is `c_int` on every host and is left
+/// alone.
+fn normalize_enum_newtype_signedness(bindings: String) -> String {
+    const SIGNED: &str = "(pub ::std::os::raw::c_int);";
+    const UNSIGNED: &str = "(pub ::std::os::raw::c_uint);";
+    let mut out = String::with_capacity(bindings.len());
+    for line in bindings.split_inclusive('\n') {
+        let body = line.trim_end_matches(['\n', '\r']);
+        let tail = &line[body.len()..];
+        if body.starts_with("pub struct transcribe_") && body.ends_with(SIGNED) {
+            out.push_str(&body[..body.len() - SIGNED.len()]);
+            out.push_str(UNSIGNED);
+            out.push_str(tail);
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
 }

@@ -156,6 +156,53 @@ else()
     set(_arch_plugin_dir_json null)
 endif()
 
+# Prune the plugins this configure does not install.
+#
+# install(TARGETS) above adds THIS configure's modules but removes nothing, so
+# reconfiguring one build directory from `full` to `minimal-multilingual`
+# leaves the other fifteen target files in the prefix: no install rule names
+# them any more, and no other step sweeps them. Keeping them is not harmless
+# weight. The runtime resolves a plugin by family NAME at model-open time, so a
+# prefix holding leftovers serves a module compiled from a different source
+# revision than the core it links against — precisely the mismatch dlopen
+# cannot detect. A custom set with no families is the same bug with an empty
+# keep list, so this runs for every DL configure rather than only the ones that
+# install something.
+#
+# Both destinations are swept, because a plugin's files span them: Windows puts
+# the .dll in BINDIR and its import library (CMake calls it ARCHIVE) in LIBDIR,
+# Unix the versioned .so/.dylib in LIBDIR. The globs are anchored on the plugin
+# name prefix, so no other library in those directories can be a candidate.
+if(TRANSCRIBE_ARCH_DL)
+    set(_arch_plugin_keep ${TRANSCRIBE_ARCH_PLUGIN_TARGETS})
+    install(CODE "
+        set(_keep \"${_arch_plugin_keep}\")
+        foreach(_arch_dir IN ITEMS
+            \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}\"
+            \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}\")
+            file(GLOB _arch_files
+                \"\${_arch_dir}/transcribe-arch-*\"
+                \"\${_arch_dir}/libtranscribe-arch-*\")
+            foreach(_arch_file IN LISTS _arch_files)
+                get_filename_component(_arch_name \"\${_arch_file}\" NAME)
+                # transcribe-arch-<family>.dll / libtranscribe-arch-<family>.so.0
+                # A family is a CMake option suffix ([A-Za-z0-9_]+), so the
+                # first dot in the file name is always the extension boundary.
+                if(_arch_name MATCHES \"^(lib)?(transcribe-arch-[^.]*)\")
+                    set(_arch_stem \"\${CMAKE_MATCH_2}\")
+                else()
+                    continue()
+                endif()
+                if(NOT _arch_stem IN_LIST _keep)
+                    file(REMOVE \"\${_arch_file}\")
+                    message(STATUS
+                        \"transcribe install: pruned stale plugin \${_arch_name}\")
+                endif()
+            endforeach()
+        endforeach()
+    ")
+endif()
+
 # --- the link manifest (transcribe-link.json) --------------------------------
 set(_libraries transcribe)
 set(_library_paths "")

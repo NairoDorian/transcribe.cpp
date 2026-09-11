@@ -210,11 +210,13 @@ void cleanup_cpu_backend_threadpool(ggml_backend_t backend) noexcept {
     if (to_free != nullptr) {
         try {
             if (is_cpu_backend(backend)) {
-                if (auto tp_set = reinterpret_cast<pfn_set_threadpool>(cpu_backend_proc(backend, "ggml_backend_cpu_set_threadpool"))) {
+                if (auto tp_set = reinterpret_cast<pfn_set_threadpool>(
+                        cpu_backend_proc(backend, "ggml_backend_cpu_set_threadpool"))) {
                     tp_set(backend, nullptr);
                 }
             }
-            if (auto tp_free = reinterpret_cast<pfn_threadpool_free>(cpu_backend_proc(backend, "ggml_threadpool_free"))) {
+            if (auto tp_free =
+                    reinterpret_cast<pfn_threadpool_free>(cpu_backend_proc(backend, "ggml_threadpool_free"))) {
                 tp_free(to_free);
             }
         } catch (...) {

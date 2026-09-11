@@ -33,18 +33,20 @@
 // scale. The streaming API multitalker path will be chunk-faithful by
 // construction.
 
-#include "../sortformer/sortformer.h"
-#include "ggml.h"
-#include "parakeet.h"
-#include "transcribe-debug.h"
-#include "transcribe-log.h"
+#if defined(TRANSCRIBE_ENABLE_ARCH_SORTFORMER)
 
-#include <algorithm>
-#include <cmath>
-#include <cstdlib>
-#include <cstring>
-#include <string>
-#include <vector>
+#    include "../sortformer/sortformer.h"
+#    include "ggml.h"
+#    include "parakeet.h"
+#    include "transcribe-debug.h"
+#    include "transcribe-log.h"
+
+#    include <algorithm>
+#    include <cmath>
+#    include <cstdlib>
+#    include <cstring>
+#    include <string>
+#    include <vector>
 
 namespace transcribe::parakeet {
 
@@ -700,3 +702,21 @@ transcribe_status run_multitalker(ParakeetSession *             pc,
 }
 
 }  // namespace transcribe::parakeet
+
+#else
+
+#    include "parakeet.h"
+
+namespace transcribe::parakeet {
+
+transcribe_status run_multitalker(ParakeetSession * /*pc*/,
+                                  ParakeetModel * /*pm*/,
+                                  const float * /*pcm*/,
+                                  int /*n_samples*/,
+                                  const transcribe_run_params * /*params*/) {
+    return TRANSCRIBE_ERR_UNSUPPORTED_ARCH;
+}
+
+}  // namespace transcribe::parakeet
+
+#endif

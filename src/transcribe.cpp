@@ -15,7 +15,9 @@
 
 #include "transcribe.h"
 
-#include "arch/whisper/bin_load.h"
+#if defined(TRANSCRIBE_ENABLE_ARCH_WHISPER)
+#    include "arch/whisper/bin_load.h"
+#endif
 #include "ggml-backend.h"
 #include "ggml.h"  // ggml_log_set: route ggml diagnostics into our sink
 #include "transcribe-abi.h"
@@ -1558,7 +1560,14 @@ static transcribe_status transcribe_model_load_file_impl(const char *           
     // to the whisper .bin adapter, which validates the hparams as
     // whisper-shaped (rejecting unrelated ggml-magic files like Silero VAD).
     if (magic == 0x67676d6cu) {
+#if defined(TRANSCRIBE_ENABLE_ARCH_WHISPER)
         return transcribe::whisper::load_from_bin(path, params, out_model);
+#else
+        transcribe::log_msg(
+            TRANSCRIBE_LOG_LEVEL_ERROR,
+            "transcribe_model_load_file: legacy .bin format requires Whisper support (not compiled into this build)\n");
+        return TRANSCRIBE_ERR_UNSUPPORTED_ARCH;
+#endif
     }
 
     // Header-only GGUF inspection. The Loader is stack-allocated; if
@@ -1571,7 +1580,7 @@ static transcribe_status transcribe_model_load_file_impl(const char *           
 
     // Per-family dispatch. The architecture string came from the GGUF KV so
     // the loader guarantees it is non-null and NUL-terminated.
-    const transcribe::Arch * arch = transcribe::find_arch(loader.arch().c_str());
+    const transcribe::Arch * arch = transcribe::find_arch(loader.arch().c_str(), path);
     if (arch == nullptr) {
         return TRANSCRIBE_ERR_UNSUPPORTED_ARCH;
     }
@@ -1605,6 +1614,20 @@ static void transcribe_model_free_impl(struct transcribe_model * model) {
     // subclass destructor and that destructor frees gguf_context,
     // weights, etc. Passing NULL is a no-op per the public contract.
     delete model;
+}
+
+static transcribe_status transcribe_register_arch_dir_impl(const char * dir) {
+    if (dir == nullptr) {
+        return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+    return transcribe::register_arch_dir(dir);
+}
+
+static transcribe_status transcribe_load_arch_plugin_impl(const char * path) {
+    if (path == nullptr) {
+        return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+    return transcribe::load_arch_plugin(path);
 }
 
 static transcribe_status transcribe_session_init_impl(struct transcribe_model *                model,
@@ -3240,6 +3263,14 @@ extern "C" bool transcribe_backend_available(transcribe_backend_request kind) {
     const int raw = enum_field_raw(&kind);
     return api_guard_value("transcribe_backend_available", false,
                            [&] { return transcribe_backend_available_impl(raw); });
+}
+
+extern "C" transcribe_status transcribe_register_arch_dir(const char * dir) {
+    return api_guard_status("transcribe_register_arch_dir", [&] { return transcribe_register_arch_dir_impl(dir); });
+}
+
+extern "C" transcribe_status transcribe_load_arch_plugin(const char * path) {
+    return api_guard_status("transcribe_load_arch_plugin", [&] { return transcribe_load_arch_plugin_impl(path); });
 }
 
 extern "C" transcribe_status transcribe_model_load_file(const char *                                path,

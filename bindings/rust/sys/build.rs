@@ -123,6 +123,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=TRANSCRIBE_CCACHE_PATH");
     println!("cargo:rerun-if-env-changed=TRANSCRIBE_NO_NINJA");
     println!("cargo:rerun-if-env-changed=TRANSCRIBE_NINJA_PATH");
+    println!("cargo:rerun-if-env-changed=TRANSCRIBE_MODEL_SET");
+    println!("cargo:rerun-if-env-changed=TRANSCRIBE_MODELS");
 
     // Explicit escape hatch: skip the persistent cache and compile from source.
     let force_rebuild = env::var_os("TRANSCRIBE_FORCE_REBUILD").is_some();
@@ -160,6 +162,12 @@ fn main() {
     }
     if feature("OPENMP") {
         active_features.push("openmp");
+    }
+    let model_set_env = env::var("TRANSCRIBE_MODEL_SET").unwrap_or_default();
+    if feature("MINIMAL_MULTILINGUAL") {
+        active_features.push("minimal-multilingual");
+    } else if !model_set_env.is_empty() {
+        active_features.push(&model_set_env);
     }
 
     let is_cuda = feature("CUDA");
@@ -379,6 +387,15 @@ fn main() {
     // dlopen/dlcloses this lib. We therefore leave GGML_OPENMP at its
     // CMakeLists-forced OFF on every platform; `--features openmp` is the only
     // opt-in. See the "OpenMP — CENTRAL POLICY" block in the root CMakeLists.txt.
+
+    if feature("MINIMAL_MULTILINGUAL") {
+        cfg.define("TRANSCRIBE_MODEL_SET", "minimal-multilingual");
+    } else if !model_set_env.is_empty() {
+        cfg.define("TRANSCRIBE_MODEL_SET", &model_set_env);
+    }
+    if let Ok(val) = env::var("TRANSCRIBE_MODELS") {
+        cfg.define("TRANSCRIBE_MODELS", val);
+    }
 
     // Escape hatch: forward arbitrary configure args so the curated features are
     // never a hard ceiling. Anything CMake accepts (-DGGML_*, a -DTRANSCRIBE_*

@@ -7,7 +7,9 @@
 
 #pragma once
 
-#include "../sortformer/sortformer.h"  // embedded diarizer (multitalker bundle)
+#if defined(TRANSCRIBE_ENABLE_ARCH_SORTFORMER)
+#    include "../sortformer/sortformer.h"  // embedded diarizer (multitalker bundle)
+#endif
 #include "decoder.h"
 #include "transcribe-backend.h"
 #include "transcribe-mel.h"
@@ -119,9 +121,11 @@ struct ParakeetModel final : public transcribe_model {
     // are borrowed views into this model's ctx_meta (resolved under the
     // bundle's tensor prefix); the diarizer conformer's fused-BN params
     // live in their own ctx + buffer, freed in the dtor.
+#if defined(TRANSCRIBE_ENABLE_ARCH_SORTFORMER)
     std::unique_ptr<transcribe::sortformer::SortformerEmbedded> diar;
     ggml_context *                                              diar_bn_ctx    = nullptr;
     ggml_backend_buffer_t                                       diar_bn_buffer = nullptr;
+#endif
 
     // Diarizer mel front-end. Same acoustic settings as the ASR frontend
     // (the compose step enforces agreement) but with the sortformer port's
@@ -250,7 +254,9 @@ struct ParakeetSession final : public transcribe_session {
 
     // Multitalker bundle scratch: streaming-diarizer AOSC/FIFO state for
     // the embedded sortformer forward (diarize=ON runs only).
+#if defined(TRANSCRIBE_ENABLE_ARCH_SORTFORMER)
     transcribe::sortformer::DiarStreamScratch diar_scratch;
+#endif
 
     // Per-call timings and the TDT decode result (tokens / words /
     // segments / full_text / result_kind / has_result) live on the base

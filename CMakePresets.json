@@ -112,6 +112,39 @@
         "TRANSCRIBE_BUILD_TESTS": "ON",
         "TRANSCRIBE_BUILD_EXAMPLES": "ON"
       }
+    },
+    {
+      "name": "minimal-multilingual-cpu",
+      "displayName": "Minimal Multilingual CPU Release (Single DLL)",
+      "description": "Release build with minimal multilingual preset (Parakeet, Granite, Qwen3-ASR), single self-contained transcribe.dll.",
+      "binaryDir": "${sourceDir}/build/minimal-multilingual-cpu",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "TRANSCRIBE_MODEL_SET": "minimal-multilingual",
+        "TRANSCRIBE_SHARED_EMBED": "ON",
+        "GGML_NATIVE": "ON",
+        "GGML_LLAMAFILE": "ON",
+        "TRANSCRIBE_BUILD_TESTS": "OFF",
+        "TRANSCRIBE_BUILD_EXAMPLES": "ON"
+      }
+    },
+    {
+      "name": "minimal-multilingual-cuda",
+      "displayName": "Minimal Multilingual CUDA Release",
+      "description": "Release build with minimal multilingual preset (Parakeet, Granite, Qwen3-ASR) and CUDA enabled.",
+      "binaryDir": "${sourceDir}/build/minimal-multilingual-cuda",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "TRANSCRIBE_MODEL_SET": "minimal-multilingual",
+        "TRANSCRIBE_CUDA": "ON",
+        "GGML_CUDA_GRAPHS": "ON",
+        "GGML_NATIVE": "ON",
+        "GGML_LLAMAFILE": "ON",
+        "TRANSCRIBE_BUILD_TESTS": "OFF",
+        "TRANSCRIBE_BUILD_EXAMPLES": "ON"
+      }
     }
   ]
 }

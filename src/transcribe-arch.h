@@ -132,7 +132,12 @@ struct Arch {
 };
 
 // Look up an architecture by name. Returns nullptr if no registered
-// family matches.
-const Arch * find_arch(const char * name);
+// family matches. If model_hint_path is provided, its directory is
+// searched for dynamic architecture plugins if not found statically.
+const Arch * find_arch(const char * name, const char * model_hint_path = nullptr);
+
+// Dynamic plugin directory registration and explicit loading.
+transcribe_status register_arch_dir(const char * dir);
+transcribe_status load_arch_plugin(const char * path);
 
 }  // namespace transcribe

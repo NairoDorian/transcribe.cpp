@@ -228,8 +228,16 @@ option(TRANSCRIBE_SHARED_EMBED "Build libtranscribe as a shared lib with ggml em
 # wheels ship on Linux/Windows: the Vulkan module is present by default and
 # simply fails to load (skipped; CPU keeps working) on machines without a
 # Vulkan loader/driver. The host loads the module directory once via
-# transcribe_init_backends(). Requires TRANSCRIBE_BUILD_SHARED=ON.
 option(TRANSCRIBE_GGML_BACKEND_DL "Build ggml backends as loadable modules" OFF)
+
+# Dynamic architecture plugins: model families (Parakeet, Granite, Qwen3-ASR, ...)
+# are built as separate loadable modules (transcribe-arch-<family>.dll / .so)
+# living in an arch/ directory or next to libtranscribe, loaded on demand.
+option(TRANSCRIBE_ARCH_DL "Build model architectures as dynamic loadable plugins" OFF)
+
+if(TRANSCRIBE_ARCH_DL AND NOT TRANSCRIBE_BUILD_SHARED AND NOT TRANSCRIBE_SHARED_EMBED)
+    set(TRANSCRIBE_SHARED_EMBED ON)
+endif()
 
 # Conservative x86 floor: default GGML_NATIVE plus EVERY x86 SIMD tier to
 # OFF so the one binary runs on baseline x86-64 without SIGILL. This is the
@@ -273,6 +281,14 @@ option(TRANSCRIBE_INSTALL
 option(TRANSCRIBE_BUILD_REAL_MODEL_TESTS
     "Build tests that load real (multi-GB) model files via env var" OFF)
 
+# Model composite selection:
+#   full:                 all 18 architectures compiled (default, 100% backward compatible).
+#   minimal-multilingual: lean client composite for Handy (Nemotron 3.5, Parakeet TDT, Granite 4.1 2B, Qwen3-ASR 1.7B).
+#   custom:               explicit comma or semicolon separated list via TRANSCRIBE_MODELS.
+set(TRANSCRIBE_MODEL_SET "full" CACHE STRING "Model composite to build: full, minimal-multilingual, or custom")
+set_property(CACHE TRANSCRIBE_MODEL_SET PROPERTY STRINGS full minimal-multilingual custom)
+set(TRANSCRIBE_MODELS "" CACHE STRING "Comma or semicolon separated model families for TRANSCRIBE_MODEL_SET=custom")
+
 # -----------------------------------------------------------------------------
 # Build backend tag (build-id / version-string provenance)
 # -----------------------------------------------------------------------------
@@ -306,7 +322,7 @@ configure_file(
     "${CMAKE_CURRENT_BINARY_DIR}/generated/transcribe-build-info.h"
     @ONLY)
 
-message(STATUS "transcribe version: ${TRANSCRIBE_VERSION} (commit ${TRANSCRIBE_BUILD_COMMIT}, branch ${TRANSCRIBE_BUILD_BRANCH}, built ${TRANSCRIBE_BUILD_DATE}, backend ${TRANSCRIBE_BUILD_BACKEND})")
+message(STATUS "transcribe version: ${TRANSCRIBE_VERSION} (commit ${TRANSCRIBE_BUILD_COMMIT}, branch ${TRANSCRIBE_BUILD_BRANCH}, built ${TRANSCRIBE_BUILD_DATE}, backend ${TRANSCRIBE_BUILD_BACKEND}, model set: ${TRANSCRIBE_MODEL_SET})")
 
 # -----------------------------------------------------------------------------
 # Warnings (no -Werror in v1 per PLAN.md)

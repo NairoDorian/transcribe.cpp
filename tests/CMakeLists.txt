@@ -156,6 +156,7 @@ add_test(NAME transcribe_backend_init_unit
 # (parakeet-unified-en-0.6b) feeds this mask into rel_pos_mhsa; any
 # divergence from NeMo would break the streaming WER gate.
 
+if("parakeet" IN_LIST TRANSCRIBE_ACTIVE_MODELS)
 add_executable(transcribe_parakeet_chunked_limited_with_rc_mask_unit
     parakeet_chunked_limited_with_rc_mask_unit.cpp)
 
@@ -169,6 +170,7 @@ transcribe_apply_warnings(transcribe_parakeet_chunked_limited_with_rc_mask_unit)
 
 add_test(NAME transcribe_parakeet_chunked_limited_with_rc_mask_unit
     COMMAND transcribe_parakeet_chunked_limited_with_rc_mask_unit)
+endif()
 
 # -----------------------------------------------------------------------------
 # Variable-length batch mask and causal subsampling unit test
@@ -205,6 +207,7 @@ add_test(NAME transcribe_prefill_chunk_mask_unit COMMAND transcribe_prefill_chun
 # MOSS diarized-transcript parser unit test (pure host, no model)
 # -----------------------------------------------------------------------------
 
+if("moss" IN_LIST TRANSCRIBE_ACTIVE_MODELS)
 add_executable(transcribe_moss_diarize_parser_unit
     moss_diarize_parser_unit.cpp)
 
@@ -216,11 +219,13 @@ target_include_directories(transcribe_moss_diarize_parser_unit PRIVATE
 transcribe_apply_warnings(transcribe_moss_diarize_parser_unit)
 
 add_test(NAME transcribe_moss_diarize_parser_unit COMMAND transcribe_moss_diarize_parser_unit)
+endif()
 
 # -----------------------------------------------------------------------------
 # Granite speaker-attribution splitter unit test (pure host, no model)
 # -----------------------------------------------------------------------------
 
+if("granite" IN_LIST TRANSCRIBE_ACTIVE_MODELS)
 add_executable(transcribe_granite_diarize_parser_unit
     granite_diarize_parser_unit.cpp)
 
@@ -232,6 +237,7 @@ target_include_directories(transcribe_granite_diarize_parser_unit PRIVATE
 transcribe_apply_warnings(transcribe_granite_diarize_parser_unit)
 
 add_test(NAME transcribe_granite_diarize_parser_unit COMMAND transcribe_granite_diarize_parser_unit)
+endif()
 
 # -----------------------------------------------------------------------------
 # F16 → F32 conv pointwise promotion unit test
@@ -568,6 +574,7 @@ if(TRANSCRIBE_UV)
     # returns NOT_IMPLEMENTED in both cases — once on the capability
     # gate, once on the dispatcher's hook-set check. Public-API only
     # (no internal-header reach).
+    if("parakeet" IN_LIST TRANSCRIBE_ACTIVE_MODELS)
     add_executable(transcribe_stream_capability_unit
         stream_capability_unit.cpp)
 
@@ -613,6 +620,7 @@ if(TRANSCRIBE_UV)
         COMMAND transcribe_parakeet_stream_ext_reject_unit)
     set_tests_properties(transcribe_parakeet_stream_ext_reject_unit PROPERTIES
         SKIP_RETURN_CODE 77)
+    endif()
 endif()
 
 # -----------------------------------------------------------------------------
@@ -633,7 +641,7 @@ endif()
 # arch/parakeet/parakeet.h and arch/parakeet/weights.h without exposing
 # them on the public include path.
 
-if(TRANSCRIBE_UV)
+if(TRANSCRIBE_UV AND "parakeet" IN_LIST TRANSCRIBE_ACTIVE_MODELS)
     add_executable(transcribe_parakeet_smoke
         parakeet_smoke.cpp)
 
@@ -912,7 +920,7 @@ endif()
 # script). The transcribe_cohere_e2e_smoke and transcribe_cohere_real_smoke
 # tests below cover the real-model paths.
 
-if(TRANSCRIBE_UV)
+if(TRANSCRIBE_UV AND "cohere" IN_LIST TRANSCRIBE_ACTIVE_MODELS)
     add_executable(transcribe_cohere_smoke
         cohere_smoke.cpp)
 
@@ -943,7 +951,7 @@ endif()
 # transcribe_run — toy weights produce nonsense. Run-path coverage is
 # in qwen3_asr_real_smoke_{0_6b,1_7b}.cpp.
 
-if(TRANSCRIBE_UV)
+if(TRANSCRIBE_UV AND "qwen3_asr" IN_LIST TRANSCRIBE_ACTIVE_MODELS)
     add_executable(transcribe_qwen3_asr_smoke
         qwen3_asr_smoke.cpp)
 
@@ -1274,6 +1282,7 @@ add_test(NAME transcribe_tokenizer_decode_only_unit
 # Whisper .bin synthesized suppression metadata
 # -----------------------------------------------------------------------------
 
+if("whisper" IN_LIST TRANSCRIBE_ACTIVE_MODELS)
 add_executable(transcribe_whisper_bin_suppress_unit
     whisper_bin_suppress_unit.cpp)
 
@@ -1314,6 +1323,7 @@ transcribe_apply_warnings(transcribe_whisper_bin_parser_unit)
 
 add_test(NAME transcribe_whisper_bin_parser_unit
     COMMAND transcribe_whisper_bin_parser_unit)
+endif()
 
 # -----------------------------------------------------------------------------
 # WAV loader unit smoke (example helper)

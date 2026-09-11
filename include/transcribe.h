@@ -805,6 +805,32 @@ TRANSCRIBE_API transcribe_status transcribe_init_backends(const char * artifact_
  */
 TRANSCRIBE_API transcribe_status transcribe_init_backends_default(void);
 
+/* ----------------------------------------------------------------------- */
+/* Dynamic Architecture Plugins                                            */
+/* ----------------------------------------------------------------------- */
+/*
+ * Register a directory to search for dynamic architecture plugin modules
+ * (transcribe-arch-<family>.dll / .so / .dylib).
+ *
+ * Directories registered here are searched in addition to TRANSCRIBE_ARCH_DIR,
+ * the library's own directory (and its arch/ subfolder), and the model file's
+ * directory.
+ *
+ * Returns TRANSCRIBE_OK on success, or TRANSCRIBE_ERR_FILE_NOT_FOUND if the
+ * directory does not exist.
+ */
+TRANSCRIBE_API transcribe_status transcribe_register_arch_dir(const char * dir);
+
+/*
+ * Explicitly load an architecture plugin from the specified file path.
+ *
+ * Loads the shared module, checks its ABI compatibility, and registers
+ * its architecture trait for subsequent model loads.
+ *
+ * Returns TRANSCRIBE_OK on success, or an error code describing failure.
+ */
+TRANSCRIBE_API transcribe_status transcribe_load_arch_plugin(const char * path);
+
 /*
  * Opaque process-local compute-device handle. Handles are owned by the
  * runtime, remain valid for the life of the process, and must not be freed.

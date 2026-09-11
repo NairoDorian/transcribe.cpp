@@ -14,4 +14,9 @@ target_link_libraries(transcribe-cli
         transcribe-common-example
 )
 
+if(TRANSCRIBE_ARCH_DL AND TARGET transcribe-plugins)
+    add_dependencies(transcribe-cli transcribe-plugins)
+endif()
+
 transcribe_apply_warnings(transcribe-cli)
+

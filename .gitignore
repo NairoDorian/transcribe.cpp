@@ -25,6 +25,7 @@
 *.swo
 .idea/
 .vscode/
+.commandcode/
 *.iml
 
 # Claude Code — local state ignored, but project-versioned skills are carved back in.

@@ -34,6 +34,7 @@ openmp = ["transcribe-cpp-sys/openmp"]
 # via the -sys feature). See notes/rust-dynamic-backends-plan.md.
 shared = ["transcribe-cpp-sys/shared"]
 dynamic-backends = ["shared", "transcribe-cpp-sys/dynamic-backends"]
+minimal-multilingual = ["transcribe-cpp-sys/minimal-multilingual"]
 
 [dependencies]
 # default-features = false so the safe crate's own features are the ONLY control

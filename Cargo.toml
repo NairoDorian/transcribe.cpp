@@ -75,6 +75,9 @@ shared = []
 # runtime by transcribe_init_backends(). Requires a shared library, so it implies
 # `shared`. See notes/rust-dynamic-backends-plan.md.
 dynamic-backends = ["shared"]
+# `minimal-multilingual` builds only Nemotron Streaming 3.5, Parakeet TDT,
+# Granite Speech, and Qwen3-ASR (< 1 MB binary footprint instead of all 18 archs).
+minimal-multilingual = []
 
 [build-dependencies]
 cmake = "0.1"

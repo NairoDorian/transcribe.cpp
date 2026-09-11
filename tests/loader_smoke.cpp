@@ -181,17 +181,21 @@ int main() {
 
     test_directory_path();
 
-    // arch_parakeet.gguf has the architecture KV but no tokenizer
-    // payload. The Parakeet handler now requires tokenizer.ggml.* and
-    // surfaces the missing payload as TRANSCRIBE_ERR_GGUF — the loader
-    // dispatched correctly, the family handler then rejected the file.
+#if defined(TRANSCRIBE_ENABLE_ARCH_PARAKEET)
     check_load("arch_parakeet.gguf", TRANSCRIBE_ERR_GGUF);
-    // Same shape for sensevoice / funasr_nano: the arch is in the
-    // dispatch table, the handler runs, then rejects on the missing
-    // hparam / tensor payload. Distinguishes "registered family but
-    // bad GGUF" from "unknown architecture".
+#else
+    check_load("arch_parakeet.gguf", TRANSCRIBE_ERR_UNSUPPORTED_ARCH);
+#endif
+#if defined(TRANSCRIBE_ENABLE_ARCH_SENSEVOICE)
     check_load("arch_sensevoice.gguf", TRANSCRIBE_ERR_GGUF);
+#else
+    check_load("arch_sensevoice.gguf", TRANSCRIBE_ERR_UNSUPPORTED_ARCH);
+#endif
+#if defined(TRANSCRIBE_ENABLE_ARCH_FUNASR_NANO)
     check_load("arch_funasr_nano.gguf", TRANSCRIBE_ERR_GGUF);
+#else
+    check_load("arch_funasr_nano.gguf", TRANSCRIBE_ERR_UNSUPPORTED_ARCH);
+#endif
     check_load("arch_unknown.gguf", TRANSCRIBE_ERR_UNSUPPORTED_ARCH);
     check_load("corrupt_magic.gguf", TRANSCRIBE_ERR_GGUF);
 

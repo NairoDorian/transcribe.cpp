@@ -77,6 +77,11 @@ param(
     [string]$Llamafile = $null,
     [ValidateSet("ON", "OFF")]
     [string]$SharedEmbed = $null,
+    [ValidateSet("", "full", "minimal-multilingual", "custom", "none")]
+    [string]$ModelSet = "",
+    [string]$Models = "",
+    [ValidateSet("ON", "OFF")]
+    [string]$ArchDl = $null,
     [switch]$Ccache,
     [switch]$RealModelTests,
     [string]$VsInstall = ""
@@ -453,6 +458,15 @@ $configureArgs = @(
     "-DTRANSCRIBE_BUILD_TOOLS=$($settings.BuildTools)",
     "-DTRANSCRIBE_SHARED_EMBED=$($settings.SharedEmbed)"
 )
+if (-not [string]::IsNullOrEmpty($ModelSet)) {
+    $configureArgs += "-DTRANSCRIBE_MODEL_SET=$ModelSet"
+}
+if (-not [string]::IsNullOrEmpty($Models)) {
+    $configureArgs += "-DTRANSCRIBE_MODELS=$Models"
+}
+if (-not [string]::IsNullOrEmpty($ArchDl)) {
+    $configureArgs += "-DTRANSCRIBE_ARCH_DL=$ArchDl"
+}
 $configureArgs += $cpuArchSettings.CMakeArgs
 if ($settings.CFlagsDebug -ne "") { $configureArgs += "-DCMAKE_C_FLAGS_DEBUG=$($settings.CFlagsDebug)" }
 if ($settings.CxxFlagsDebug -ne "") { $configureArgs += "-DCMAKE_CXX_FLAGS_DEBUG=$($settings.CxxFlagsDebug)" }

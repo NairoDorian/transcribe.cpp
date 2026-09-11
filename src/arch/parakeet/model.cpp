@@ -111,6 +111,7 @@ ParakeetModel::~ParakeetModel() {
         safe_buffer_free(conv_pw_f32_buffer);
         conv_pw_f32_buffer = nullptr;
     }
+#if defined(TRANSCRIBE_ENABLE_ARCH_SORTFORMER)
     // Embedded-diarizer fused BN (multitalker bundle only).
     if (diar_bn_ctx != nullptr) {
         ggml_free(diar_bn_ctx);
@@ -120,6 +121,7 @@ ParakeetModel::~ParakeetModel() {
         safe_buffer_free(diar_bn_buffer);
         diar_bn_buffer = nullptr;
     }
+#endif
     if (ctx_meta != nullptr) {
         ggml_free(ctx_meta);
         ctx_meta = nullptr;
@@ -579,6 +581,7 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
     {
         const int64_t k_embedded = gguf_find_key(gguf_data, "stt.parakeet.diarizer.embedded");
         if (k_embedded >= 0 && gguf_get_val_bool(gguf_data, k_embedded)) {
+#if defined(TRANSCRIBE_ENABLE_ARCH_SORTFORMER)
             const int64_t k_prefix = gguf_find_key(gguf_data, "stt.parakeet.diarizer.tensor_prefix");
             const char *  prefix   = (k_prefix >= 0) ? gguf_get_val_str(gguf_data, k_prefix) : "sortformer.";
             m->diar                = std::make_unique<transcribe::sortformer::SortformerEmbedded>();
@@ -588,6 +591,12 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
                 gguf_free(gguf_data);
                 return st;
             }
+#else
+            gguf_free(gguf_data);
+            log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
+                    "parakeet: model contains an embedded diarizer but Sortformer is not enabled in this build\n");
+            return TRANSCRIBE_ERR_UNSUPPORTED_ARCH;
+#endif
         }
     }
 
@@ -617,6 +626,7 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
     // Multitalker bundle post-load: fuse the diarizer conformer's BN (needs
     // uploaded data), build its ceil-framed mel frontend, and publish the
     // DIARIZATION capability — for a bundle it is a property of the file.
+#if defined(TRANSCRIBE_ENABLE_ARCH_SORTFORMER)
     if (m->diar != nullptr) {
         if (const transcribe_status st = transcribe::sortformer::fuse_embedded_diar_bn(
                 *m->diar, m->plan.scheduler_list.back(), &m->diar_bn_ctx, &m->diar_bn_buffer);
@@ -638,6 +648,7 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
         }
         transcribe::set_feature(m.get(), TRANSCRIBE_FEATURE_DIARIZATION, true);
     }
+#endif
 
     m->t_load_us = ggml_time_us() - t_load_start;
 
@@ -1407,9 +1418,11 @@ transcribe_status run(transcribe_session *          session,
     // orchestrator (per-speaker passes + merged speaker-tagged result).
     // Without an embedded diarizer the dispatcher has already WARNed and we
     // proceed single-speaker, preserving the shipped behavior.
+#if defined(TRANSCRIBE_ENABLE_ARCH_SORTFORMER)
     if (params != nullptr && params->diarize == TRANSCRIBE_DIARIZE_MODE_ON && pm->diar != nullptr) {
         return run_multitalker(pc, pm, pcm, n_samples, params);
     }
+#endif
 
     return run_one_shot_inner(pc, pm, pcm, n_samples, params);
 }
@@ -1694,11 +1707,13 @@ transcribe_status run_batch(transcribe_session *          session,
     // Multitalker is a transcribe_run concern for now: batch keeps the
     // shipped single-speaker semantics even on a bundle model. Warn so a
     // diarize=ON batch caller isn't silently downgraded.
+#if defined(TRANSCRIBE_ENABLE_ARCH_SORTFORMER)
     if (params != nullptr && params->diarize == TRANSCRIBE_DIARIZE_MODE_ON && pm->diar != nullptr) {
         log_msg(TRANSCRIBE_LOG_LEVEL_WARN,
                 "parakeet: diarize=ON is not yet supported in transcribe_run_batch; "
                 "utterances are decoded single-speaker (use transcribe_run for multitalker)");
     }
+#endif
 
     // Compute each utterance's mel in parallel (pure host, no
     // cross-utterance state). A malformed utterance falls the whole call
@@ -2939,11 +2954,13 @@ transcribe_status stream_begin(transcribe_session *             session,
     // Multitalker is a transcribe_run concern for now: the incremental
     // streaming API keeps the shipped single-speaker semantics even on a
     // bundle model. Warn so a diarize=ON stream isn't silently downgraded.
+#if defined(TRANSCRIBE_ENABLE_ARCH_SORTFORMER)
     if (run_params->diarize == TRANSCRIBE_DIARIZE_MODE_ON && pm->diar != nullptr) {
         log_msg(TRANSCRIBE_LOG_LEVEL_WARN,
                 "parakeet: diarize=ON is not yet supported on the streaming API; "
                 "the stream is decoded single-speaker (use transcribe_run for multitalker)");
     }
+#endif
 
     // Allocate streaming caches on first stream_begin (idempotent); zero
     // contents and reset cursors on every begin.

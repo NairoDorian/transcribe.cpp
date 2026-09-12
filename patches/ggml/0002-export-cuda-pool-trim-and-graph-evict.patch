@@ -1,0 +1,200 @@
+0002 - export CUDA pool-trim and graph-evict hooks into the backend registry.
+
+This is a FEATURE patch, not a fix - the first of its kind in patches/ggml/ -
+so it carries its own rationale here rather than in a commit message.
+
+ggml 0.23.0's CUDA registry exports six procs and no way to hand cached device
+memory back to the driver. A multi-model process (Handy's four models on an
+8 GB card) therefore has no way to make room for the next model's weights short
+of tearing a whole backend down. This adds two registry hooks, mirroring what
+audio.cpp's vendored CUDA backend added for the same reason
+(docs/learnings-from-siblings.md, T2.5):
+
+  ggml_backend_cuda_trim_pools   Clear every device/stream pool of the context,
+                                 returning idle buffers to the driver.
+                                 ggml_cuda_pool_leg already does exactly this
+                                 for its OWN allocation on OOM; this makes the
+                                 same reclaim callable for someone else's
+                                 context, which is the case that matters when
+                                 the memory in the way belongs to another model.
+                                 Implemented for both pool classes: the legacy
+                                 free-list pool (free the cached buffers) and
+                                 the VMM pool (unmap the mapped-but-unused tail
+                                 of the reservation - free() only rewinds the
+                                 bump pointer, so its high-water mark is
+                                 otherwise resident until teardown).
+
+  ggml_backend_cuda_clear_graph  Targeted eviction of one cgraph's cached
+                                 compiled-graph state. The context already has a
+                                 time-based eviction sweep (cuda_graph() sweeps
+                                 every 5 s and drops entries unused for >= 10 s),
+                                 so this is not the only way the memory comes
+                                 back - it is the way to get it back NOW. On an
+                                 allocation-failure path the caller has already
+                                 failed; waiting out the sweep is not an option,
+                                 and the key it erases is exactly the one that
+                                 sweep would have used (ggml_cuda_graph_get_key
+                                 returns cgraph->nodes[0], the same expression).
+
+The sibling's third hook, set_stream_priority, is deliberately NOT ported:
+0.23.0's CUDA context has no stream-priority member and never creates a
+prioritized stream, so the hook would write a field nothing reads.
+
+Applied by scripts/sync-ggml.sh in filename order, after 0001.
+
+diff --git a/include/ggml-cuda.h b/include/ggml-cuda.h
+index 1cd81ee..977df7f 100644
+--- a/include/ggml-cuda.h
++++ b/include/ggml-cuda.h
+@@ -40,6 +40,17 @@ GGML_BACKEND_API void ggml_backend_cuda_get_device_memory(int device, size_t * f
+ GGML_BACKEND_API bool ggml_backend_cuda_register_host_buffer(void * buffer, size_t size);
+ GGML_BACKEND_API void ggml_backend_cuda_unregister_host_buffer(void * buffer);
+ 
++// Return every device/stream pool of this context's cached, idle device memory
++// to the driver. Cheap no-op when nothing is cached. Safe to call mid-process on
++// an idle backend; callers must not have work in flight on it.
++GGML_BACKEND_API void ggml_backend_cuda_trim_pools(ggml_backend_t backend);
++
++// Drop this context's cached compiled-graph state for `graph` (no-op unless the
++// backend was built with CUDA/HIP graphs enabled). Call once the graph is done
++// with, to stop a rebuilt same-shape graph from inheriting the device memory the
++// cached instance holds.
++GGML_BACKEND_API void ggml_backend_cuda_clear_graph(ggml_backend_t backend, const struct ggml_cgraph * graph);
++
+ GGML_BACKEND_API ggml_backend_reg_t ggml_backend_cuda_reg(void);
+ 
+ #ifdef  __cplusplus
+diff --git a/src/ggml-cuda/common.cuh b/src/ggml-cuda/common.cuh
+index 7d14ce9..a1b05af 100644
+--- a/src/ggml-cuda/common.cuh
++++ b/src/ggml-cuda/common.cuh
+@@ -1203,6 +1203,13 @@ struct ggml_cuda_pool {
+ 
+     virtual void * alloc(size_t size, size_t * actual_size) = 0;
+     virtual void free(void * ptr, size_t size) = 0;
++
++    // Release this pool's cached-but-idle device memory back to the driver.
++    // Called by ggml_backend_cuda_trim_pools (ggml-cuda.cu) on an
++    // allocation-failure path, where the memory needed is what an *idle* pool
++    // is still holding. Must not touch anything below the current allocation
++    // watermark: that memory is live. Default: nothing cached, nothing to do.
++    virtual void clear() {}
+ };
+ 
+ template<typename T>
+diff --git a/src/ggml-cuda/ggml-cuda.cu b/src/ggml-cuda/ggml-cuda.cu
+index 5ae3b8d..c1f1919 100644
+--- a/src/ggml-cuda/ggml-cuda.cu
++++ b/src/ggml-cuda/ggml-cuda.cu
+@@ -449,6 +449,13 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
+         }
+     }
+ 
++    // Cached buffers come straight back to the driver (this pool's own OOM path
++    // already does exactly this, for its own allocation; this makes it callable
++    // from outside, for someone else's).
++    void clear() override {
++        clear_pool();
++    }
++
+     void * alloc(size_t size, size_t * actual_size) override {
+ #ifdef DEBUG_CUDA_MALLOC
+         int nnz = 0;
+@@ -678,6 +685,45 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
+         // all deallocations must be in reverse order of the allocations
+         GGML_ASSERT(ptr == (void *) ((char *)(pool_addr) + pool_used));
+     }
++
++    // Unmap the mapped-but-unused tail of the reservation. The pool is a bump
++    // allocator over a VA reservation whose physical pages are mapped in
++    // granularity-sized chunks, and free() only rewinds pool_used — so without
++    // this the high-water mark of every run stays resident until the context is
++    // destroyed, which is the whole cost in a multi-model process. Everything
++    // below the bump pointer is live (free() is LIFO), so only the tail above it
++    // can go; that tail is a whole number of granularity chunks, because both
++    // pool_used (rounded up here) and pool_size already are.
++    void clear() override {
++        CUDA_CHECK(cudaDeviceSynchronize());
++
++        const size_t used_mapped = granularity * ((pool_used + granularity - 1) / granularity);
++        if (used_mapped >= pool_size) {
++            return;
++        }
++
++        const CUdeviceptr start = (CUdeviceptr) ((char *) pool_addr + used_mapped);
++#if defined(GGML_USE_HIP)
++        // ROCm's runtime needs the reverse-order unmap bookkeeping kept in sync
++        // (see the destructor's workaround for ROCm/ROCR-Runtime#285): drop the
++        // mappings wholly inside the tail, then shrink the one the tail starts
++        // inside of.
++        while (!mappings.empty() && mappings.back().first >= start) {
++            CU_CHECK(cuMemUnmap(mappings.back().first, mappings.back().second));
++            mappings.pop_back();
++        }
++        if (!mappings.empty()) {
++            std::pair<CUdeviceptr, size_t> & m = mappings.back();
++            if (m.first + m.second > start) {
++                CU_CHECK(cuMemUnmap(start, m.first + m.second - start));
++                m.second = start - m.first;
++            }
++        }
++#else
++        CU_CHECK(cuMemUnmap(start, pool_size - used_mapped));
++#endif
++        pool_size = used_mapped;
++    }
+ };
+ #endif // defined(GGML_USE_VMM)
+ 
+@@ -4789,6 +4835,38 @@ bool ggml_backend_is_cuda(ggml_backend_t backend) {
+     return backend != NULL && ggml_guid_matches(backend->guid, ggml_backend_cuda_guid());
+ }
+ 
++void ggml_backend_cuda_trim_pools(ggml_backend_t backend) {
++    if (backend == nullptr || !ggml_backend_is_cuda(backend)) {
++        return;
++    }
++    // Lock the device in before the sync: the pools below may belong to a
++    // different device index than the caller's current one.
++    ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
++    CUDA_CHECK(cudaDeviceSynchronize());
++    for (int device = 0; device < GGML_CUDA_MAX_DEVICES; ++device) {
++        for (int stream = 0; stream < GGML_CUDA_MAX_STREAMS; ++stream) {
++            if (cuda_ctx->pools[device][stream] != nullptr) {
++                cuda_ctx->pools[device][stream]->clear();
++            }
++        }
++    }
++}
++
++void ggml_backend_cuda_clear_graph(ggml_backend_t backend, const ggml_cgraph * graph) {
++#ifdef USE_CUDA_GRAPH
++    if (backend == nullptr || !ggml_backend_is_cuda(backend) || graph == nullptr || graph->n_nodes <= 0) {
++        return;
++    }
++    // Same key ggml_backend_cuda_context::cuda_graph() looks the entry up by.
++    const void * graph_key = graph->nodes[0];
++    ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
++    cuda_ctx->cuda_graphs.erase(graph_key);
++#else
++    GGML_UNUSED(backend);
++    GGML_UNUSED(graph);
++#endif
++}
++
+ int ggml_backend_cuda_get_device_count() {
+     return ggml_cuda_info().device_count;
+ }
+@@ -5687,6 +5765,12 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
+     if (strcmp(name, "ggml_backend_get_features") == 0) {
+         return (void *)ggml_backend_cuda_get_features;
+     }
++    if (strcmp(name, "ggml_backend_cuda_trim_pools") == 0) {
++        return (void *)ggml_backend_cuda_trim_pools;
++    }
++    if (strcmp(name, "ggml_backend_cuda_clear_graph") == 0) {
++        return (void *)ggml_backend_cuda_clear_graph;
++    }
+     return nullptr;
+ }
+ 

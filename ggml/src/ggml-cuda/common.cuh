@@ -1203,6 +1203,13 @@ struct ggml_cuda_pool {
 
     virtual void * alloc(size_t size, size_t * actual_size) = 0;
     virtual void free(void * ptr, size_t size) = 0;
+
+    // Release this pool's cached-but-idle device memory back to the driver.
+    // Called by ggml_backend_cuda_trim_pools (ggml-cuda.cu) on an
+    // allocation-failure path, where the memory needed is what an *idle* pool
+    // is still holding. Must not touch anything below the current allocation
+    // watermark: that memory is live. Default: nothing cached, nothing to do.
+    virtual void clear() {}
 };
 
 template<typename T>

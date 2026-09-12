@@ -114,4 +114,36 @@ void safe_sched_free(ggml_backend_sched_t sched) noexcept;
 // sched / compute_ctx free order in one place. NULLs are no-ops.
 void release_compute_scratch(ggml_backend_sched_t & sched, struct ggml_context *& compute_ctx) noexcept;
 
+// --- reclaiming device memory on an allocation-failure path (A7) -------------
+//
+// Four models on an 8 GB card is a real deployment (Handy's multi-STT flow),
+// and there the memory that has to be found for model B's weights is what
+// model A is *sitting on*: a pool's cached-but-idle buffers and a cached
+// compiled graph, neither of which anything releases until its backend is
+// torn down. These three are the reclaim half of that; the ggml half is
+// patches/ggml/0002-export-cuda-pool-trim-and-graph-evict.patch, without which
+// every call here resolves to nothing and is a silent no-op.
+
+// Return a CUDA/HIP backend's cached, idle pool memory to the driver. No-op on
+// other backends. Safe on an idle backend; do not call with work in flight.
+void trim_backend_pools(ggml_backend_t backend);
+
+// Drop a backend's cached compiled-graph state for `graph`, so a later
+// same-shape graph does not inherit the device memory the cached instance
+// holds. Null-safe; no-op where CUDA/HIP graphs are not compiled in.
+void evict_backend_graph_cache(ggml_backend_t backend, struct ggml_cgraph * graph);
+
+// ggml_backend_alloc_ctx_tensors(ctx, backend), and if that fails, hand back
+// cached pool memory and cached graph state — this backend's and, since the
+// memory in the way is usually another model's, every backend in
+// `reclaim_from` — then try exactly once more. Returns nullptr if the retry
+// fails as well, which is the same thing the direct call would have returned;
+// the reclaim attempts only ever change whether the second attempt succeeds.
+//
+// `graph` is optional and only used for the graph eviction.
+ggml_backend_buffer_t alloc_ctx_tensors_with_reclaim(ggml_backend_t                      backend,
+                                                     ggml_context *                      ctx,
+                                                     const std::vector<ggml_backend_t> & reclaim_from = {},
+                                                     struct ggml_cgraph *                graph        = nullptr);
+
 }  // namespace transcribe

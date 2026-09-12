@@ -1,9 +1,16 @@
 repo: https://github.com/ggml-org/ggml.git
 sha:  7840aaba1989c6deeefede1d77d5aaf8f52b947e
+version: 0.23.0
+date: 2026-09-09
 patches:
   patches/ggml/0001-fix-threadpool-oversubscription.patch
+  patches/ggml/0002-export-cuda-pool-trim-and-graph-evict.patch
+
+The `version` and `date` lines are conveniences for humans reviewing a pin bump:
+they are read from the vendored ggml/CMakeLists.txt and the upstream commit
+date, so a bare SHA does not have to be decoded by hand.
 
 This directory is generated from the upstream ggml tree at the SHA above, minus
-.github/, with the listed downstream patches applied in order. Do not edit it by
-hand. Run scripts/sync-ggml.sh <ref> from the repo root to reproduce or upgrade
-it; the script rewrites this file.
+the paths in the sync script's EXCLUDES, with the listed downstream patches
+applied in order. Do not edit it by hand. Run scripts/sync-ggml.sh <ref> from
+the repo root to reproduce or upgrade it; the script rewrites this file.

@@ -150,6 +150,62 @@ static void * cpu_backend_proc(ggml_backend_t backend, const char * name) {
 
 }  // namespace
 
+// Resolve a registry proc on whatever backend this is. Unlike cpu_backend_proc
+// above this is not CPU-specific — the CUDA/HIP hooks of patches/ggml/0002 are
+// reached the same way, and a ggml that does not carry them resolves nullptr,
+// which every caller below treats as "nothing to reclaim".
+static void * backend_proc(ggml_backend_t backend, const char * name) {
+    return cpu_backend_proc(backend, name);
+}
+
+void trim_backend_pools(ggml_backend_t backend) {
+    if (backend == nullptr) {
+        return;
+    }
+    auto fn = (void (*)(ggml_backend_t)) backend_proc(backend, "ggml_backend_cuda_trim_pools");
+    if (fn != nullptr) {
+        fn(backend);
+    }
+}
+
+void evict_backend_graph_cache(ggml_backend_t backend, struct ggml_cgraph * graph) {
+    if (backend == nullptr || graph == nullptr) {
+        return;
+    }
+    auto fn =
+        (void (*)(ggml_backend_t, const struct ggml_cgraph *)) backend_proc(backend, "ggml_backend_cuda_clear_graph");
+    if (fn != nullptr) {
+        fn(backend, graph);
+    }
+}
+
+ggml_backend_buffer_t alloc_ctx_tensors_with_reclaim(ggml_backend_t                      backend,
+                                                     ggml_context *                      ctx,
+                                                     const std::vector<ggml_backend_t> & reclaim_from,
+                                                     struct ggml_cgraph *                graph) {
+    if (backend == nullptr || ctx == nullptr) {
+        return nullptr;
+    }
+    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    if (buffer != nullptr) {
+        return buffer;
+    }
+
+    // First failure. Everything below is best-effort: if the retry fails too the
+    // caller gets nullptr, exactly as before, and the reclaim attempts have
+    // changed nothing about that contract.
+    trim_backend_pools(backend);
+    evict_backend_graph_cache(backend, graph);
+    for (ggml_backend_t other : reclaim_from) {
+        if (other == backend) {
+            continue;  // already done above
+        }
+        trim_backend_pools(other);
+        evict_backend_graph_cache(other, graph);
+    }
+    return ggml_backend_alloc_ctx_tensors(ctx, backend);
+}
+
 bool is_cpu_backend(ggml_backend_t backend) {
     if (backend == nullptr) {
         return false;

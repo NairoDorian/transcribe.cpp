@@ -40,6 +40,17 @@ GGML_BACKEND_API void ggml_backend_cuda_get_device_memory(int device, size_t * f
 GGML_BACKEND_API bool ggml_backend_cuda_register_host_buffer(void * buffer, size_t size);
 GGML_BACKEND_API void ggml_backend_cuda_unregister_host_buffer(void * buffer);
 
+// Return every device/stream pool of this context's cached, idle device memory
+// to the driver. Cheap no-op when nothing is cached. Safe to call mid-process on
+// an idle backend; callers must not have work in flight on it.
+GGML_BACKEND_API void ggml_backend_cuda_trim_pools(ggml_backend_t backend);
+
+// Drop this context's cached compiled-graph state for `graph` (no-op unless the
+// backend was built with CUDA/HIP graphs enabled). Call once the graph is done
+// with, to stop a rebuilt same-shape graph from inheriting the device memory the
+// cached instance holds.
+GGML_BACKEND_API void ggml_backend_cuda_clear_graph(ggml_backend_t backend, const struct ggml_cgraph * graph);
+
 GGML_BACKEND_API ggml_backend_reg_t ggml_backend_cuda_reg(void);
 
 #ifdef  __cplusplus

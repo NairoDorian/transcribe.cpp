@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.21)
 
 # -----------------------------------------------------------------------------
 # Version (single source of truth: include/transcribe.h)
@@ -281,12 +281,17 @@ option(TRANSCRIBE_INSTALL
 option(TRANSCRIBE_BUILD_REAL_MODEL_TESTS
     "Build tests that load real (multi-GB) model files via env var" OFF)
 
-# Model composite selection:
-#   full:                 all 18 architectures compiled (default, 100% backward compatible).
+# Model composite selection (the authoritative family list is _all_families in
+# src/CMakeLists.txt; this comment deliberately does not restate its size):
+#   full:                 every family in _all_families compiled in (default,
+#                         100% backward compatible).
 #   minimal-multilingual: lean client composite for Handy (Nemotron 3.5, Parakeet TDT, Granite 4.1 2B, Qwen3-ASR 1.7B).
+#   none:                 core library only — every family excluded. Combined
+#                         with TRANSCRIBE_ARCH_DL this is the zero-model core
+#                         that loads all architectures as plugins.
 #   custom:               explicit comma or semicolon separated list via TRANSCRIBE_MODELS.
-set(TRANSCRIBE_MODEL_SET "full" CACHE STRING "Model composite to build: full, minimal-multilingual, or custom")
-set_property(CACHE TRANSCRIBE_MODEL_SET PROPERTY STRINGS full minimal-multilingual custom)
+set(TRANSCRIBE_MODEL_SET "full" CACHE STRING "Model composite to build: full, minimal-multilingual, none, or custom")
+set_property(CACHE TRANSCRIBE_MODEL_SET PROPERTY STRINGS full minimal-multilingual none custom)
 set(TRANSCRIBE_MODELS "" CACHE STRING "Comma or semicolon separated model families for TRANSCRIBE_MODEL_SET=custom")
 
 # -----------------------------------------------------------------------------

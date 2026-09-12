@@ -89,10 +89,10 @@ jobs:
       CIBW_ARCHS_LINUX: ${{ matrix.cibw-archs }}
       CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_28
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
       - name: Cache the source-built Vulkan toolchain
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: vk-toolchain-cache
           key: vk-toolchain-${{ matrix.arch }}-${{ hashFiles('scripts/ci/manylinux-vulkan-toolchain.sh') }}
@@ -144,8 +144,8 @@ jobs:
       # Host-side copy of the lane for wheel_smoke's declared-backends assert.
       TRANSCRIBE_WHEEL_LANE: metal
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
       - uses: ./.github/actions/fetch-canary
         with:
           hf-token: ${{ secrets.HF_TOKEN }}
@@ -192,8 +192,8 @@ jobs:
         CC=/usr/bin/clang
         CXX=/usr/bin/clang++
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
       - uses: ./.github/actions/fetch-canary
         with:
           hf-token: ${{ secrets.HF_TOKEN }}
@@ -233,7 +233,7 @@ jobs:
       # chokes on them (charmap codec error). Force UTF-8 for all Python.
       PYTHONUTF8: "1"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       # vcvars for the whole job: the Ninja generator (CMAKE_GENERATOR in
       # pyproject [tool.cibuildwheel.windows]) needs cl.exe on PATH — without
       # it CMake silently picks the runner image's MinGW gcc (observed:
@@ -244,7 +244,7 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@v10.1.0
       - name: Install Vulkan SDK ${{ env.VULKAN_VERSION }}
         run: |
           curl.exe -o "$env:RUNNER_TEMP\vulkan_sdk.exe" -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkan_sdk.exe"
@@ -276,8 +276,8 @@ jobs:
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
       - uses: ./.github/actions/fetch-canary
         with:
           hf-token: ${{ secrets.HF_TOKEN }}
@@ -324,8 +324,8 @@ jobs:
     runs-on: [self-hosted, Linux, X64, hetzner]
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
       - name: Build transcribe-cpp (pure wheel + sdist)
         run: |
           cd bindings/python
@@ -363,8 +363,8 @@ jobs:
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
       - name: Build, repair, packaging-smoke, and T4 runtime smoke (Modal)
         if: env.MODAL_TOKEN_ID != ''
         run: uvx --from modal modal run scripts/ci/modal_cuda_build.py
@@ -443,7 +443,7 @@ jobs:
           path: assets
       - name: Canary model cache (avoid HF rate limits)
         if: env.HF_TOKEN != ''
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: canary
           key: canary-models-v1
@@ -512,7 +512,7 @@ jobs:
           path: assets
       - name: Canary model cache (avoid HF rate limits)
         if: env.HF_TOKEN != ''
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: canary
           key: canary-models-v1
@@ -570,8 +570,8 @@ jobs:
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
       - uses: actions/download-artifact@v8
         with:
           pattern: dist-*
@@ -644,15 +644,15 @@ jobs:
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.2.0  # for fetch-canary's uvx
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0  # for fetch-canary's uvx
       # setup-python's macOS downloads are built for GitHub's hosted images
       # (non-relocatable, hardcoded /Users/runner prefix) and cannot install
       # on a self-hosted runner under a different user (observed:
       # "mkdir: /Users/runner: Permission denied"). On the mini, use the
       # python.org universal2 CPython already installed for wheel-macos,
       # isolated in a fresh venv so pip installs never touch the system copy.
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         if: matrix.label != 'macos-arm64'
         with:
           python-version: "3.12"

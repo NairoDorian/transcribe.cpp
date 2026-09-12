@@ -55,7 +55,7 @@ jobs:
       # rust-windows-deep-path (rust-ci.yml).
       VULKAN_VERSION: "1.4.350.0"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       # vcvars for the whole job: nvcc needs cl.exe, and the Ninja generator
       # needs the MSVC environment (same reasoning as wheel-windows).
       # (still node20 upstream — no node24 release yet; runners force node24 from
@@ -73,14 +73,14 @@ jobs:
         # failure — Blacksmith intercepts the Actions cache service and the
         # action's @actions/cache path didn't survive it. The lane is
         # tag/dispatch-rare; a fresh network install per run is fine.
-        uses: Jimver/cuda-toolkit@v0.2.35
+        uses: Jimver/cuda-toolkit@v0.2.36
         with:
           cuda: "12.9.0"
           method: network
           use-github-cache: false
           use-local-cache: false
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@v10.1.0
       - uses: ./.github/actions/fetch-canary
         with:
           hf-token: ${{ secrets.HF_TOKEN }}

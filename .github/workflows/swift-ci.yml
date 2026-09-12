@@ -52,8 +52,8 @@ jobs:
   swift-gates:
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
       - name: Public-ABI drift gate (pinned hash vs include/transcribe.abihash)
         run: uv run --no-project scripts/ci/swift_abihash_check.py
 
@@ -68,8 +68,8 @@ jobs:
       # when empty and the model tier of `swift test` then XCTSkips.
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v8.2.0  # fetch-canary fetches via uvx
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0  # fetch-canary fetches via uvx
       - name: Verify build deps
         run: |
           command -v ninja
@@ -115,7 +115,7 @@ jobs:
       CMAKE_C_COMPILER_LAUNCHER: ccache
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify build deps
         run: |
           command -v ninja

@@ -64,8 +64,8 @@ jobs:
     runs-on: [self-hosted, Linux, X64, hetzner]
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
       - name: Install clang (libclang resource-dir headers)
         # Idempotent for the persistent self-hosted box: install once, no-op
         # after (and no sudo needed when clang is already present).
@@ -86,8 +86,8 @@ jobs:
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build ccache
       - name: CPU ISA signature (segregates ccache across the heterogeneous fleet)
@@ -97,7 +97,7 @@ jobs:
         # cache by the CPU's feature flags instead.
         run: echo "CPU_SIG=$(grep -m1 '^flags' /proc/cpuinfo | sha256sum | cut -c1-8)" >> "$GITHUB_ENV"
       - name: ccache (compile cache across runs)
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-shared-${{ env.CPU_SIG }}-${{ github.sha }}

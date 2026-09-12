@@ -37,6 +37,14 @@ CMakeLists.txt text eol=lf
 *.yaml       text eol=lf
 *.md         text eol=lf
 
+# patches/ggml/*.patch are build inputs, not prose. scripts/sync-ggml.sh feeds
+# them to `git apply` against a staged tree it materializes with line-ending
+# conversion OFF — the canonical LF form of the committed ggml/ blobs — and a
+# CRLF patch does not apply to an LF file. It used to apply on Windows only
+# because the staged tree was CRLF too, i.e. the patch happened to agree with
+# the platform rather than with the repository.
+*.patch      text eol=lf
+
 # Windows-only scripts keep CRLF.
 *.bat text eol=crlf
 *.cmd text eol=crlf

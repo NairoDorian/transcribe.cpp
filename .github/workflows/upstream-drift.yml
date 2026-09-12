@@ -1,0 +1,163 @@
+name: upstream-drift
+
+# Two "has this tree drifted from something it depends on" checks that no other
+# workflow covers. Both are cheap, and both fail on a condition that is
+# otherwise invisible until it bites:
+#
+#   ggml-recipe      The vendoring invariant `sync + patches == committed tree`.
+#                    A hand-edit to ggml/ that never became a patch in
+#                    patches/ggml/ is silent until the next re-vendor deletes
+#                    it — the exact loss the vendoring scheme exists to prevent.
+#                    scripts/sync-ggml.sh --check is the gate (T1.5); it writes
+#                    nothing.
+#
+#   upstream-merge   Merge-base health against the fork point. A stale merge-base
+#                    makes git report already-applied upstream commits as "N
+#                    commits behind" forever, because it keeps measuring against
+#                    a commit upstream does not contain. Nothing else here would
+#                    notice.
+#
+# Scheduled as well as PR/push: this drift arrives with *time*, not with a
+# commit, so a PR-only trigger would never see it. Weekly, at an off-minute so
+# it does not land on the same instant as every other repository's cron.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+
+# Supersede in-flight runs on the same ref.
+concurrency:
+  group: upstream-drift-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Where transcribe.cpp forks from. Unlike ggml — whose pin is recorded
+  # machine-readably in ggml/UPSTREAM — there is no in-tree record of this, so
+  # it is stated once, here. Change it in this one place if the fork point moves.
+  UPSTREAM_REPO: https://github.com/handy-computer/transcribe.cpp.git
+
+jobs:
+  ggml-recipe:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: ggml recipe fidelity (sync + patches == tree)
+        # Fetches upstream ggml at the PINNED sha, materializes it, applies
+        # patches/ggml/*.patch in order, and diffs the result against the
+        # committed ggml/. Any difference is drift: a hand-edit without a
+        # matching patch, or a patch that has stopped applying cleanly.
+        #
+        # Deliberately unfiltered by path — a hand-edit to ggml/ can ride along
+        # in any PR, so the invariant is checked on all of them. The fetch is
+        # one shallow clone of a pinned commit.
+        run: scripts/sync-ggml.sh --check
+
+  upstream-merge-dryrun:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Merge-base arithmetic needs the whole commit graph. 564 commits and
+          # ~51 MB — not worth the fragility of a partial clone.
+          fetch-depth: 0
+      - name: Merge-base health vs upstream
+        id: health
+        run: |
+          set -euo pipefail
+          # add-or-repoint, never a bare `remote add`: a fork ordinarily DOES
+          # have an `upstream` remote (a self-hosted runner or a preconfigured
+          # checkout will), where `remote add` fails outright — and an existing
+          # remote pointing somewhere else would silently verify against the
+          # wrong repository. set-url makes $UPSTREAM_REPO authoritative.
+          git remote add upstream "$UPSTREAM_REPO" 2>/dev/null \
+            || git remote set-url upstream "$UPSTREAM_REPO"
+          # Explicit refspec: a bare `git fetch upstream main` updates
+          # upstream/main only as a side effect of the configured refspec, which
+          # is easy to lose. Name the destination.
+          git fetch --no-tags upstream "+refs/heads/main:refs/remotes/upstream/main"
+
+          # Unrelated histories: the fork point is gone entirely (upstream main
+          # re-created, or squashed/rewritten past the point where the two
+          # trees shared a commit). merge-base exits non-zero here, which under
+          # `set -e` would abort with a bare "fatal:" — say what it means.
+          if ! mb="$(git merge-base HEAD upstream/main)"; then
+            echo "::error::no common ancestor between HEAD and upstream/main — the fork point is gone (upstream main re-created or history rewritten past the shared commit)."
+            exit 1
+          fi
+
+          behind="$(git rev-list --count "HEAD..upstream/main")"
+          ahead="$(git rev-list --count "upstream/main..HEAD")"
+          date="$(git show -s --format='%cs' "$mb")"
+          echo "merge-base: ${mb:0:12} ($date)"
+          echo "behind upstream/main by $behind commit(s); carries $ahead of its own"
+
+          # --- the phantom-"behind" detector ---------------------------------
+          # `git cherry A B` lists commits in B that are not in A, marking '-'
+          # when a patch with the same patch-id is ALREADY in A and '+' when it
+          # is genuinely new. So with A=HEAD, B=upstream/main, a '-' means
+          # upstream's *content* is in this tree while its *commit* is not an
+          # ancestor — the signature of content-copying across remotes instead
+          # of merging. That is what makes `rev-list --count` report commits you
+          # already have as "N behind" forever, and it never self-corrects,
+          # because git keeps measuring against a fork point that no longer
+          # describes the tree. (Ancestry of the merge-base itself cannot detect
+          # this: `merge-base` is *computed*, so it is an ancestor of both sides
+          # by construction and an is-ancestor test on it is always true.)
+          #
+          # `|| true`: git cherry exits 1 on no output, and grep -c exits 1 on
+          # zero matches; neither is an error here.
+          applied="$(git cherry HEAD upstream/main | grep -c '^-' || true)"
+          novel=$((behind - applied))
+
+          {
+            echo "### upstream-merge-dryrun"
+            echo
+            echo "- merge-base: \`${mb:0:12}\` ($date)"
+            echo "- behind \`upstream/main\`: **${behind}** commit(s) — ${novel} new, ${applied} already present by patch-id"
+            echo "- carried on this branch: **${ahead}** commit(s)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$applied" -gt 0 ]; then
+            echo "::error::${applied} upstream commit(s) are already present in this tree by patch-id but not by ancestry — the fork point is stale, so git will keep reporting them as 'behind' forever."
+            echo "::error::This is what content-copying across remotes produces (docs/learnings-from-siblings.md §7.1). Merge upstream/main instead, so the commits become ancestors."
+            exit 1
+          fi
+          echo "no content-copied upstream commits — the behind/ahead counts describe the tree"
+
+      - name: Merge conflict dry-run (informational)
+        # A real in-memory merge (git >= 2.38) — no worktree checkout, no
+        # identity, no commit. Exit 1 means conflicts.
+        #
+        # Informational on purpose: a conflict is a to-do for whoever does the
+        # merge, not a defect in this tree, and a job that goes red for it on
+        # every upstream commit would just be tuned out. The health step above
+        # carries the hard failure.
+        if: steps.health.outcome == 'success'
+        run: |
+          set -uo pipefail
+          if out="$(git merge-tree --write-tree --name-only HEAD upstream/main 2>&1)"; then
+            echo "merges cleanly into upstream/main"
+            echo "- merge dry-run: **clean**" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "$out"
+            echo "- merge dry-run: **conflicts** (informational)" >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "<details><summary>conflicting paths</summary>"
+              echo
+              echo '```'
+              echo "$out" | tail -n +2
+              echo '```'
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit 0

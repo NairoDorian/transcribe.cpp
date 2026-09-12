@@ -76,8 +76,8 @@ jobs:
     # users never do, because the generated FFI is committed.
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.2.0  # for the python gate scripts
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0  # for the python gate scripts
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -159,11 +159,11 @@ jobs:
       # forks (where fetch-canary skips and the model tests skip cleanly).
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - uses: astral-sh/setup-uv@v8.2.0  # fetch-canary fetches via uvx
+      - uses: astral-sh/setup-uv@v10.1.0  # fetch-canary fetches via uvx
       - name: Enable ccache compiler launcher (non-Windows)
         # CMake reads these at first configure, so build.rs's cmake-crate build
         # picks up ccache with no -D plumbing. NOT set on Windows: ccache isn't
@@ -205,7 +205,7 @@ jobs:
         run: echo "CPU_SIG=$(grep -m1 '^flags' /proc/cpuinfo | sha256sum | cut -c1-8)" >> "$GITHUB_ENV"
       - name: ccache (compile cache for the native source build)
         if: runner.os == 'Linux'  # the mini is persistent; its local cache suffices
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-rust-build-${{ matrix.label }}-${{ env.CPU_SIG }}-${{ github.sha }}
@@ -270,7 +270,7 @@ jobs:
       - name: Force stock path limits (LongPathsEnabled=0)
         shell: pwsh
         run: Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -Value 0 -Type DWord
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Vulkan SDK ${{ env.VULKAN_VERSION }}
         shell: pwsh

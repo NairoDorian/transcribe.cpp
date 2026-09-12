@@ -395,6 +395,16 @@ target_include_directories(transcribe
         ${CMAKE_BINARY_DIR}/generated
 )
 
+# The C++ standard is set globally (CMAKE_CXX_STANDARD in the top-level file), so
+# this is a no-op for the current build — but it is the difference between a
+# requirement the build *happens* to satisfy and one the target *declares*.
+# PUBLIC so it propagates to anything linking `transcribe` (the C++ tests and
+# examples) and travels with the target if it is ever exported via
+# install(EXPORT). transcribe.h uses C++17 in its public surface, so a consumer
+# that lowers the global standard for its own code now gets a correct error
+# instead of a header that fails to parse.
+target_compile_features(transcribe PUBLIC cxx_std_17)
+
 target_compile_definitions(transcribe
     PRIVATE
         TRANSCRIBE_BUILD

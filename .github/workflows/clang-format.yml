@@ -16,8 +16,8 @@ jobs:
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
       - name: clang-format gate
         # Our C/C++ must match the pinned clang-format. Scope (vendored excluded)
         # and the pinned version both live in scripts/ci/clang-format.sh.

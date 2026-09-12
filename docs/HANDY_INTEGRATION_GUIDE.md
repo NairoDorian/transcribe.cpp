@@ -40,8 +40,8 @@ Handy's [`catalog.json`](https://github.com/handy-computer/handy/blob/main/src-t
 - **Qwen3-ASR 1.7B** (via `qwen3_asr`)
 
 ### Available Build Presets:
-1. **`full`** (Default): Compiles all 18 architectures.
-2. **`minimal-multilingual`**: Compiles only `parakeet`, `granite`, and `qwen3_asr` plus necessary helpers (`conformer`, `granite_conformer`, `causal_lm`). Skips 15 unused model families and unneeded helpers (`sanm`, `miniz`), resulting in a single self-contained `transcribe.dll` under 1.0 MB.
+1. **`full`** (Default): Compiles all 19 architectures.
+2. **`minimal-multilingual`**: Compiles only `parakeet`, `granite`, and `qwen3_asr` plus necessary helpers (`conformer`, `granite_conformer`, `causal_lm`). Skips the 16 other model families and unneeded helpers (`sanm`, `miniz`), resulting in a single self-contained `transcribe.dll` under 1.0 MB. `granite5_ctc` is deliberately not among the three: Granite Speech 5.0 is English-only, and this preset is the multilingual composite. Request it via `full` or `custom`.
 3. **`custom`**: Explicit comma-separated list of model families passed via `-DTRANSCRIBE_MODELS="parakeet,granite"`.
 
 ---
@@ -116,7 +116,7 @@ For downstream desktop applications like Handy, shipping all model families insi
 
 ### How it Works
 - **Zero-Model Minimal Core (`transcribe.dll`)**: Contains the loader, mel spectrogram frontend, tokenizer, tensor runtime, and plugin dispatcher.
-- **On-Demand Plugins (`transcribe-arch-<arch>.dll`)**: Each model family (e.g. `transcribe-arch-parakeet.dll`, `transcribe-arch-granite_speech.dll`, `transcribe-arch-qwen3_asr.dll`) is packaged as an independent module. **`<arch>` is the architecture name the GGUF declares** in `general.architecture`, not the source directory: `granite/` builds `granite_speech`, `granite_nar/` builds `granite_speech_nar` and `cohere/` builds `cohere_asr`. The loader keys its search on that string, so a module named after the directory is never found and the model fails to open with `unsupported architecture`.
+- **On-Demand Plugins (`transcribe-arch-<arch>.dll`)**: Each model family (e.g. `transcribe-arch-parakeet.dll`, `transcribe-arch-granite_speech.dll`, `transcribe-arch-granite_speech5_ctc.dll`, `transcribe-arch-qwen3_asr.dll`) is packaged as an independent module. **`<arch>` is the architecture name the GGUF declares** in `general.architecture`, not the source directory: `granite/` builds `granite_speech`, `granite_nar/` builds `granite_speech_nar`, `granite5_ctc/` builds `granite_speech5_ctc` and `cohere/` builds `cohere_asr`. The loader keys its search on that string, so a module named after the directory is never found and the model fails to open with `unsupported architecture`.
 - **Automatic Discovery**: When Handy loads a model via `transcribe_model_load_file(path, ...)`, the engine inspects the GGUF architecture header and automatically looks for the plugin in:
   1. Next to the `.gguf` model file (`<model_dir>/transcribe-arch-<arch>.dll`)
   2. In an `arch/` subfolder next to the model (`<model_dir>/arch/`)

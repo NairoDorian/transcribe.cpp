@@ -72,7 +72,7 @@ fi
 print_banner
 prompt_choice "Select Model Preset / Composite" 1 \
     "minimal-multilingual [Parakeet TDT 0.6B + Granite Speech 2B + Qwen3-ASR 1.7B] (Fastest, compact, multilingual)" \
-    "full [All 18 speech-to-text models + diarizers]" \
+    "full [All 19 speech-to-text models + diarizers]" \
     "custom [Select specific model families manually]" \
     "none [Zero models built-in; ideal for dynamic plugin runtime]"
 
@@ -83,7 +83,7 @@ case "$CHOICE_RESULT" in
     2) MODEL_SET="full" ;;
     3)
         MODEL_SET="custom"
-        echo -e "\n${C_YELLOW}Available families: parakeet, granite, qwen3_asr, whisper, cohere, canary, moss, sortformer, voxtral, voxtral_realtime, canary_qwen, moonshine, moonshine_streaming, sensevoice, funasr_nano, gigaam, granite_nar, medasr${C_RESET}"
+        echo -e "\n${C_YELLOW}Available families: parakeet, granite, qwen3_asr, whisper, cohere, canary, moss, sortformer, voxtral, voxtral_realtime, canary_qwen, moonshine, moonshine_streaming, sensevoice, funasr_nano, gigaam, granite_nar, granite5_ctc, medasr${C_RESET}"
         read -rp "  Enter comma-separated list of families (e.g. parakeet,granite): " CUSTOM_MODELS
         if [ -z "$CUSTOM_MODELS" ]; then
             CUSTOM_MODELS="parakeet,granite,qwen3_asr"

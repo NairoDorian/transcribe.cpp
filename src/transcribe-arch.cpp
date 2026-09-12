@@ -130,6 +130,12 @@ extern const Arch arch;
 }
 #endif
 
+#ifdef TRANSCRIBE_ENABLE_ARCH_GRANITE5_CTC
+namespace granite5_ctc {
+extern const Arch arch;
+}
+#endif
+
 #ifdef TRANSCRIBE_ENABLE_ARCH_MEDASR
 namespace medasr {
 extern const Arch arch;
@@ -388,6 +394,9 @@ const Arch * find_arch(const char * name, const char * model_hint_path) {
 #endif
 #ifdef TRANSCRIBE_ENABLE_ARCH_SORTFORMER
         &sortformer::arch,
+#endif
+#ifdef TRANSCRIBE_ENABLE_ARCH_GRANITE5_CTC
+        &granite5_ctc::arch,
 #endif
         nullptr,
     };

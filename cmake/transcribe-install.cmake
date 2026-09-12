@@ -122,8 +122,9 @@ endif()
 #
 # `<arch>` is the architecture's registered name — the string the loader
 # compares against the model's `general.architecture` — which is the family
-# directory's name for fifteen families and not for three of them (granite ->
-# granite_speech, granite_nar -> granite_speech_nar, cohere -> cohere_asr).
+# directory's name for fifteen families and not for four of them (granite ->
+# granite_speech, granite_nar -> granite_speech_nar, cohere -> cohere_asr,
+# granite5_ctc -> granite_speech5_ctc).
 # src/CMakeLists.txt reads it out of each family's model.cpp and hands the
 # resulting file names over in TRANSCRIBE_ARCH_PLUGIN_NAMES.
 #
@@ -182,11 +183,11 @@ endif()
 # name prefix, so no other library in those directories can be a candidate.
 #
 # The keep list is the INSTALLED FILE NAMES (TRANSCRIBE_ARCH_PLUGIN_NAMES), not
-# the target names: a module is named after its architecture, and three families
+# the target names: a module is named after its architecture, and four families
 # are spelled differently on disk than in CMake (granite -> granite_speech,
-# granite_nar -> granite_speech_nar, cohere -> cohere_asr). Keying this on
-# target names would make the prune delete the very modules this configure just
-# installed.
+# granite_nar -> granite_speech_nar, cohere -> cohere_asr, granite5_ctc ->
+# granite_speech5_ctc). Keying this on target names would make the prune delete
+# the very modules this configure just installed.
 if(TRANSCRIBE_ARCH_DL)
     set(_arch_plugin_keep ${TRANSCRIBE_ARCH_PLUGIN_NAMES})
     install(CODE "

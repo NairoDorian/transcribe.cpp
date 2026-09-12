@@ -63,11 +63,16 @@ set(_all_families
     funasr_nano
     gigaam
     granite
+    granite5_ctc
     granite_nar
     medasr
 )
 
 if(TRANSCRIBE_MODEL_SET STREQUAL "minimal-multilingual")
+    # granite5_ctc is deliberately absent: Granite Speech 5.0 is English-only,
+    # and the whole point of this set is a compact MULTILINGUAL composite. The
+    # granite family that belongs here is granite (Granite Speech 2B), which is
+    # multilingual. Request granite5_ctc through `full` or `custom` instead.
     set(_enabled_families parakeet granite qwen3_asr)
 elseif(TRANSCRIBE_MODEL_SET STREQUAL "none")
     set(_enabled_families "")
@@ -282,6 +287,20 @@ set(_srcs_granite
     causal_lm/causal_lm.cpp
 )
 
+# Granite Speech 5.0 CTC. Shares granite_conformer's Shaw attention with
+# the other two granite families and pulls batchnorm / macaron / depthwise
+# helpers out of conformer/, so both are named here even though only
+# encoder.cpp references them.
+set(_srcs_granite5_ctc
+    arch/granite5_ctc/model.cpp
+    arch/granite5_ctc/capabilities.cpp
+    arch/granite5_ctc/weights.cpp
+    arch/granite5_ctc/encoder.cpp
+    arch/granite5_ctc/decoder.cpp
+    granite_conformer/shaw_attn.cpp
+    conformer/conformer.cpp
+)
+
 set(_srcs_granite_nar
     arch/granite_nar/model.cpp
     arch/granite_nar/capabilities.cpp
@@ -332,6 +351,26 @@ if(NOT TRANSCRIBE_ARCH_DL)
     endforeach()
     list(REMOVE_DUPLICATES TRANSCRIBE_SRCS)
 endif()
+
+# The families whose symbols are actually IN libtranscribe — which is what a
+# test linking `transcribe` may reference. tests/CMakeLists.txt gates every
+# family-specific test on this (`if("granite" IN_LIST ...)`), so an inert value
+# here does not fail the tests: it builds them anyway and the link fails
+# instead, in whichever configure happens to exclude that family.
+#
+# Under TRANSCRIBE_ARCH_DL the answer is the empty list even though families
+# are enabled: the core holds no architecture compiled in, so a test that
+# referenced family symbols would not link against it. Family-specific tests
+# are a static-build affair.
+#
+# Exported to the parent scope because tests/ is added as a sibling subdirectory
+# at the top level, after src/, and this file's scope ends with it.
+if(TRANSCRIBE_ARCH_DL)
+    set(TRANSCRIBE_ACTIVE_MODELS "")
+else()
+    set(TRANSCRIBE_ACTIVE_MODELS "${_enabled_families}")
+endif()
+set(TRANSCRIBE_ACTIVE_MODELS "${TRANSCRIBE_ACTIVE_MODELS}" PARENT_SCOPE)
 
 add_library(transcribe ${_transcribe_lib_type} ${TRANSCRIBE_SRCS})
 
@@ -545,12 +584,13 @@ if(TRANSCRIBE_ARCH_DL)
         # A plugin module's FILE NAME is its lookup key: the loader derives
         # `transcribe-arch-<name>.dll` from the GGUF's `general.architecture`
         # string (transcribe-arch.cpp, find_arch) and finds nothing when the
-        # module is named after the source directory instead. Three families
+        # module is named after the source directory instead. Four families
         # are spelled differently on disk than in the GGUF — granite /
-        # granite_nar / cohere are directories whose architectures are
-        # granite_speech / granite_speech_nar / cohere_asr — so naming the
-        # module after the directory leaves those families unloadable in every
-        # DL build (the model fails at open with "unsupported architecture").
+        # granite5_ctc / granite_nar / cohere are directories whose
+        # architectures are granite_speech / granite_speech5_ctc /
+        # granite_speech_nar / cohere_asr — so naming the module after the
+        # directory leaves those families unloadable in every DL build (the
+        # model fails at open with "unsupported architecture").
         #
         # Read the name out of the family's own model.cpp rather than repeating
         # it here: that string is the exact value the loader compares against,

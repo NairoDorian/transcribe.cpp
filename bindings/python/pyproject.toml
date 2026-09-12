@@ -7,23 +7,25 @@ name = "transcribe-cpp"
 version = "0.2.3"
 description = "Python bindings for transcribe.cpp"
 readme = "README.md"
-# 3.8 is EOL (2024-10); 3.9 is the floor. The binding is ctypes-only, so there
-# is no per-version compiled extension — one pure-Python package spans the range.
-requires-python = ">=3.9"
+# 3.11 is the floor: the binding is ctypes-only, so there is no per-version
+# compiled extension and one pure-Python package *could* span the range — but
+# the PEP-723 scripts under scripts/ declare >=3.11. 3.9 EOL'd 2025-10 and 3.10
+# EOLs 2026-10, making 3.11 the oldest line that stays in support across the
+# 3.x horizon. See the repo-root pyproject.toml for the full rationale.
+requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "The transcribe.cpp authors" }]
 keywords = ["transcription", "speech-to-text", "asr", "ggml", "whisper", "parakeet"]
 classifiers = [
-  "Development Status :: 1 - Planning",
+  "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.9",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Multimedia :: Sound/Audio :: Speech",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -46,10 +48,11 @@ cu12 = ["transcribe-cpp-native-cu12==0.2.3.*"]
 # silently skipping wherever numpy happens to be absent.
 test = ["pytest>=7", "numpy"]
 
+# The fork, not upstream — see the same block in the repo-root pyproject.toml.
 [project.urls]
-Homepage = "https://github.com/handy-computer/transcribe.cpp"
-Repository = "https://github.com/handy-computer/transcribe.cpp"
-Issues = "https://github.com/handy-computer/transcribe.cpp/issues"
+Homepage = "https://github.com/NairoDorian/transcribe.cpp"
+Repository = "https://github.com/NairoDorian/transcribe.cpp"
+Issues = "https://github.com/NairoDorian/transcribe.cpp/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/transcribe_cpp"]

@@ -15,13 +15,13 @@
   "files": ["dist", "README.md", "LICENSE", "scripts/build-from-source.mjs"],
   "license": "MIT",
   "author": "The transcribe.cpp authors",
-  "homepage": "https://github.com/handy-computer/transcribe.cpp#readme",
+  "homepage": "https://github.com/NairoDorian/transcribe.cpp#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/handy-computer/transcribe.cpp.git"
+    "url": "git+https://github.com/NairoDorian/transcribe.cpp.git"
   },
   "bugs": {
-    "url": "https://github.com/handy-computer/transcribe.cpp/issues"
+    "url": "https://github.com/NairoDorian/transcribe.cpp/issues"
   },
   "keywords": ["transcription", "speech-to-text", "asr", "stt", "ggml", "whisper", "parakeet"],
   "engines": {
@@ -35,7 +35,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "koffi": "^3.0.2"
+    "koffi": "^3.2.1"
   },
   "optionalDependencies": {
     "@transcribe-cpp/darwin-arm64-metal": "0.2.3",
@@ -45,7 +45,7 @@
     "@transcribe-cpp/win32-x64-cpu-vulkan": "0.2.3"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "typescript": "^5.6.0"
+    "@types/node": "^22.20.2",
+    "typescript": "^7.0.2"
   }
 }

@@ -17,8 +17,10 @@ rust-version = "1.74"
 description = "Native FFI bindings for transcribe.cpp, a C/C++ speech-to-text library built on ggml"
 license = "MIT"
 readme = "bindings/rust/sys/README.md"
-repository = "https://github.com/handy-computer/transcribe.cpp"
-homepage = "https://github.com/handy-computer/transcribe.cpp"
+# The fork, not upstream handy-computer/transcribe.cpp: a crate packaged from
+# this tree must not advertise a repository that lacks its own sources.
+repository = "https://github.com/NairoDorian/transcribe.cpp"
+homepage = "https://github.com/NairoDorian/transcribe.cpp"
 keywords = ["transcription", "speech", "asr", "stt", "ggml"]
 categories = ["multimedia::audio", "external-ffi-bindings"]
 links = "transcribe"
@@ -76,7 +78,8 @@ shared = []
 # `shared`. See notes/rust-dynamic-backends-plan.md.
 dynamic-backends = ["shared"]
 # `minimal-multilingual` builds only Nemotron Streaming 3.5, Parakeet TDT,
-# Granite Speech, and Qwen3-ASR (< 1 MB binary footprint instead of all 18 archs).
+# Granite Speech, and Qwen3-ASR (< 1 MB binary footprint instead of every
+# architecture).
 minimal-multilingual = []
 # `arch-dl` builds every enabled architecture as a separate loadable plugin
 # (`transcribe-arch-<family>.dll/.so/.dylib`) around a core libtranscribe that

@@ -26,7 +26,7 @@
 # runs in the same flow.
 
 [build-system]
-requires = ["scikit-build-core>=0.11"]
+requires = ["scikit-build-core>=1.0.3"]
 build-backend = "scikit_build_core.build"
 
 [project]
@@ -34,7 +34,8 @@ name = "transcribe-cpp-native-cu12"
 dynamic = ["version"]
 description = "CUDA 12 native provider for transcribe-cpp (speech-to-text, ggml)"
 readme = "README.md"
-requires-python = ">=3.9"
+# Same floor and same rationale as the default provider (repo-root pyproject.toml).
+requires-python = ">=3.11"
 license = "MIT"
 # Copies of the repo + ggml + miniz licenses (PEP 639 paths cannot escape the
 # project directory; texts are static).
@@ -42,9 +43,13 @@ license-files = ["LICENSE", "LICENSE-ggml", "LICENSE-miniz"]
 authors = [{ name = "The transcribe.cpp authors" }]
 keywords = ["transcription", "speech-to-text", "asr", "ggml", "cuda"]
 classifiers = [
-  "Development Status :: 1 - Planning",
+  "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Multimedia :: Sound/Audio :: Speech",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -55,10 +60,11 @@ dependencies = [
   "nvidia-cublas-cu12>=12.1",
 ]
 
+# The fork, not upstream — see the same block in the repo-root pyproject.toml.
 [project.urls]
-Homepage = "https://github.com/handy-computer/transcribe.cpp"
-Repository = "https://github.com/handy-computer/transcribe.cpp"
-Issues = "https://github.com/handy-computer/transcribe.cpp/issues"
+Homepage = "https://github.com/NairoDorian/transcribe.cpp"
+Repository = "https://github.com/NairoDorian/transcribe.cpp"
+Issues = "https://github.com/NairoDorian/transcribe.cpp/issues"
 
 [project.entry-points."transcribe_cpp.native"]
 cu12 = "transcribe_cpp_native_cu12:descriptor"

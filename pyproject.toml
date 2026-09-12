@@ -16,7 +16,7 @@
 # (the binding is ctypes), only the native artifact directory.
 
 [build-system]
-requires = ["scikit-build-core>=0.11"]
+requires = ["scikit-build-core>=1.0.3"]
 build-backend = "scikit_build_core.build"
 
 [project]
@@ -24,7 +24,15 @@ name = "transcribe-cpp-native"
 dynamic = ["version"]
 description = "Prebuilt native library for transcribe-cpp (speech-to-text, ggml)"
 readme = "bindings/python-native/README.md"
-requires-python = ">=3.9"
+# 3.11 floor. The wheels are py3-none (ctypes, no compiled Python), so the
+# binding itself would span any CPython 3 — the floor is set by the project,
+# not the artifact: the PEP-723 scripts under scripts/ declare >=3.11, so a
+# 3.9/3.10 user could install this wheel and still not run the tooling that
+# builds it. 3.9 EOL'd 2025-10 and 3.10 EOLs 2026-10, making 3.11 the oldest
+# line that stays in support across the 3.x horizon rather than a floor that
+# goes stale next month. (scripts/ci/build_wheel_index.py is the single
+# remaining >=3.9 declaration — CI-only, and deliberately left as is.)
+requires-python = ">=3.11"
 license = "MIT"
 # Wheels vendor native code, so third-party license texts ship in the wheel
 # (settled decision: license inclusion is part of provider packaging tests).
@@ -32,17 +40,26 @@ license-files = ["LICENSE", "ggml/LICENSE", "src/third_party/miniz/LICENSE"]
 authors = [{ name = "The transcribe.cpp authors" }]
 keywords = ["transcription", "speech-to-text", "asr", "ggml", "native"]
 classifiers = [
-  "Development Status :: 1 - Planning",
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Intended Audience :: Developers",
   "Programming Language :: Python :: 3",
   "Topic :: Multimedia :: Sound/Audio :: Speech",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
+# These point at the FORK, not at upstream handy-computer/transcribe.cpp. The
+# release machinery is already fork-agnostic (publish.yml uploads with
+# `--repo "$GITHUB_REPOSITORY"`), so a wheel built AND released from this fork
+# would otherwise advertise a repository that does not contain its own source —
+# sending bug reports somewhere that cannot fix them.
 [project.urls]
-Homepage = "https://github.com/handy-computer/transcribe.cpp"
-Repository = "https://github.com/handy-computer/transcribe.cpp"
-Issues = "https://github.com/handy-computer/transcribe.cpp/issues"
+Homepage = "https://github.com/NairoDorian/transcribe.cpp"
+Repository = "https://github.com/NairoDorian/transcribe.cpp"
+Issues = "https://github.com/NairoDorian/transcribe.cpp/issues"
 
 # The provider contract: transcribe_cpp discovers native artifacts through this
 # entry-point group and validates version + public-header hash before dlopen

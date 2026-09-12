@@ -1,4 +1,4 @@
-//! Raw native FFI bindings for [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp),
+//! Raw native FFI bindings for [transcribe.cpp](https://github.com/NairoDorian/transcribe.cpp),
 //! a C/C++ speech-to-text library built on ggml.
 //!
 //! This crate is the unsafe, generated FFI surface. The safe, idiomatic API is

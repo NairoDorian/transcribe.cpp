@@ -1,5 +1,5 @@
 //! Safe, idiomatic Rust bindings for
-//! [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp), a C/C++
+//! [transcribe.cpp](https://github.com/NairoDorian/transcribe.cpp), a C/C++
 //! speech-to-text library built on ggml.
 //!
 //! The raw FFI lives in the [`transcribe-cpp-sys`](transcribe_cpp_sys) crate

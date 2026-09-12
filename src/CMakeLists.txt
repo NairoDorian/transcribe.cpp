@@ -527,6 +527,11 @@ if(TRANSCRIBE_ARCH_DL)
     # promoted out of this directory scope — add_subdirectory() gives this file
     # its own scope and nothing set here is visible there otherwise.
     set(_arch_plugin_targets "")
+    # The installed file names (`transcribe-arch-<arch>`), in the same order as
+    # the targets above. They are what the install rules must key on — see the
+    # prune in cmake/transcribe-install.cmake — and they are NOT the target
+    # names whenever a family's directory is not spelled like its architecture.
+    set(_arch_plugin_names "")
 
     foreach(_fam IN LISTS _enabled_families)
         set(_fam_srcs ${_srcs_${_fam}})
@@ -536,6 +541,38 @@ if(TRANSCRIBE_ARCH_DL)
         if(_fam STREQUAL "parakeet" OR _fam STREQUAL "sortformer")
             set(_fam_srcs ${_srcs_parakeet_sortformer})
         endif()
+
+        # A plugin module's FILE NAME is its lookup key: the loader derives
+        # `transcribe-arch-<name>.dll` from the GGUF's `general.architecture`
+        # string (transcribe-arch.cpp, find_arch) and finds nothing when the
+        # module is named after the source directory instead. Three families
+        # are spelled differently on disk than in the GGUF — granite /
+        # granite_nar / cohere are directories whose architectures are
+        # granite_speech / granite_speech_nar / cohere_asr — so naming the
+        # module after the directory leaves those families unloadable in every
+        # DL build (the model fails at open with "unsupported architecture").
+        #
+        # Read the name out of the family's own model.cpp rather than repeating
+        # it here: that string is the exact value the loader compares against,
+        # so deriving the file name from it makes the two impossible to
+        # desync. The formatting is clang-format's (see the Arch initializer in
+        # any src/arch/<family>/model.cpp).
+        set(_fam_model_cpp "${CMAKE_CURRENT_SOURCE_DIR}/arch/${_fam}/model.cpp")
+        file(STRINGS "${_fam_model_cpp}" _arch_name_lines
+            REGEX "^[ \t]*/\\*[ \t]*\\.name[ \t]*=[ \t]*\\*/[ \t]*\"[A-Za-z0-9_]+\"")
+        list(LENGTH _arch_name_lines _arch_name_count)
+        if(_arch_name_count EQUAL 0)
+            message(FATAL_ERROR
+                "transcribe: no architecture name found in ${_fam_model_cpp}. The "
+                "dynamic plugin's file name must equal the string its Arch is registered "
+                "under (the loader compares it against general.architecture), so it is "
+                "read from that file's Arch initializer; expected a line of the form "
+                "'    /* .name = */ \"family_name\",'.")
+        endif()
+        list(GET _arch_name_lines 0 _arch_name_line)
+        string(REGEX MATCH "\"([A-Za-z0-9_]+)\"" _arch_name_ignored "${_arch_name_line}")
+        set(_plugin_name "${CMAKE_MATCH_1}")
+
         add_library(transcribe-arch-${_fam} SHARED
             ${_fam_srcs}
             transcribe-plugin-entry.cpp
@@ -545,7 +582,14 @@ if(TRANSCRIBE_ARCH_DL)
         target_compile_definitions(transcribe-arch-${_fam} PRIVATE
             TRANSCRIBE_BUILD=1
             TRANSCRIBE_ARCH_PLUGIN=1
-            TRANSCRIBE_PLUGIN_ARCH_NAME=${_fam}
+            # The architecture this module provides, as the loader will ask for
+            # it. The entry point stringifies this into plugin->arch_name and
+            # the loader stores it as the loaded module's name, which its
+            # already-loaded lookup (find_arch step 2) compares against the
+            # GGUF's architecture — so it has to be the arch name, not the
+            # directory. The namespace below stays the directory's: it names the
+            # `transcribe::<ns>::arch` symbol the entry point exports.
+            TRANSCRIBE_PLUGIN_ARCH_NAME=${_plugin_name}
             TRANSCRIBE_PLUGIN_ARCH_NS=${_fam}
             TRANSCRIBE_ENABLE_ARCH_${_fam_upper}=1
         )
@@ -576,13 +620,19 @@ if(TRANSCRIBE_ARCH_DL)
             target_compile_definitions(transcribe-arch-${_fam} PRIVATE _USE_MATH_DEFINES)
         endif()
         set_target_properties(transcribe-arch-${_fam} PROPERTIES
-            OUTPUT_NAME "transcribe-arch-${_fam}"
+            OUTPUT_NAME "transcribe-arch-${_plugin_name}"
             PREFIX ""
             POSITION_INDEPENDENT_CODE ON
         )
         transcribe_apply_warnings(transcribe-arch-${_fam})
         list(APPEND _arch_plugin_targets transcribe-arch-${_fam})
+        list(APPEND _arch_plugin_names "transcribe-arch-${_plugin_name}")
     endforeach()
 
     set(TRANSCRIBE_ARCH_PLUGIN_TARGETS "${_arch_plugin_targets}" PARENT_SCOPE)
+    # File stems, for the install rules that glob the prefix (the prune) and for
+    # the link manifest's arch_plugins list. Kept separate from the target list
+    # above because the two differ wherever a family directory is not spelled
+    # like its architecture.
+    set(TRANSCRIBE_ARCH_PLUGIN_NAMES "${_arch_plugin_names}" PARENT_SCOPE)
 endif()

@@ -116,9 +116,9 @@ For downstream desktop applications like Handy, shipping all model families insi
 
 ### How it Works
 - **Zero-Model Minimal Core (`transcribe.dll`)**: Contains the loader, mel spectrogram frontend, tokenizer, tensor runtime, and plugin dispatcher.
-- **On-Demand Plugins (`transcribe-arch-<family>.dll`)**: Each model family (e.g. `transcribe-arch-parakeet.dll`, `transcribe-arch-granite.dll`, `transcribe-arch-qwen3_asr.dll`) is packaged as an independent module.
+- **On-Demand Plugins (`transcribe-arch-<arch>.dll`)**: Each model family (e.g. `transcribe-arch-parakeet.dll`, `transcribe-arch-granite_speech.dll`, `transcribe-arch-qwen3_asr.dll`) is packaged as an independent module. **`<arch>` is the architecture name the GGUF declares** in `general.architecture`, not the source directory: `granite/` builds `granite_speech`, `granite_nar/` builds `granite_speech_nar` and `cohere/` builds `cohere_asr`. The loader keys its search on that string, so a module named after the directory is never found and the model fails to open with `unsupported architecture`.
 - **Automatic Discovery**: When Handy loads a model via `transcribe_model_load_file(path, ...)`, the engine inspects the GGUF architecture header and automatically looks for the plugin in:
-  1. Next to the `.gguf` model file (`<model_dir>/transcribe-arch-<family>.dll`)
+  1. Next to the `.gguf` model file (`<model_dir>/transcribe-arch-<arch>.dll`)
   2. In an `arch/` subfolder next to the model (`<model_dir>/arch/`)
   3. In custom directories registered via `transcribe_register_arch_dir(dir)`
   4. In the `TRANSCRIBE_ARCH_DIR` environment variable
@@ -133,7 +133,7 @@ cmake --build build-plugins --target transcribe-cli
 This produces:
 - `transcribe.dll` (Minimal engine core)
 - `transcribe-arch-parakeet.dll` (~5.6 MB)
-- `transcribe-arch-granite.dll` (~2.8 MB)
+- `transcribe-arch-granite_speech.dll` (~2.8 MB)
 - `transcribe-arch-qwen3_asr.dll` (~2.7 MB)
 
 ### C API & Rust FFI for Plugins

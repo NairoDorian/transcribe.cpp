@@ -1,7 +1,10 @@
 // transcribe-arch.cpp - architecture registry and dynamic plugin loader.
 //
 // Supports both compiled-in static architectures and dynamically-loaded
-// per-family plugin modules (transcribe-arch-<family>.dll / .so / .dylib).
+// per-family plugin modules (transcribe-arch-<arch>.dll / .so / .dylib, where
+// <arch> is the name the Arch is registered under — the same string it is
+// matched against in a model's general.architecture — so a plugin module is
+// named after its architecture and not after its source directory).
 
 #include "transcribe-arch.h"
 

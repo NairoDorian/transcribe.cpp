@@ -113,12 +113,19 @@ endif()
 # --- architecture plugins (TRANSCRIBE_ARCH_DL) --------------------------------
 # The architecture plugins ARE the model support in a DL build: libtranscribe
 # ships with no architectures compiled in and resolves every one of them by
-# loading `transcribe-arch-<family>` at model-open time. Without an install
+# loading `transcribe-arch-<arch>` at model-open time. Without an install
 # rule here the core installs alone, and every model fails to open with "no
 # architecture for ..." — the plugin dirs the runtime probes (next to
 # libtranscribe, <app_dir>/arch, TRANSCRIBE_ARCH_DIR) stay empty forever, so the
 # `cmake --install`-then-consume path (the Rust -sys crate's staging, the wheel,
 # any non-CMake consumer) silently produces a runtime that can load nothing.
+#
+# `<arch>` is the architecture's registered name — the string the loader
+# compares against the model's `general.architecture` — which is the family
+# directory's name for fifteen families and not for three of them (granite ->
+# granite_speech, granite_nar -> granite_speech_nar, cohere -> cohere_asr).
+# src/CMakeLists.txt reads it out of each family's model.cpp and hands the
+# resulting file names over in TRANSCRIBE_ARCH_PLUGIN_NAMES.
 #
 # Destination mirrors libtranscribe exactly, because "next to libtranscribe" is
 # the first directory the loader probes and the one both Handy's DLL staging and
@@ -150,7 +157,7 @@ if(TRANSCRIBE_ARCH_DL AND TRANSCRIBE_ARCH_PLUGIN_TARGETS)
         set(_arch_plugin_dir_json "\"${CMAKE_INSTALL_LIBDIR}\"")
     endif()
     message(STATUS
-        "transcribe install: ${TRANSCRIBE_ARCH_PLUGIN_TARGETS} "
+        "transcribe install: ${TRANSCRIBE_ARCH_PLUGIN_NAMES} "
         "(architecture plugins)")
 else()
     set(_arch_plugin_dir_json null)
@@ -173,8 +180,15 @@ endif()
 # the .dll in BINDIR and its import library (CMake calls it ARCHIVE) in LIBDIR,
 # Unix the versioned .so/.dylib in LIBDIR. The globs are anchored on the plugin
 # name prefix, so no other library in those directories can be a candidate.
+#
+# The keep list is the INSTALLED FILE NAMES (TRANSCRIBE_ARCH_PLUGIN_NAMES), not
+# the target names: a module is named after its architecture, and three families
+# are spelled differently on disk than in CMake (granite -> granite_speech,
+# granite_nar -> granite_speech_nar, cohere -> cohere_asr). Keying this on
+# target names would make the prune delete the very modules this configure just
+# installed.
 if(TRANSCRIBE_ARCH_DL)
-    set(_arch_plugin_keep ${TRANSCRIBE_ARCH_PLUGIN_TARGETS})
+    set(_arch_plugin_keep ${TRANSCRIBE_ARCH_PLUGIN_NAMES})
     install(CODE "
         set(_keep \"${_arch_plugin_keep}\")
         foreach(_arch_dir IN ITEMS
@@ -377,7 +391,7 @@ _transcribe_json_strings(_library_paths_json ${_library_paths})
 _transcribe_json_strings(_system_libs_json ${_system_libs})
 _transcribe_json_strings(_frameworks_json ${_frameworks})
 _transcribe_json_strings(_link_flags_json ${_link_flags})
-_transcribe_json_strings(_arch_plugins_json ${TRANSCRIBE_ARCH_PLUGIN_TARGETS})
+_transcribe_json_strings(_arch_plugins_json ${TRANSCRIBE_ARCH_PLUGIN_NAMES})
 
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/transcribe-link.json"
 "{

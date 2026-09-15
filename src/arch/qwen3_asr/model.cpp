@@ -308,14 +308,16 @@ transcribe_status init_context(transcribe_model *                model,
         if (cc->kv_type == TRANSCRIBE_KV_TYPE_F32) {
             kv_type = GGML_TYPE_F32;
         }
+        int n_ctx_ceiling = qwen3_context_ceiling(cc->n_ctx, cm->hparams);
         if (!transcribe::causal_lm::kv_init(cc->kv_cache, cm->plan.primary,
-                                            /*n_ctx=*/2048, cm->hparams.dec_n_kv_heads, cm->hparams.dec_head_dim,
-                                            cm->hparams.dec_n_layers, kv_type)) {
+                                            /*n_ctx=*/n_ctx_ceiling, cm->hparams.dec_n_kv_heads,
+                                            cm->hparams.dec_head_dim, cm->hparams.dec_n_layers, kv_type)) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "qwen3_asr init_context: KV cache allocation failed "
-                                "(n_ctx=2048, %d kv-heads x %d head-dim x %d layers) — "
+                                "(n_ctx=%d, %d kv-heads x %d head-dim x %d layers) — "
                                 "out of memory.",
-                                cm->hparams.dec_n_kv_heads, cm->hparams.dec_head_dim, cm->hparams.dec_n_layers);
+                                n_ctx_ceiling, cm->hparams.dec_n_kv_heads, cm->hparams.dec_head_dim,
+                                cm->hparams.dec_n_layers);
             return TRANSCRIBE_ERR_OOM;
         }
     }
@@ -655,20 +657,6 @@ transcribe_status run(transcribe_session *          session,
     {
         std::vector<float> pe = build_sinusoid_pe(cm->hparams.enc_d_model, timing.per_chunk_aftercnn);
         ggml_backend_tensor_set(eb.pos_emb_in, pe.data(), 0, pe.size() * sizeof(float));
-    }
-
-    // Attention mask (block-diagonal from cu_seqlens).
-    {
-        std::vector<float> mask = build_cu_seqlens_mask(timing, cm->hparams);
-        if (cc->encoder_use_flash) {
-            std::vector<ggml_fp16_t> mask_f16(mask.size());
-            for (size_t i = 0; i < mask.size(); ++i) {
-                mask_f16[i] = ggml_fp32_to_fp16(mask[i]);
-            }
-            ggml_backend_tensor_set(eb.mask_in, mask_f16.data(), 0, mask_f16.size() * sizeof(ggml_fp16_t));
-        } else {
-            ggml_backend_tensor_set(eb.mask_in, mask.data(), 0, mask.size() * sizeof(float));
-        }
     }
 
     transcribe::configure_sched_n_threads(cc->sched, cc->n_threads);
@@ -1435,37 +1423,9 @@ transcribe_status encode_all_batched(QwenAsrSession *                  cc,
         ggml_backend_tensor_set(eb.pos_emb_in, pe.data(), 0, pe.size() * sizeof(float));
     }
 
-    // Key-pad mask [T_pad_max, T_pad_max, 1, n]: row b attends keys k < T_enc[b].
-    {
-        const size_t plane = static_cast<size_t>(T_pad_max) * T_pad_max;
-        if (cc->encoder_use_flash) {
-            const ggml_fp16_t        mz = ggml_fp32_to_fp16(0.0f);
-            const ggml_fp16_t        mn = ggml_fp32_to_fp16(-INFINITY);
-            std::vector<ggml_fp16_t> mask(plane * n, mn);
-            for (int b = 0; b < n; ++b) {
-                const int     real = valid[b] ? std::max(1, T_enc_out[b]) : 1;
-                ggml_fp16_t * base = mask.data() + plane * b;
-                for (int q = 0; q < T_pad_max; ++q) {
-                    std::fill(base + static_cast<size_t>(q) * T_pad_max,
-                              base + static_cast<size_t>(q) * T_pad_max + real, mz);
-                }
-            }
-            ggml_backend_tensor_set(eb.mask_in, mask.data(), 0, mask.size() * sizeof(ggml_fp16_t));
-        } else {
-            const float        mn = -INFINITY;
-            std::vector<float> mask(plane * n, mn);
-            for (int b = 0; b < n; ++b) {
-                const int real = valid[b] ? std::max(1, T_enc_out[b]) : 1;
-                float *   base = mask.data() + plane * b;
-                for (int q = 0; q < T_pad_max; ++q) {
-                    std::fill(base + static_cast<size_t>(q) * T_pad_max,
-                              base + static_cast<size_t>(q) * T_pad_max + real, 0.0f);
-                }
-            }
-            ggml_backend_tensor_set(eb.mask_in, mask.data(), 0, mask.size() * sizeof(float));
-        }
-    }
-
+    // NOTE: key-pad mask upload removed — qwen3_asr encoder uses bounded
+    // chunked subsample so padded rows are trimmed before the attention blocks,
+    // no explicit mask tensor is required.
     apply_sched_threads(cc);
 
     const int64_t t_enc0 = ggml_time_us();

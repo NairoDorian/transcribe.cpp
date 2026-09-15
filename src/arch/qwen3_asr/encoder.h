@@ -5,9 +5,8 @@
 // qwen_asr.core.transformers_backend.modeling_qwen3_asr
 // .Qwen3ASRAudioEncoder.
 //
-// Attention: we match the reference's eager full-bidirectional attention over
-// the pad-trimmed sequence (see build_cu_seqlens_mask), not vLLM's
-// cu_seqlens chunking.
+// Attention: full bidirectional attention over the pad-trimmed sequence,
+// matching the eager reference rather than vLLM's cu_seqlens chunking.
 //
 // Shape conventions (ggml fast-to-slow ne[]):
 //
@@ -23,8 +22,6 @@
 //                 The last chunk's aftercnn trailing pad rows are dropped
 //                 in the graph (matches reference's
 //                 `padded_embed[padded_mask_after_cnn]` selection).
-//   attn mask   : [T_enc, T_enc] additive. All zeros — full
-//                 bidirectional attention over the valid aftercnn rows.
 //   output      : [output_dim, T_enc]
 
 #pragma once
@@ -64,11 +61,6 @@ EncoderTiming compute_encoder_timing(int32_t n_mel_frames, const QwenAsrHParams 
 // sin(p * inv_ts[k]), the second d_model/2 are cos(p * inv_ts[k]).
 std::vector<float> build_sinusoid_pe(int32_t d_model, int32_t length, double max_timescale = 10000.0);
 
-// Additive attention bias [T_enc, T_enc]. All zeros — full bidirectional
-// attention over the pad-trimmed sequence (the eager baseline, not vLLM's
-// cu_seqlens block-diagonal pattern).
-std::vector<float> build_cu_seqlens_mask(const EncoderTiming & t, const QwenAsrHParams & hp);
-
 struct EncoderDumps {
     ggml_tensor * mel_in         = nullptr;  // graph input
     ggml_tensor * subsample_out  = nullptr;  // post conv_out linear, pre-PE
@@ -82,7 +74,6 @@ struct EncoderDumps {
 struct EncoderBuild {
     ggml_tensor * mel_in     = nullptr;  // [mel_per_chunk, n_mels, 1, n_chunks]
     ggml_tensor * pos_emb_in = nullptr;  // [d_model, per_chunk_aftercnn]
-    ggml_tensor * mask_in    = nullptr;  // [T_enc, T_enc]
     ggml_tensor * out        = nullptr;  // [output_dim, T_enc]
     EncoderDumps  dumps{};
     ggml_cgraph * graph = nullptr;
@@ -102,7 +93,6 @@ EncoderBuild build_encoder_graph(ggml_context *         ctx,
 struct EncoderBuildBatched {
     ggml_tensor * mel_in     = nullptr;  // [mel_per_chunk, n_mels, 1, B*n_chunks_max]
     ggml_tensor * pos_emb_in = nullptr;  // [d_model, per_chunk_aftercnn]
-    ggml_tensor * mask_in    = nullptr;  // [T_pad_max, T_pad_max, 1, B] key-pad
     ggml_tensor * out        = nullptr;  // [output_dim, T_pad_max, B]
     ggml_cgraph * graph      = nullptr;
 
@@ -117,8 +107,9 @@ struct EncoderBuildBatched {
 // depends only on enc_n_window), so they pack cleanly: utterance b's chunks
 // occupy N-indices [b*n_chunks_max, b*n_chunks_max + n_chunks[b]) of mel_in,
 // zero-padded to n_chunks_max. The conv subsampler is per-chunk (no cross-
-// utterance leak); the 18 blocks attend per-utterance under a key-pad mask
-// (`mask_in[k,q,0,b] = 0 if k < T_enc[b] else -inf`). The real rows of
+// utterance leak); the 18 blocks attend per-utterance over pad-trimmed rows
+// (the bounded chunked subsample drops padded rows before the blocks, so
+// no explicit mask tensor is needed). The real rows of
 // utterance b are the first T_enc[b] rows of its [T_pad_max] section, so the
 // caller slices out[:, 0:T_enc[b], b]. Real-row outputs are bit-identical to
 // the single-shot encoder (same per-chunk conv, same masked attention).

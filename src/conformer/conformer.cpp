@@ -1185,7 +1185,6 @@ ggml_tensor * build_pre_encode(ggml_context *        ctx,
 
     // conv2 (depthwise: channels -> channels, groups=channels, k=3 s=2).
     // im2col path (conv_2d_dw_f32) when direct_dw_in_pre_encode is false.
-    x = pad_causal(x);
     if (policy.direct_dw_in_pre_encode && causal_pe) {
         x = causal_dw_2d_time_chunked(ctx, pe.conv2_w, x);
     } else {
@@ -1219,7 +1218,6 @@ ggml_tensor * build_pre_encode(ggml_context *        ctx,
     x = apply_valid_mask(x, valid_masks ? &valid_masks->mask_s2 : nullptr, "pre_encode.valid_mask.s2");
 
     // conv5 (depthwise) -> conv6 (pointwise) -> ReLU
-    x = pad_causal(x);
     if (policy.direct_dw_in_pre_encode && causal_pe) {
         x = causal_dw_2d_time_chunked(ctx, pe.conv5_w, x);
     } else {

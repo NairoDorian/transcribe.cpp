@@ -1,17 +1,21 @@
 # Granite Speech 5.0 470M TurboCTC
 
-IBM's [`ibm-granite/granite-speech-5.0-470m-turboctc`](https://huggingface.co/ibm-granite/granite-speech-5.0-470m-turboctc)
-ported to transcribe.cpp. A 470M-parameter Granite Conformer encoder with a
-self-conditioned CTC head.
+<!-- catalog:intro -->
+Upstream: [`ibm-granite/granite-speech-5.0-470m-turboctc`](https://huggingface.co/ibm-granite/granite-speech-5.0-470m-turboctc) at [`18ca3c1`](https://huggingface.co/ibm-granite/granite-speech-5.0-470m-turboctc/commit/18ca3c1).
+
+Offline English speech-to-text. A Granite Conformer encoder with a self-conditioned CTC
+head. Takes a 16 kHz mono WAV and produces a transcript. Not a streaming model. English
+only.
+<!-- /catalog -->
 
 ## What it's for
 
 Offline English speech-to-text. Takes a 16 kHz mono WAV and produces a
 transcript. Not a streaming model. English only, and it does not translate.
 
-Licensed Apache-2.0. Ported from upstream commit
-[`18ca3c1`](https://huggingface.co/ibm-granite/granite-speech-5.0-470m-turboctc/commit/18ca3c1de6cd092b5a30c39fb0f04550b38ed1a0),
-pinned 2026-09-12.
+<!-- catalog:pin -->
+Licensed Apache-2.0. Ported from upstream commit [`18ca3c1`](https://huggingface.co/ibm-granite/granite-speech-5.0-470m-turboctc/commit/18ca3c1), pinned 2026-09-12. Validated against the transformers reference at transcribe.cpp commit [`b9427cf`](https://github.com/handy-computer/transcribe.cpp/tree/b9427cf) on 2026-09-12.
+<!-- /catalog -->
 
 There is also a non-commercial sibling,
 [`granite-speech-5.0-470m-turboctc-nc`](granite-speech-5.0-470m-turboctc-nc.md),
@@ -20,20 +24,33 @@ this one for anything commercial.
 
 ## Download
 
-| Quantization | Download | Size | WER (LibriSpeech test-clean) |
+<!-- catalog:downloads -->
+| Quantization | Download |   Size | WER (LibriSpeech test-clean) |
 | --- | --- | ---: | ---: |
-| BF16   | [granite-speech-5.0-470m-turboctc-BF16.gguf](https://huggingface.co/handy-computer/granite-speech-5.0-470m-turboctc-gguf/resolve/main/granite-speech-5.0-470m-turboctc-BF16.gguf)     | 948 MB | 1.33% |
-| F16    | [granite-speech-5.0-470m-turboctc-F16.gguf](https://huggingface.co/handy-computer/granite-speech-5.0-470m-turboctc-gguf/resolve/main/granite-speech-5.0-470m-turboctc-F16.gguf)       | 948 MB | 1.33% |
-| Q8_0   | [granite-speech-5.0-470m-turboctc-Q8_0.gguf](https://huggingface.co/handy-computer/granite-speech-5.0-470m-turboctc-gguf/resolve/main/granite-speech-5.0-470m-turboctc-Q8_0.gguf)     | 506 MB | 1.34% |
-| Q6_K   | [granite-speech-5.0-470m-turboctc-Q6_K.gguf](https://huggingface.co/handy-computer/granite-speech-5.0-470m-turboctc-gguf/resolve/main/granite-speech-5.0-470m-turboctc-Q6_K.gguf)     | 392 MB | 1.33% |
-| Q5_K_M | [granite-speech-5.0-470m-turboctc-Q5_K_M.gguf](https://huggingface.co/handy-computer/granite-speech-5.0-470m-turboctc-gguf/resolve/main/granite-speech-5.0-470m-turboctc-Q5_K_M.gguf) | 336 MB | 1.34% |
-| Q4_K_M | [granite-speech-5.0-470m-turboctc-Q4_K_M.gguf](https://huggingface.co/handy-computer/granite-speech-5.0-470m-turboctc-gguf/resolve/main/granite-speech-5.0-470m-turboctc-Q4_K_M.gguf) | 279 MB | 1.34% |
+| BF16         | [granite-speech-5.0-470m-turboctc-BF16.gguf](https://huggingface.co/handy-computer/granite-speech-5.0-470m-turboctc-gguf/resolve/main/granite-speech-5.0-470m-turboctc-BF16.gguf) | 948 MB | 1.34% |
+| F16          | [granite-speech-5.0-470m-turboctc-F16.gguf](https://huggingface.co/handy-computer/granite-speech-5.0-470m-turboctc-gguf/resolve/main/granite-speech-5.0-470m-turboctc-F16.gguf) | 948 MB | 1.33% |
+| Q8_0         | [granite-speech-5.0-470m-turboctc-Q8_0.gguf](https://huggingface.co/handy-computer/granite-speech-5.0-470m-turboctc-gguf/resolve/main/granite-speech-5.0-470m-turboctc-Q8_0.gguf) | 506 MB | 1.33% |
+| Q6_K         | [granite-speech-5.0-470m-turboctc-Q6_K.gguf](https://huggingface.co/handy-computer/granite-speech-5.0-470m-turboctc-gguf/resolve/main/granite-speech-5.0-470m-turboctc-Q6_K.gguf) | 392 MB | 1.33% |
+| Q5_K_M       | [granite-speech-5.0-470m-turboctc-Q5_K_M.gguf](https://huggingface.co/handy-computer/granite-speech-5.0-470m-turboctc-gguf/resolve/main/granite-speech-5.0-470m-turboctc-Q5_K_M.gguf) | 336 MB | 1.34% |
+| Q4_K_M       | [granite-speech-5.0-470m-turboctc-Q4_K_M.gguf](https://huggingface.co/handy-computer/granite-speech-5.0-470m-turboctc-gguf/resolve/main/granite-speech-5.0-470m-turboctc-Q4_K_M.gguf) | 279 MB | 1.35% |
+<!-- /catalog -->
 
-Measured on the full LibriSpeech test-clean split (2620 utterances), greedy CTC
-decoding, no external LM. Reference baseline (transformers 5.17.0, F32, CPU):
-**1.33%**, 95% CI [1.20%, 1.47%]. Every tier falls inside that CI, so the
-ordering between them is not meaningful and quantizing down to Q4_K_M costs
-very little. Clean read speech only, not checked on noisy or accented audio.
+<!-- catalog:recipe -->
+WER on the full LibriSpeech test-clean split (2,620 utterances), batch size 8, timestamps none, language hint `en`, decoded on cuda. Measured at transcribe.cpp `9daf396`.
+<!-- /catalog -->
+
+<!-- catalog:prose field=wer.notes -->
+Greedy CTC decoding, no external LM. Measured reference baseline (transformers
+5.17.0, F32, CPU): 1.33%, 95% CI [1.20, 1.47].
+<!-- /catalog -->
+
+<!-- catalog:accuracy -->
+**FLEURS test**
+
+| Language | Metric |  Q8_0 |
+| --- | --- | ---: |
+| en       | WER    | 4.61% |
+<!-- /catalog -->
 
 ## Quick Start
 
@@ -45,43 +62,35 @@ build/bin/transcribe-cli \
 
 ## Performance
 
-Wall-clock latency (mean over 3 iterations after 1 warmup), with speedup over
-realtime in parentheses.
-
 ### Apple M4 Max
 
-| Backend | Sample       |          Q8_0 |        Q4_K_M |
-| ------- | ------------ | ------------: | ------------: |
-| Metal   | jfk (11.0s)  | 37.5 ms (293×) | 38.9 ms (283×) |
-| Metal   | dots (35.3s) | 85.6 ms (413×) | 87.9 ms (402×) |
-| CPU     | jfk (11.0s)  |  232 ms (48×)  |  233 ms (47×)  |
-| CPU     | dots (35.3s) |  703 ms (50×)  |  689 ms (51×)  |
+<!-- catalog:perf machine=m4-max -->
+Compute latency (mel + encode + decode), speedup over realtime in parentheses; profile `asr-publication-v2`: mean over 3 iterations after 1 warmup.
 
-macOS 26.6.2, transcribe.cpp `54b241e`.
+| Backend | Sample       |            Q8_0 |          Q4_K_M |
+| ------- | ------------ | --------------: | --------------: |
+| Metal   | jfk (11.0s)  | 36 ms (301.30×) | 39 ms (284.51×) |
+| Metal   | dots (35.3s) | 86 ms (410.20×) | 95 ms (371.09×) |
+| CPU     | jfk (11.0s)  | 243 ms (45.19×) | 254 ms (43.29×) |
+| CPU     | dots (35.3s) | 752 ms (46.95×) | 769 ms (45.93×) |
+
+Apple M4 Max: transcribe.cpp `77b0c93` on 2026-09-14.
+<!-- /catalog -->
 
 ### AMD Ryzen 7 PRO 4750U
 
-| Backend | Sample       |          Q8_0 |        Q4_K_M |
-| ------- | ------------ | ------------: | ------------: |
-| Vulkan  | jfk (11.0s)  |  652 ms (17×) |  647 ms (17×) |
-| Vulkan  | dots (35.3s) | 1.48 s (24×)  | 1.51 s (23×)  |
-| CPU     | jfk (11.0s)  |  696 ms (16×) |  663 ms (17×) |
-| CPU     | dots (35.3s) | 2.28 s (16×)  | 2.25 s (16×)  |
+<!-- catalog:perf machine=ryzen-4750u -->
+Compute latency (mel + encode + decode), speedup over realtime in parentheses; profile `asr-publication-v2`: mean over 3 iterations after 1 warmup.
 
-Fedora 43, transcribe.cpp `3a5ed01`. Vulkan device: `AMD Radeon Graphics (RADV RENOIR)`.
+| Backend | Sample       |            Q8_0 |          Q4_K_M |
+| ------- | ------------ | --------------: | --------------: |
+| Vulkan  | jfk (11.0s)  | 588 ms (18.69×) | 588 ms (18.72×) |
+| Vulkan  | dots (35.3s) | 1.31 s (27.04×) | 1.31 s (26.89×) |
+| CPU     | jfk (11.0s)  | 615 ms (17.90×) | 652 ms (16.87×) |
+| CPU     | dots (35.3s) | 2.13 s (16.58×) | 2.14 s (16.51×) |
 
-### Apple M4
-
-| Backend | Sample            |          Q8_0 |        Q4_K_M |
-| ------- | ----------------- | ------------: | ------------: |
-| Metal   | jfk (11.0s)       |  100 ms (110×) |  103 ms (107×) |
-| Metal   | dots (35.3s)      |  272 ms (130×) |  279 ms (127×) |
-| Metal   | dots-full (305.9s)|  2.33 s (131×) |  2.38 s (128×) |
-| CPU     | jfk (11.0s)       |  388 ms (28×)  |  423 ms (26×)  |
-| CPU     | dots (35.3s)      |  1.19 s (30×)  |  1.27 s (28×)  |
-| CPU     | dots-full (305.9s)|  8.30 s (37×)  |  9.73 s (31×)  |
-
-macOS 26.5.1, transcribe.cpp `f2d5e31`.
+AMD Ryzen 7 PRO 4750U (Radeon RADV RENOIR): transcribe.cpp `cd0ea568` on 2026-09-14.
+<!-- /catalog -->
 
 Q8_0 is usually a little faster than Q4_K_M despite being 1.8× the size, so
 pick Q4_K_M for footprint rather than speed. Cost is linear in audio length:
@@ -94,8 +103,7 @@ supported and gives identical output, but buys almost nothing here.
 transcribe.cpp is validated tensor-by-tensor against Hugging Face transformers
 on `samples/jfk.wav` and `samples/dots.wav`. All 35 checkpointed tensors fall
 within family tolerance, and the final transcript matches the reference
-verbatim. Last validated at commit
-[`b9427cf`](https://github.com/handy-computer/transcribe.cpp/tree/b9427cf).
+verbatim.
 
 | Field | Value |
 | --- | --- |
@@ -104,17 +112,6 @@ verbatim. Last validated at commit
 | Manifest | `tests/golden/granite5_ctc/granite-speech-5.0-470m-turboctc.manifest.json` |
 | Tolerances | `tests/tolerances/granite5_ctc.json` |
 | Command | `uv run scripts/validate.py all --family granite5_ctc --variant granite-speech-5.0-470m-turboctc` |
-
-Selected tensors (the `dots` case, 441 output frames):
-
-| Tensor | Max abs diff | Mean abs diff | Notes |
-| --- | ---: | ---: | --- |
-| `mel.in`               | `8.821e-06` | `1.007e-07` | Production C++ frontend, no injection |
-| `enc.input_linear.out` | `1.372e-02` | `1.097e-03` | 0.18% of RMS |
-| `enc.block.7.out`      | `1.316e-02` | `1.011e-03` | Before the self-conditioning injection |
-| `enc.ctc.mid_logits`   | `6.251e-02` | `3.951e-03` | Mid-layer CTC head |
-| `enc.block.15.out`     | `2.190e-02` | `1.370e-03` | Final encoder output |
-| `enc.ctc_logits`       | `1.513e-01` | `5.442e-03` | 0.06% of RMS |
 
 Drift is BF16 matmul accumulation compounding over 16 blocks, and stays small
 relative to tensor magnitude. It does not reach the output: zero argmax

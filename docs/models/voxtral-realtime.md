@@ -12,9 +12,11 @@ delay-token latency conditioning emits one text token per 80 ms audio slot
 Architecturally distinct from the offline [Voxtral 2507](voxtral.md) family
 (own arch, streaming frontend with a fixed global log-mel max, causal encoder,
 additive fusion, ada-norm FFN scaling) — it shares only the projector shape
-and the tekken tokenizer. Licensed Apache-2.0. Ported from upstream commit
-[`2769294`](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602/commit/2769294),
-pinned 2026-06-06.
+and the tekken tokenizer.
+
+<!-- catalog:pin variant=voxtral-mini-4b-realtime-2602 -->
+Licensed Apache-2.0. Ported from upstream commit [`2769294`](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602/commit/2769294), pinned 2026-06-06. Validated against the Transformers reference at transcribe.cpp commit [`483c122`](https://github.com/handy-computer/transcribe.cpp/tree/483c122) on 2026-06-06.
+<!-- /catalog -->
 
 ## What it's for
 
@@ -90,44 +92,40 @@ CLI flags:
 
 ## Performance
 
-Cells are wall-clock latency (mean over 3 iterations after 1 warmup), with
-speedup over realtime in parentheses. Units: `ms` below 1 s, `s` above (2
-decimal places). Measured on the offline path at the family-default `K=1`
-speculative decoding.
-
 ### Apple M4 Max
+
+<!-- catalog:perf variant=voxtral-mini-4b-realtime-2602 machine=m4-max -->
+Compute latency (mel + encode + decode), speedup over realtime in parentheses; profile `asr-publication-v2`: mean over 3 iterations after 1 warmup.
 
 | Backend | Sample       |            Q8_0 |          Q4_K_M |
 | ------- | ------------ | --------------: | --------------: |
-| Metal   | jfk (11.0s)  | 1.22 s (9.0×)   | 1.14 s (9.7×)   |
-| Metal   | dots (35.3s) | 4.34 s (8.1×)   | 3.91 s (9.0×)   |
-| CPU     | jfk (11.0s)  | 4.43 s (2.5×)   | 4.69 s (2.3×)   |
-| CPU     | dots (35.3s) | 13.65 s (2.6×)  | 13.12 s (2.7×)  |
+| Metal   | jfk (11.0s)  |  1.76 s (6.24×) |  1.49 s (7.36×) |
+| Metal   | dots (35.3s) |  5.03 s (7.03×) |  4.44 s (7.97×) |
+| CPU     | jfk (11.0s)  |  4.88 s (2.25×) |  5.04 s (2.18×) |
+| CPU     | dots (35.3s) | 13.80 s (2.56×) | 13.20 s (2.68×) |
 
-macOS 15, transcribe.cpp `483c122`. Metal device: Apple M4 Max.
+Apple M4 Max: transcribe.cpp `77b0c93` on 2026-09-14.
+<!-- /catalog -->
 
 ### AMD Ryzen 7 4750U Pro
 
+<!-- catalog:perf variant=voxtral-mini-4b-realtime-2602 machine=ryzen-4750u -->
+Compute latency (mel + encode + decode), speedup over realtime in parentheses; profile `asr-publication-v2`: mean over 3 iterations after 1 warmup.
+
 | Backend | Sample       |            Q8_0 |          Q4_K_M |
 | ------- | ------------ | --------------: | --------------: |
-| Vulkan  | jfk (11.0s)  | 12.62 s (0.87×) | 10.97 s (1.00×) |
-| Vulkan  | dots (35.3s) | 39.29 s (0.90×) | 33.51 s (1.05×) |
-| CPU     | jfk (11.0s)  | 19.54 s (0.56×) | 13.80 s (0.80×) |
-| CPU     | dots (35.3s) | 58.00 s (0.61×) | 41.54 s (0.85×) |
+| Vulkan  | jfk (11.0s)  | 14.95 s (0.74×) | 13.17 s (0.84×) |
+| Vulkan  | dots (35.3s) | 45.03 s (0.78×) | 39.16 s (0.90×) |
+| CPU     | jfk (11.0s)  | 19.76 s (0.56×) | 16.39 s (0.67×) |
+| CPU     | dots (35.3s) | 57.92 s (0.61×) | 46.12 s (0.77×) |
 
-Fedora 43, transcribe.cpp `483c122`. Vulkan device: `AMD Radeon
-Graphics (RADV RENOIR)`.
+AMD Ryzen 7 PRO 4750U (Radeon RADV RENOIR): transcribe.cpp `218aeae3` on 2026-09-14.
+<!-- /catalog -->
 
 Benchmark reproduction:
 
 ```bash
-uv run scripts/bench/run.py \
-  --models Voxtral-Mini-4B-Realtime-2602 \
-  --quants q8_0,q4_k_m \
-  --samples jfk,dots \
-  --backends metal,cpu,vulkan \
-  --iters 3 --warmup 1 \
-  --name voxtral-mini-4b-realtime-2602-publication
+uv run scripts/bench/run.py --profile --models voxtral-mini-4b-realtime-2602
 ```
 
 ## Speculative decoding

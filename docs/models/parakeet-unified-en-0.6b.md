@@ -1,8 +1,10 @@
 # Parakeet Unified EN 0.6B
 
-NVIDIA's [`nvidia/parakeet-unified-en-0.6b`](https://huggingface.co/nvidia/parakeet-unified-en-0.6b)
-ported to transcribe.cpp. A 0.6B-parameter FastConformer encoder with an
-RNN-T transducer decoder, trained as a "unified" streaming/offline model.
+<!-- catalog:intro -->
+Upstream: [`nvidia/parakeet-unified-en-0.6b`](https://huggingface.co/nvidia/parakeet-unified-en-0.6b) at [`d4ac992`](https://huggingface.co/nvidia/parakeet-unified-en-0.6b/commit/d4ac992).
+
+English speech-to-text with punctuation and capitalization. A FastConformer encoder with an RNN-T transducer decoder, trained as a 'unified' streaming/offline model. This port runs the model in both offline and buffered streaming modes.
+<!-- /catalog -->
 
 ## What it's for
 
@@ -32,22 +34,39 @@ See NVIDIA's [model card](https://huggingface.co/nvidia/parakeet-unified-en-0.6b
 for training data, intended use, streaming methodology, and upstream
 evaluation results.
 
-Licensed CC-BY-4.0. Ported from upstream commit
-[`d4ac992`](https://huggingface.co/nvidia/parakeet-unified-en-0.6b/commit/d4ac9928),
-pinned 2026-05-10.
+<!-- catalog:pin -->
+Licensed CC-BY-4.0. Ported from upstream commit [`d4ac992`](https://huggingface.co/nvidia/parakeet-unified-en-0.6b/commit/d4ac992), pinned 2026-05-10. Validated against the NeMo reference at transcribe.cpp commit [`42528dd`](https://github.com/handy-computer/transcribe.cpp/tree/42528dd) on 2026-05-10.
+<!-- /catalog -->
 
 ## Download
 
-| Quantization | Download | Size | WER (LibriSpeech test-clean, offline) |
+<!-- catalog:downloads label="LibriSpeech test-clean, offline" -->
+| Quantization | Download |    Size | WER (LibriSpeech test-clean, offline) |
 | --- | --- | ---: | ---: |
-| F32    | [parakeet-unified-en-0.6b-F32.gguf](https://huggingface.co/handy-computer/parakeet-unified-en-0.6b-gguf/resolve/main/parakeet-unified-en-0.6b-F32.gguf) | 2.47 GB |                                 1.59% |
-| F16    | [parakeet-unified-en-0.6b-F16.gguf](https://huggingface.co/handy-computer/parakeet-unified-en-0.6b-gguf/resolve/main/parakeet-unified-en-0.6b-F16.gguf) | 1.24 GB |                                 1.59% |
-| Q8_0   | [parakeet-unified-en-0.6b-Q8_0.gguf](https://huggingface.co/handy-computer/parakeet-unified-en-0.6b-gguf/resolve/main/parakeet-unified-en-0.6b-Q8_0.gguf) |  731 MB |                                 1.60% |
-| Q6_K   | [parakeet-unified-en-0.6b-Q6_K.gguf](https://huggingface.co/handy-computer/parakeet-unified-en-0.6b-gguf/resolve/main/parakeet-unified-en-0.6b-Q6_K.gguf) |  602 MB |                                 1.61% |
-| Q5_K_M | [parakeet-unified-en-0.6b-Q5_K_M.gguf](https://huggingface.co/handy-computer/parakeet-unified-en-0.6b-gguf/resolve/main/parakeet-unified-en-0.6b-Q5_K_M.gguf) |  541 MB |                                 1.58% |
-| Q4_K_M | [parakeet-unified-en-0.6b-Q4_K_M.gguf](https://huggingface.co/handy-computer/parakeet-unified-en-0.6b-gguf/resolve/main/parakeet-unified-en-0.6b-Q4_K_M.gguf) |  477 MB |                                 1.62% |
+| F32          | [parakeet-unified-en-0.6b-F32.gguf](https://huggingface.co/handy-computer/parakeet-unified-en-0.6b-gguf/resolve/main/parakeet-unified-en-0.6b-F32.gguf) | 2.47 GB | 1.59% |
+| F16          | [parakeet-unified-en-0.6b-F16.gguf](https://huggingface.co/handy-computer/parakeet-unified-en-0.6b-gguf/resolve/main/parakeet-unified-en-0.6b-F16.gguf) | 1.24 GB | 1.59% |
+| Q8_0         | [parakeet-unified-en-0.6b-Q8_0.gguf](https://huggingface.co/handy-computer/parakeet-unified-en-0.6b-gguf/resolve/main/parakeet-unified-en-0.6b-Q8_0.gguf) |  731 MB | 1.60% |
+| Q6_K         | [parakeet-unified-en-0.6b-Q6_K.gguf](https://huggingface.co/handy-computer/parakeet-unified-en-0.6b-gguf/resolve/main/parakeet-unified-en-0.6b-Q6_K.gguf) |  602 MB | 1.61% |
+| Q5_K_M       | [parakeet-unified-en-0.6b-Q5_K_M.gguf](https://huggingface.co/handy-computer/parakeet-unified-en-0.6b-gguf/resolve/main/parakeet-unified-en-0.6b-Q5_K_M.gguf) |  541 MB | 1.58% |
+| Q4_K_M       | [parakeet-unified-en-0.6b-Q4_K_M.gguf](https://huggingface.co/handy-computer/parakeet-unified-en-0.6b-gguf/resolve/main/parakeet-unified-en-0.6b-Q4_K_M.gguf) |  477 MB | 1.62% |
+<!-- /catalog -->
 
-WER is measured on the full LibriSpeech test-clean split (2620 utterances) with greedy RNN-T decoding and no external LM. F32 reference baseline: 1.59%. NVIDIA's self-reported number on the same split is 1.63% (from the [HF model card](https://huggingface.co/nvidia/parakeet-unified-en-0.6b)).
+<!-- catalog:recipe -->
+WER on the full LibriSpeech test-clean split (2,620 utterances), batch size 1, timestamps none. Figures without a commit were published before provenance was recorded.
+<!-- /catalog -->
+
+<!-- catalog:prose field=wer.notes -->
+Greedy RNN-T decoding, no external LM. F32 reference baseline: 1.59%. NVIDIA's
+self-reported number on the same split is 1.63%.
+<!-- /catalog -->
+
+<!-- catalog:accuracy -->
+**FLEURS test**
+
+| Language | Metric |  Q8_0 |
+| --- | --- | ---: |
+| en       | WER    | 3.99% |
+<!-- /catalog -->
 
 ## Quick Start
 
@@ -68,43 +87,40 @@ ffmpeg -i input.mp3 -ar 16000 -ac 1 output.wav
 
 ## Performance
 
-Cells are wall-clock latency (mean over 3 iterations after 1 warmup),
-with speedup over realtime in parentheses. Units: `ms` below 1 s, `s`
-above (2 decimal places). Cells gated on `Tctl < 55°C` per backend.
-
 ### Apple M4 Max
 
-| Backend | Sample       |          Q8_0 |        Q4_K_M |
-| ------- | ------------ | ------------: | ------------: |
-| Metal   | jfk (11.0s)  |  69 ms (158×) |  71 ms (155×) |
-| Metal   | dots (35.3s) | 210 ms (168×) | 209 ms (169×) |
-| CPU     | jfk (11.0s)  |  375 ms (29×) |  318 ms (35×) |
-| CPU     | dots (35.3s) |  1.27 s (28×) |  1.09 s (32×) |
+<!-- catalog:perf machine=m4-max -->
+Compute latency (mel + encode + decode), speedup over realtime in parentheses; profile `asr-publication-v2`: mean over 3 iterations after 1 warmup.
 
-macOS 26.4.1, transcribe.cpp `12f1076`.
+| Backend | Sample       |             Q8_0 |           Q4_K_M |
+| ------- | ------------ | ---------------: | ---------------: |
+| Metal   | jfk (11.0s)  |  59 ms (187.72×) |  60 ms (183.34×) |
+| Metal   | dots (35.3s) | 155 ms (228.39×) | 161 ms (219.30×) |
+| CPU     | jfk (11.0s)  |  285 ms (38.55×) |  307 ms (35.86×) |
+| CPU     | dots (35.3s) |  979 ms (36.09×) |  1.05 s (33.77×) |
+
+Apple M4 Max: transcribe.cpp `77b0c93` on 2026-09-14.
+<!-- /catalog -->
 
 ### AMD Ryzen 7 4750U Pro
 
-| Backend | Sample       |          Q8_0 |        Q4_K_M |
-| ------- | ------------ | ------------: | ------------: |
-| Vulkan  | jfk (11.0s)  |  839 ms (13×) |  848 ms (13×) |
-| Vulkan  | dots (35.3s) |  3.03 s (12×) |  3.05 s (12×) |
-| CPU     | jfk (11.0s)  |  1.35 s (8×)  |  1.18 s (9×)  |
-| CPU     | dots (35.3s) |  5.22 s (7×)  |  4.66 s (8×)  |
+<!-- catalog:perf machine=ryzen-4750u -->
+Compute latency (mel + encode + decode), speedup over realtime in parentheses; profile `asr-publication-v2`: mean over 3 iterations after 1 warmup.
 
-Fedora 43, transcribe.cpp `12f1076`. Vulkan device: `AMD Radeon
-Graphics (RADV RENOIR)`.
+| Backend | Sample       |            Q8_0 |          Q4_K_M |
+| ------- | ------------ | --------------: | --------------: |
+| Vulkan  | jfk (11.0s)  | 448 ms (24.55×) | 455 ms (24.15×) |
+| Vulkan  | dots (35.3s) | 1.36 s (26.01×) | 1.37 s (25.74×) |
+| CPU     | jfk (11.0s)  | 712 ms (15.45×) | 788 ms (13.96×) |
+| CPU     | dots (35.3s) | 2.84 s (12.46×) | 2.95 s (11.97×) |
+
+AMD Ryzen 7 PRO 4750U (Radeon RADV RENOIR): transcribe.cpp `cd0ea568` on 2026-09-14.
+<!-- /catalog -->
 
 Benchmark reproduction:
 
 ```bash
-uv run scripts/bench/run.py \
-  --models parakeet-unified-en-0.6b \
-  --quants q8_0,q4_k_m \
-  --samples jfk,dots \
-  --backends metal,cpu,vulkan \
-  --iters 3 --warmup 1 \
-  --name parakeet-unified-en-0.6b-publication
+uv run scripts/bench/run.py --profile --models parakeet-unified-en-0.6b
 ```
 
 ## Numerical Validation

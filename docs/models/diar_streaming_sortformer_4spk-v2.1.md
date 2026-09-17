@@ -1,10 +1,15 @@
 # Streaming Sortformer Diarizer 4spk v2.1
 
-NVIDIA's [`nvidia/diar_streaming_sortformer_4spk-v2.1`](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1)
-ported to transcribe.cpp. A FastConformer encoder with an 18-layer
-Transformer head that emits per-frame speaker-activity probabilities for
-up to 4 speakers, running online with an Arrival-Order Speaker Cache
-(AOSC) + FIFO.
+<!-- catalog:intro -->
+Upstream: [`nvidia/diar_streaming_sortformer_4spk-v2.1`](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1) at [`fafaab5`](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1/commit/fafaab5).
+
+Streaming speaker diarization: who spoke when, for up to 4 speakers.
+A FastConformer encoder with an 18-layer Transformer head emitting
+per-frame speaker-activity probabilities, running online with an
+Arrival-Order Speaker Cache (AOSC) + FIFO. NOT a transcription model:
+a run produces speaker segments (start, end, speaker id in arrival
+order), no text. Takes 16 kHz mono WAV.
+<!-- /catalog -->
 
 ## What it's for
 
@@ -18,26 +23,32 @@ speaker-attributed ASR path (future work).
 See NVIDIA's [model card](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1)
 for training data, intended use, and upstream evaluation methodology.
 
-Licensed under the NVIDIA Open Model License. Ported from upstream commit
-[`fafaab5`](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1/commit/fafaab5faa1617a0ca52d38dd3dc4bd636800d3d),
-pinned 2026-07-19.
+<!-- catalog:pin -->
+Licensed NVIDIA Open Model License. Ported from upstream commit [`fafaab5`](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1/commit/fafaab5), pinned 2026-07-19. Validated against the NeMo reference at transcribe.cpp commit [`d42c3bb`](https://github.com/handy-computer/transcribe.cpp/tree/d42c3bb) on 2026-07-22.
+<!-- /catalog -->
 
 ## Download
 
-| Quantization | Download | Size | DER (AMI IHM test) |
+<!-- catalog:downloads -->
+| Quantization | Download |   Size | DER (AMI IHM test) |
 | --- | --- | ---: | ---: |
-| F32  | [diar_streaming_sortformer_4spk-v2.1-F32.gguf](https://huggingface.co/handy-computer/diar_streaming_sortformer_4spk-v2.1-gguf/resolve/main/diar_streaming_sortformer_4spk-v2.1-F32.gguf)   | 471 MB | 14.59% |
-| F16  | [diar_streaming_sortformer_4spk-v2.1-F16.gguf](https://huggingface.co/handy-computer/diar_streaming_sortformer_4spk-v2.1-gguf/resolve/main/diar_streaming_sortformer_4spk-v2.1-F16.gguf)   | 237 MB | 14.23% |
-| Q8_0 | [diar_streaming_sortformer_4spk-v2.1-Q8_0.gguf](https://huggingface.co/handy-computer/diar_streaming_sortformer_4spk-v2.1-gguf/resolve/main/diar_streaming_sortformer_4spk-v2.1-Q8_0.gguf) | 139 MB | 14.73% |
+| F32          | [diar_streaming_sortformer_4spk-v2.1-F32.gguf](https://huggingface.co/handy-computer/diar_streaming_sortformer_4spk-v2.1-gguf/resolve/main/diar_streaming_sortformer_4spk-v2.1-F32.gguf) | 471 MB | 14.59% |
+| F16          | [diar_streaming_sortformer_4spk-v2.1-F16.gguf](https://huggingface.co/handy-computer/diar_streaming_sortformer_4spk-v2.1-gguf/resolve/main/diar_streaming_sortformer_4spk-v2.1-F16.gguf) | 237 MB | 14.23% |
+| Q8_0         | [diar_streaming_sortformer_4spk-v2.1-Q8_0.gguf](https://huggingface.co/handy-computer/diar_streaming_sortformer_4spk-v2.1-gguf/resolve/main/diar_streaming_sortformer_4spk-v2.1-Q8_0.gguf) | 139 MB | 14.73% |
+<!-- /catalog -->
 
-DER is measured on the full AMI IHM test set (16 meetings, ~9 h) against
-forced-alignment RTTMs with dihard3-dev post-processing, collar 0.0,
-overlap scored, at the `very_high_latency` operating point. Our measured
-NeMo reference under the identical protocol is **14.83% DER / 19.89%
-JER**; the C++ F32 port scores 14.59% / 19.51%. (Published DER numbers
-for this model vary with the RTTM source and post-processing; manual
-RTTMs score ~13 points worse than forced-alignment RTTMs on the same
-system output. Compare like with like.)
+<!-- catalog:recipe -->
+DER on the full AMI IHM test split (16 meetings). Figures without a commit were published before provenance was recorded.
+<!-- /catalog -->
+
+<!-- catalog:prose field=wer.notes -->
+Scored against forced-alignment RTTMs with dihard3-dev post-processing, collar 0.0,
+overlap scored, at the very_high_latency operating point. Measured NeMo reference
+under the identical protocol: 14.83% DER / 19.89% JER; the C++ F32 port scores
+14.59% / 19.51%. Published DER numbers vary with RTTM source and post-processing;
+compare like with like. Only near-reference tiers ship for this family (k-quant
+tiers withdrawn; see the transcribe.cpp family doc, "Quant policy (Stage 7)").
+<!-- /catalog -->
 
 Only near-reference tiers ship for this family. K-quant tiers were
 evaluated and withdrawn: the model's output depends on discrete
@@ -85,31 +96,25 @@ second (many small windows).
 
 ## Performance
 
-Cells are wall-clock latency (mean over 3 iterations after 1 warmup),
-with speedup over realtime in parentheses. Default (model-config)
-operating point.
-
 ### Apple M4
 
-| Backend | Sample       |           F16 |          Q8_0 |
-| ------- | ------------ | ------------: | ------------: |
-| Metal   | jfk (11.0s)  |  69 ms (159×) |  65 ms (171×) |
-| Metal   | dots (35.3s) | 318 ms (111×) | 320 ms (111×) |
-| CPU     | jfk (11.0s)  |  137 ms (80×) | 110 ms (100×) |
-| CPU     | dots (35.3s) | 796 ms (44×)  | 687 ms (51×)  |
+<!-- catalog:perf machine=m4 -->
+Compute latency (mel + encode + decode), speedup over realtime in parentheses.
 
-macOS 25.5.0, transcribe.cpp `d42c3bb`.
+| Backend | Sample       |              F16 |             Q8_0 |
+| ------- | ------------ | ---------------: | ---------------: |
+| Metal   | jfk (11.0s)  |  68 ms (161.23×) |  64 ms (172.42×) |
+| Metal   | dots (35.3s) | 316 ms (111.81×) | 318 ms (111.16×) |
+| CPU     | jfk (11.0s)  |  136 ms (80.68×) | 109 ms (101.09×) |
+| CPU     | dots (35.3s) |  794 ms (44.49×) |  685 ms (51.59×) |
+
+m4: transcribe.cpp `d42c3bb` on 2026-07-22.
+<!-- /catalog -->
 
 Benchmark reproduction:
 
 ```bash
-uv run scripts/bench/run.py \
-  --models diar_streaming_sortformer_4spk-v2.1 \
-  --quants f16,q8_0 \
-  --samples jfk,dots \
-  --backends metal,cpu,vulkan \
-  --iters 3 --warmup 1 \
-  --name diar_streaming_sortformer_4spk-v2.1-publication
+uv run scripts/bench/run.py --profile --models diar_streaming_sortformer_4spk-v2.1
 ```
 
 ## Numerical Validation
@@ -119,8 +124,7 @@ transcribe.cpp is validated tensor-by-tensor against NeMo on
 mix with a 1.5 s overlap). All 6 checkpointed tensors fall within family
 tolerance, and the streaming AOSC cache-compression internals were
 additionally verified bit-exact against NeMo at the index level on a
-full 39-minute AMI meeting (87 compression calls). Last validated at
-commit `d42c3bb`.
+full 39-minute AMI meeting (87 compression calls).
 
 | Field | Value |
 | --- | --- |
@@ -128,17 +132,6 @@ commit `d42c3bb`.
 | Dump script | `scripts/dump_reference_sortformer_nemo.py` |
 | Manifest | `tests/golden/sortformer/diar_streaming_sortformer_4spk-v2.1.manifest.json` |
 | Command | `uv run scripts/validate.py compare --family sortformer` |
-
-Selected tensors:
-
-| Tensor | Max abs diff | Mean abs diff | Notes |
-| --- | ---: | ---: | --- |
-| `enc.mel.in`           | `0.000e+00` | `0.000e+00` | Exact (shape differs by NeMo pad_to=16, values identical) |
-| `enc.fastconformer.out`| `3.263e-03` | `1.396e-04` | F32 accumulation over 17 Conformer blocks |
-| `enc.encoder_proj.out` | `9.829e-04` | `1.242e-04` | Drift attenuates through the projection |
-| `enc.transformer.out`  | `1.128e-03` | `1.323e-04` | 18-layer Transformer head |
-| `diar.preds_offline`   | `2.961e-04` | `5.007e-06` | Final sigmoid probabilities (offline) |
-| `diar.probs`           | `2.961e-04` | `5.007e-06` | Streaming path output (== offline on a single-chunk clip) |
 
 ## Known Limitations
 

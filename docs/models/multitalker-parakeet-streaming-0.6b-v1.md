@@ -1,9 +1,10 @@
 # Multitalker Parakeet Streaming 0.6B v1
 
-NVIDIA's [`nvidia/multitalker-parakeet-streaming-0.6b-v1`](https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1)
-ported to transcribe.cpp. A 0.6B-parameter cache-aware streaming
-FastConformer encoder with an RNN-T transducer decoder, fine-tuned from
-[`nvidia/nemotron-speech-streaming-en-0.6b`](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b).
+<!-- catalog:intro -->
+Upstream: [`nvidia/multitalker-parakeet-streaming-0.6b-v1`](https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1) at [`8749fc7`](https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1/commit/8749fc7).
+
+Offline and cache-aware streaming English speech-to-text with punctuation and capitalization. A cache-aware streaming FastConformer encoder with an RNN-T transducer decoder, fine-tuned from nvidia/nemotron-speech-streaming-en-0.6b. Plain GGUFs run the single_speaker_mode ASR path, while bundle GGUFs under `bundle/` embed nvidia/diar_streaming_sortformer_4spk-v2.1 and, with `--diarize`, transcribe up to four overlapping speakers into a speaker-tagged transcript. The encoder preserves the upstream att_context_size=[70, 13] (1.12s) cache-aware attention mask; all four latency lookahead settings are selectable.
+<!-- /catalog -->
 
 ## What it's for
 
@@ -13,12 +14,13 @@ word-level timestamps are available.
 
 Upstream this is a **multitalker (speaker-attributed)** checkpoint: it can
 transcribe several overlapping speakers into per-speaker channels. This
-port ships that path too, via **bundle GGUFs** that embed the
+port ships that path too: every published GGUF is a **bundle** that embeds
+the
 [`nvidia/diar_streaming_sortformer_4spk-v2.1`](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1)
-streaming diarizer alongside the ASR model. A plain (non-bundle) GGUF runs
-the model's `single_speaker_mode` ASR path — a cache-aware streaming RNN-T
-with the checkpoint's always-on layer-0 speaker-kernel injection. A bundle
-GGUF with `--diarize` runs the full multitalker pipeline and emits a
+streaming diarizer alongside the ASR model. Run it without `--diarize` and
+you get the model's `single_speaker_mode` ASR path — a cache-aware streaming
+RNN-T with the checkpoint's always-on layer-0 speaker-kernel injection. Run
+it with `--diarize` and you get the full multitalker pipeline and a
 speaker-tagged transcript (see
 [Multitalker](#multitalker-speaker-attributed-asr)).
 
@@ -29,43 +31,79 @@ See NVIDIA's [model card](https://huggingface.co/nvidia/multitalker-parakeet-str
 for training data, intended use, the multitalker methodology, and the full
 latency-vs-accuracy table.
 
-Licensed under the [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/).
-Ported from upstream commit
-[`8749fc7`](https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1/commit/8749fc71fd6e2d88ef230159bbf2aea69b524ee1),
-pinned 2026-07-12.
+<!-- catalog:pin -->
+Licensed [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/). Ported from upstream commit [`8749fc7`](https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1/commit/8749fc7), pinned 2026-07-12. Validated against the NeMo reference at transcribe.cpp commit [`3083021`](https://github.com/handy-computer/transcribe.cpp/tree/3083021) on 2026-08-03.
+<!-- /catalog -->
 
 ## Download
 
-| Quantization | Download | Size | WER (LibriSpeech test-clean, offline) |
+<!-- catalog:downloads label="LibriSpeech test-clean, offline" -->
+| Quantization | Download |    Size | WER (LibriSpeech test-clean, offline) |
 | --- | --- | ---: | ---: |
-| F32    | [multitalker-parakeet-streaming-0.6b-v1-F32.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/multitalker-parakeet-streaming-0.6b-v1-F32.gguf)       | 2.49 GB | 2.19% |
-| F16    | [multitalker-parakeet-streaming-0.6b-v1-F16.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/multitalker-parakeet-streaming-0.6b-v1-F16.gguf)       | 1.25 GB | 2.19% |
-| Q8_0   | [multitalker-parakeet-streaming-0.6b-v1-Q8_0.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/multitalker-parakeet-streaming-0.6b-v1-Q8_0.gguf)     | 734 MB  | 2.18% |
-| Q6_K   | [multitalker-parakeet-streaming-0.6b-v1-Q6_K.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/multitalker-parakeet-streaming-0.6b-v1-Q6_K.gguf)     | 604 MB  | 2.20% |
-| Q5_K_M | [multitalker-parakeet-streaming-0.6b-v1-Q5_K_M.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/multitalker-parakeet-streaming-0.6b-v1-Q5_K_M.gguf) | 542 MB  | 2.18% |
-| Q4_K_M | [multitalker-parakeet-streaming-0.6b-v1-Q4_K_M.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/multitalker-parakeet-streaming-0.6b-v1-Q4_K_M.gguf) | 478 MB  | 2.18% |
+| F32          | [bundle/multitalker-parakeet-streaming-0.6b-v1-F32.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-F32.gguf) | 2.96 GB | 2.19% |
+| F16          | [bundle/multitalker-parakeet-streaming-0.6b-v1-F16.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-F16.gguf) | 1.48 GB | 2.19% |
+| Q8_0         | [bundle/multitalker-parakeet-streaming-0.6b-v1-Q8_0.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-Q8_0.gguf) |  873 MB | 2.18% |
+| Q6_K         | [bundle/multitalker-parakeet-streaming-0.6b-v1-Q6_K.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-Q6_K.gguf) |  743 MB | 2.20% |
+| Q5_K_M       | [bundle/multitalker-parakeet-streaming-0.6b-v1-Q5_K_M.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-Q5_K_M.gguf) |  681 MB | 2.18% |
+| Q4_K_M       | [bundle/multitalker-parakeet-streaming-0.6b-v1-Q4_K_M.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-Q4_K_M.gguf) |  617 MB | 2.18% |
+<!-- /catalog -->
 
-WER is measured on the full LibriSpeech test-clean split (2620 utterances)
-in `single_speaker_mode` with greedy RNN-T decoding, whisper-normalizer
-scoring (PnC-stripped), and no external LM. F32 reference baseline: 2.19%.
-The measured NeMo `single_speaker_mode` reference on the same split is
-2.19%, and NVIDIA's self-reported number is 2.19% (from the
-[HF model card](https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1)).
+<!-- catalog:recipe -->
+WER on the full LibriSpeech test-clean split (2,620 utterances), batch size 1, timestamps none. Figures without a commit were published before provenance was recorded.
+<!-- /catalog -->
 
-### Multitalker bundles
+<!-- catalog:prose field=wer.notes -->
+Run in single_speaker_mode with greedy RNN-T decoding and whisper-normalizer
+(PnC-stripped) scoring. F32 reference baseline: 2.19%. The measured NeMo
+single_speaker_mode reference and NVIDIA's self-reported number on the same split
+are both 2.19%.
 
-Bundle GGUFs embed the streaming Sortformer diarizer. The tier names the
-ASR half's dtype; the embedded diarizer is F32 for the F32 bundle, F16 for
-F16, and Q8_0 for all k-quant tiers.
+### Multitalker bundles (speaker-attributed ASR)
+
+Bundle GGUFs embed the streaming Sortformer diarizer alongside the ASR model. Run them with `--diarize` to get a speaker-tagged transcript with up to four speakers. The tier names the ASR half's dtype; the embedded diarizer is F32 for the F32 bundle, F16 for F16, and Q8_0 for all k-quant tiers.
 
 | Bundle | Download | Size |
 | --- | --- | ---: |
-| F32    | [bundle/multitalker-parakeet-streaming-0.6b-v1-F32.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-F32.gguf)       | 2.96 GB |
-| F16    | [bundle/multitalker-parakeet-streaming-0.6b-v1-F16.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-F16.gguf)       | 1.48 GB |
-| Q8_0   | [bundle/multitalker-parakeet-streaming-0.6b-v1-Q8_0.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-Q8_0.gguf)     | 873 MB  |
-| Q6_K   | [bundle/multitalker-parakeet-streaming-0.6b-v1-Q6_K.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-Q6_K.gguf)     | 743 MB  |
-| Q5_K_M | [bundle/multitalker-parakeet-streaming-0.6b-v1-Q5_K_M.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-Q5_K_M.gguf) | 681 MB  |
-| Q4_K_M | [bundle/multitalker-parakeet-streaming-0.6b-v1-Q4_K_M.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-Q4_K_M.gguf) | 617 MB  |
+| F32 | [bundle/multitalker-parakeet-streaming-0.6b-v1-F32.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-F32.gguf) | 2.96 GB |
+| F16 | [bundle/multitalker-parakeet-streaming-0.6b-v1-F16.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-F16.gguf) | 1.48 GB |
+| Q8_0 | [bundle/multitalker-parakeet-streaming-0.6b-v1-Q8_0.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-Q8_0.gguf) | 873 MB |
+| Q6_K | [bundle/multitalker-parakeet-streaming-0.6b-v1-Q6_K.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-Q6_K.gguf) | 743 MB |
+| Q5_K_M | [bundle/multitalker-parakeet-streaming-0.6b-v1-Q5_K_M.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-Q5_K_M.gguf) | 681 MB |
+| Q4_K_M | [bundle/multitalker-parakeet-streaming-0.6b-v1-Q4_K_M.gguf](https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/main/bundle/multitalker-parakeet-streaming-0.6b-v1-Q4_K_M.gguf) | 617 MB |
+
+cpWER on AMI-IHM test (16 meetings, F32 bundle) is 19.35% in the default kernel mode and 23.73% in masked mode. The matched NeMo reference scores 21.39% and 24.00%, respectively; see the transcribe.cpp model page for the exactness accounting.
+
+```bash
+build/bin/transcribe-cli --diarize \
+  -m bundle/multitalker-parakeet-streaming-0.6b-v1-Q8_0.gguf \
+  meeting.wav
+```
+<!-- /catalog -->
+
+<!-- catalog:accuracy -->
+**AMI IHM test, `kernel` mode**
+
+| Language | Metric |    F32 |
+| --- | --- | ---: |
+| en       | CPWER  | 19.35% |
+
+**AMI IHM test, `masked` mode**
+
+| Language | Metric |    F32 |
+| --- | --- | ---: |
+| en       | CPWER  | 23.73% |
+
+**FLEURS test**
+
+| Language | Metric |  Q8_0 |
+| --- | --- | ---: |
+| en       | WER    | 6.52% |
+<!-- /catalog -->
+
+### Bundle dtypes
+
+The tier names the ASR half's dtype; the embedded Sortformer diarizer is F32
+for the F32 bundle, F16 for F16, and Q8_0 for all k-quant tiers.
 
 ## Streaming parity
 
@@ -118,43 +156,40 @@ ffmpeg -i input.mp3 -ar 16000 -ac 1 output.wav
 
 ## Performance
 
-Cells are wall-clock latency (mean over 3 iterations after 1 warmup),
-with speedup over realtime in parentheses. Units: `ms` below 1 s, `s`
-above (2 decimal places).
-
 ### Apple M4 Max
 
-| Backend | Sample       |          Q8_0 |        Q4_K_M |
-| ------- | ------------ | ------------: | ------------: |
-| Metal   | jfk (11.0s)  |  67 ms (164×) |  69 ms (159×) |
-| Metal   | dots (35.3s) | 184 ms (192×) | 185 ms (191×) |
-| CPU     | jfk (11.0s)  | 310 ms (36×)  | 307 ms (36×)  |
-| CPU     | dots (35.3s) | 1.05 s (34×)  | 1.03 s (34×)  |
+<!-- catalog:perf machine=m4-max -->
+Compute latency (mel + encode + decode), speedup over realtime in parentheses; profile `asr-publication-v2`: mean over 3 iterations after 1 warmup.
 
-macOS 26.5.1, transcribe.cpp `c55a09d`.
+| Backend | Sample       |             Q8_0 |           Q4_K_M |
+| ------- | ------------ | ---------------: | ---------------: |
+| Metal   | jfk (11.0s)  |  53 ms (207.08×) |  54 ms (201.85×) |
+| Metal   | dots (35.3s) | 155 ms (227.85×) | 156 ms (226.47×) |
+| CPU     | jfk (11.0s)  |  331 ms (33.25×) |  338 ms (32.58×) |
+| CPU     | dots (35.3s) |  1.10 s (32.18×) |  1.11 s (31.87×) |
+
+Apple M4 Max: transcribe.cpp `77b0c93` on 2026-09-14.
+<!-- /catalog -->
 
 ### AMD Ryzen 7 4750U Pro
 
-| Backend | Sample       |          Q8_0 |        Q4_K_M |
-| ------- | ------------ | ------------: | ------------: |
-| Vulkan  | jfk (11.0s)  |  466 ms (24×) |  475 ms (23×) |
-| Vulkan  | dots (35.3s) |  1.36 s (26×) |  1.39 s (26×) |
-| CPU     | jfk (11.0s)  |  751 ms (15×) |  816 ms (13×) |
-| CPU     | dots (35.3s) |  2.99 s (12×) |  3.12 s (11×) |
+<!-- catalog:perf machine=ryzen-4750u -->
+Compute latency (mel + encode + decode), speedup over realtime in parentheses; profile `asr-publication-v2`: mean over 3 iterations after 1 warmup.
 
-Fedora 43, transcribe.cpp `c55a09d`. Vulkan device: `AMD Radeon
-Graphics (RADV RENOIR)`.
+| Backend | Sample       |            Q8_0 |          Q4_K_M |
+| ------- | ------------ | --------------: | --------------: |
+| Vulkan  | jfk (11.0s)  | 439 ms (25.08×) | 438 ms (25.11×) |
+| Vulkan  | dots (35.3s) | 1.28 s (27.61×) | 1.30 s (27.12×) |
+| CPU     | jfk (11.0s)  | 748 ms (14.70×) | 790 ms (13.92×) |
+| CPU     | dots (35.3s) | 2.91 s (12.13×) | 2.96 s (11.95×) |
+
+AMD Ryzen 7 PRO 4750U (Radeon RADV RENOIR): transcribe.cpp `cd0ea568` on 2026-09-14.
+<!-- /catalog -->
 
 Benchmark reproduction:
 
 ```bash
-uv run scripts/bench/run.py \
-  --models multitalker-parakeet-streaming-0.6b-v1 \
-  --quants q8_0,q4_k_m \
-  --samples jfk,dots \
-  --backends metal,cpu,vulkan \
-  --iters 3 --warmup 1 \
-  --name multitalker-parakeet-streaming-0.6b-v1-publication
+uv run scripts/bench/run.py --profile --models multitalker-parakeet-streaming-0.6b-v1
 ```
 
 ## Numerical Validation

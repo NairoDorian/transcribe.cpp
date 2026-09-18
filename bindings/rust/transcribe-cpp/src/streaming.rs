@@ -25,9 +25,9 @@ pub struct StreamOptions {
     /// VAD sensitivity threshold in [0.05, 0.95]. Default 0.50.
     pub vad_threshold: f32,
     /// VAD speech onset prefill in ms. Default 450.
-    pub vad_prefill_ms: i32,
+    pub vad_prefill_ms: u32,
     /// VAD hangover trailing duration in ms. Default 1200.
-    pub vad_hangover_ms: i32,
+    pub vad_hangover_ms: u32,
 }
 
 impl Default for StreamOptions {
@@ -68,7 +68,7 @@ pub struct StreamUpdate {
     /// Voice activity detected on the latest fed audio chunk.
     pub vad_speaking: bool,
     /// Accumulated duration of speech in the current active burst (ms).
-    pub vad_speech_ms: i32,
+    pub vad_speech_ms: u64,
     /// Raw probability score [0.0, 1.0] from the latest Earshot VAD evaluation.
     pub vad_last_score: f32,
     /// Current audio RMS energy level in dBFS.

@@ -309,14 +309,15 @@ transcribe_status init_context(transcribe_model *                model,
             kv_type = GGML_TYPE_F32;
         }
         int n_ctx_ceiling = qwen3_context_ceiling(cc->n_ctx, cm->hparams);
+        int initial_n_ctx = std::min(n_ctx_ceiling, 2048);
         if (!transcribe::causal_lm::kv_init(cc->kv_cache, cm->plan.primary,
-                                            /*n_ctx=*/n_ctx_ceiling, cm->hparams.dec_n_kv_heads,
+                                            /*n_ctx=*/initial_n_ctx, cm->hparams.dec_n_kv_heads,
                                             cm->hparams.dec_head_dim, cm->hparams.dec_n_layers, kv_type)) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "qwen3_asr init_context: KV cache allocation failed "
                                 "(n_ctx=%d, %d kv-heads x %d head-dim x %d layers) — "
                                 "out of memory.",
-                                n_ctx_ceiling, cm->hparams.dec_n_kv_heads, cm->hparams.dec_head_dim,
+                                initial_n_ctx, cm->hparams.dec_n_kv_heads, cm->hparams.dec_head_dim,
                                 cm->hparams.dec_n_layers);
             return TRANSCRIBE_ERR_OOM;
         }

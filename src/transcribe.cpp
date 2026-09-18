@@ -2058,13 +2058,15 @@ static transcribe_status transcribe_stream_feed_impl(struct transcribe_session *
         }
     };
 
-    // Fast-path: if audio activity gate is enabled and either silence energy OR native VAD not speaking:
+    // Fast-path: if native VAD is enabled, audio activity gate is not disabled,
+    // and either silence energy OR native VAD not speaking:
     // advance timeline and bypass expensive mel + model encoder pass.
-    const bool is_voiced = !session->enable_vad || session->stream_vad.is_speaking();
-    if (!transcribe::is_activity_gate_disabled() &&
+    if (session->enable_vad &&
+        n_samples >= 256 &&
+        !transcribe::is_activity_gate_disabled() &&
         session->stream_audio_committed_us == session->stream_audio_input_us &&
         session->stream_tentative_text.empty() &&
-        (!is_voiced || !transcribe::is_audio_active(pcm, static_cast<size_t>(n_samples)))) {
+        (!session->stream_vad.is_speaking() || !transcribe::is_audio_active(pcm, static_cast<size_t>(n_samples)))) {
         const int64_t slice_us = (static_cast<int64_t>(n_samples) * 1000000LL) / 16000LL;
         session->stream_audio_input_us += slice_us;
         session->stream_audio_committed_us += slice_us;

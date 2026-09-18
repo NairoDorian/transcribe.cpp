@@ -34,6 +34,7 @@
 //                                         whisper.cpp).
 
 #include "transcribe-bin-loader.h"
+#include "transcribe-path.h"
 
 #include <sys/stat.h>
 
@@ -257,7 +258,7 @@ void test_bad_n_fft() {
         remove_temp_file(path);
         return;
     }
-    const std::string                       path_utf8 = path.u8string();
+    const std::string                       path_utf8 = transcribe::path_to_utf8(path);
     transcribe::bin_loader::WhisperBinModel m;
     const auto                              rc = transcribe::bin_loader::parse_whisper_bin(path_utf8.c_str(), m);
     CHECK(rc == TRANSCRIBE_ERR_GGUF);
@@ -280,7 +281,7 @@ void test_distil_layer_count_accepted() {
         remove_temp_file(path);
         return;
     }
-    const std::string                       path_utf8 = path.u8string();
+    const std::string                       path_utf8 = transcribe::path_to_utf8(path);
     transcribe::bin_loader::WhisperBinModel m;
     const auto                              rc = transcribe::bin_loader::parse_whisper_bin(path_utf8.c_str(), m);
     // Header + mel filters parse; we then run out of bytes for the

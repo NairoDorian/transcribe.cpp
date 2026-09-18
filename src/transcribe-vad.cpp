@@ -660,7 +660,7 @@ void input_layer1(const float * features, float * output) noexcept {
 
         size_t out_row_offs = POOLED_COLS * c;
         for (size_t q = 0; q < POOLED_COLS; ++q) {
-            float max_val = output[out_row_offs + q];  // acts as ReLU since initialized to 0
+            float max_val = 0.0f;  // ReLU clamp
             for (size_t x = 0; x < POOL_KERNEL_SIZE; ++x) {
                 max_val = std::max(max_val, new_row[q * POOL_STRIDE + x]);
             }

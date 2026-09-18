@@ -236,11 +236,15 @@ ggml_backend_buffer_t alloc_ctx_tensors_with_reclaim(ggml_backend_t             
         return nullptr;
     }
 
-    // First failure. Everything below is best-effort: if the retry fails too the
-    // caller gets nullptr, exactly as before, and the reclaim attempts have
-    // changed nothing about that contract.
+    // First failure: reclaim memory on the current backend first. If trimming
+    // this backend's own CUDA pools satisfies the allocation, we avoid touching
+    // any concurrently running sibling models in multi-STT mode.
     trim_backend_pools(backend);
     evict_backend_graph_cache(backend, graph);
+    buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    if (buffer != nullptr) {
+        return buffer;
+    }
 
     std::vector<ggml_backend_t> others = reclaim_from;
     if (others.empty()) {
@@ -251,7 +255,6 @@ ggml_backend_buffer_t alloc_ctx_tensors_with_reclaim(ggml_backend_t             
             continue;  // already done above
         }
         trim_backend_pools(other);
-        evict_backend_graph_cache(other, graph);
     }
     return ggml_backend_alloc_ctx_tensors(ctx, backend);
 }

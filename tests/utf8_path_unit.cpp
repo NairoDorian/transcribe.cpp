@@ -103,7 +103,8 @@ int main() {
 
     // C-API strings must be UTF-8 regardless of platform; u8string()
     // guarantees that on Windows where string() would be ANSI.
-    const std::string dir_u8 = dir.u8string();
+    auto              u8 = dir.u8string();
+    const std::string dir_u8(reinterpret_cast<const char *>(u8.data()), u8.size());
 
     // 1. Full successful load through the non-ASCII path. This is the
     //    exact failure mode from Handy #1585 (FILE_NOT_FOUND despite the

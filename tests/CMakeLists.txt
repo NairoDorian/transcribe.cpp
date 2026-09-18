@@ -204,6 +204,22 @@ transcribe_apply_warnings(transcribe_prefill_chunk_mask_unit)
 add_test(NAME transcribe_prefill_chunk_mask_unit COMMAND transcribe_prefill_chunk_mask_unit)
 
 # -----------------------------------------------------------------------------
+# Long-audio chunk planning and timestamp rebasing unit test
+# -----------------------------------------------------------------------------
+
+add_executable(transcribe_chunking_unit
+    chunking_unit.cpp)
+
+target_link_libraries(transcribe_chunking_unit PRIVATE transcribe ggml)
+
+target_include_directories(transcribe_chunking_unit PRIVATE
+    ${CMAKE_SOURCE_DIR}/src)
+
+transcribe_apply_warnings(transcribe_chunking_unit)
+
+add_test(NAME transcribe_chunking_unit COMMAND transcribe_chunking_unit)
+
+# -----------------------------------------------------------------------------
 # MOSS diarized-transcript parser unit test (pure host, no model)
 # -----------------------------------------------------------------------------
 

@@ -808,6 +808,68 @@ static void test_session_limits_abi(void) {
     CHECK(transcribe_was_truncated(NULL) == false);
 }
 
+static void test_vad_abi(void) {
+    /* 1. Stream params default check */
+    struct transcribe_stream_params sp;
+    transcribe_stream_params_init(&sp);
+    CHECK(sp.struct_size == sizeof(struct transcribe_stream_params));
+    CHECK(sp.enable_vad == true);
+    CHECK(fabsf(sp.vad_threshold - 0.5f) < 1e-5f);
+    CHECK(sp.vad_prefill_ms == 450);
+    CHECK(sp.vad_hangover_ms == 1200);
+
+    /* 2. Stream update default check */
+    struct transcribe_stream_update su;
+    transcribe_stream_update_init(&su);
+    CHECK(su.struct_size == sizeof(struct transcribe_stream_update));
+    CHECK(su.vad_speaking == false);
+    CHECK(su.vad_speech_ms == 0);
+    CHECK(fabsf(su.vad_last_score) < 1e-5f);
+    CHECK(su.audio_level_dbfs <= -99.0f);
+
+    /* 3. Null checks for standalone VAD API */
+    transcribe_vad_free(NULL);
+    transcribe_vad_reset(NULL);
+    transcribe_vad_set_threshold(NULL, 0.5f);
+    CHECK(transcribe_stream_set_vad_threshold(NULL, 0.5f) == TRANSCRIBE_ERR_INVALID_ARG);
+    CHECK(fabsf(transcribe_vad_predict_frame(NULL, NULL)) < 1e-5f);
+    CHECK(transcribe_vad_process_frame(NULL, NULL, NULL) == false);
+
+    /* 4. Standalone VAD lifecycle and inference check */
+    struct transcribe_vad * vad = transcribe_vad_init(0.5f);
+    CHECK(vad != NULL);
+
+    /* Process 256 silence samples */
+    float silence[256] = { 0.0f };
+    float raw_score    = transcribe_vad_predict_frame(vad, silence);
+    CHECK(raw_score >= 0.0f && raw_score <= 1.0f);
+    CHECK(raw_score < 0.5f); /* Raw NN score on silence is below speech threshold */
+
+    /* process_frame has energy pre-gate: pure silence short-circuits to score 0.0f */
+    transcribe_vad_reset(vad);
+    float frame_score = 0.0f;
+    bool  speaking    = transcribe_vad_process_frame(vad, silence, &frame_score);
+    CHECK(speaking == false);
+    CHECK(fabsf(frame_score) < 1e-5f); /* Pre-gate zeroed score */
+
+    /* Non-silent audio (> -45 dBFS) tests neural net path through process_frame */
+    float audio[256];
+    for (int i = 0; i < 256; ++i) {
+        audio[i] = 0.2f * sinf(2.0f * 3.14159265f * 440.0f * (float) i / 16000.0f);
+    }
+    transcribe_vad_reset(vad);
+    float nn_score = transcribe_vad_predict_frame(vad, audio);
+    transcribe_vad_reset(vad);
+    speaking = transcribe_vad_process_frame(vad, audio, &frame_score);
+    CHECK(fabsf(frame_score - nn_score) < 1e-4f);
+
+    /* Change threshold and reset */
+    transcribe_vad_set_threshold(vad, 0.35f);
+    transcribe_vad_reset(vad);
+
+    transcribe_vad_free(vad);
+}
+
 int main(void) {
     test_status_string();
     test_version();
@@ -832,6 +894,7 @@ int main(void) {
     test_stream_accessors_null();
     test_stream_entries_null();
     test_session_limits_abi();
+    test_vad_abi();
 
     if (g_failures > 0) {
         fprintf(stderr, "api_smoke: %d failures\n", g_failures);

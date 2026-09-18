@@ -141,3 +141,42 @@ fn handles_are_send_sync() {
     assert_send::<transcribe_cpp::Session>();
     // Session is intentionally NOT Sync (single-threaded use).
 }
+
+#[test]
+fn stream_options_vad_defaults() {
+    let opts = transcribe_cpp::StreamOptions::default();
+    assert!(opts.enable_vad);
+    assert!((opts.vad_threshold - 0.50).abs() < 1e-4);
+    assert_eq!(opts.vad_prefill_ms, 450);
+    assert_eq!(opts.vad_hangover_ms, 1200);
+}
+
+#[test]
+fn vad_lifecycle_and_energy_pregate() {
+    let mut vad = transcribe_cpp::VoiceActivityDetector::new(0.50).expect("VAD init");
+
+    // Pure silence frame
+    let silence = [0.0f32; 256];
+    let raw_score = vad.predict_frame(&silence);
+    assert!(raw_score >= 0.0 && raw_score < 0.5);
+
+    // Energy pre-gate zeroing in process_frame
+    vad.reset();
+    let (speaking, frame_score) = vad.process_frame(&silence);
+    assert!(!speaking);
+    assert_eq!(frame_score, 0.0);
+
+    // Audio above -45 dBFS
+    let mut audio = [0.0f32; 256];
+    for i in 0..256 {
+        audio[i] = 0.2 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16000.0).sin();
+    }
+    vad.reset();
+    let nn_score = vad.predict_frame(&audio);
+    vad.reset();
+    let (_audio_speaking, audio_score) = vad.process_frame(&audio);
+    assert!((audio_score - nn_score).abs() < 1e-4);
+
+    vad.set_threshold(0.35);
+}
+

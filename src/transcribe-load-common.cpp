@@ -275,6 +275,9 @@ transcribe_status init_backends_explicit_device(transcribe_backend_request reque
             append_accel_backends(out.scheduler_list, error_tag);
         }
         out.scheduler_list.push_back(primary);
+        for (auto be : out.scheduler_list) {
+            register_active_backend(be);
+        }
         return TRANSCRIBE_OK;
     }
 
@@ -285,6 +288,9 @@ transcribe_status init_backends_explicit_device(transcribe_backend_request reque
         return TRANSCRIBE_ERR_BACKEND;
     }
     out.scheduler_list.push_back(cpu_be);
+    for (auto be : out.scheduler_list) {
+        register_active_backend(be);
+    }
     return TRANSCRIBE_OK;
 }
 
@@ -344,6 +350,9 @@ transcribe_status init_backends(transcribe_backend_request requested,
                     append_accel_backends(out.scheduler_list, error_tag);
                 }
                 out.scheduler_list.push_back(cpu_be);
+                for (auto be : out.scheduler_list) {
+                    register_active_backend(be);
+                }
                 return TRANSCRIBE_OK;
             }
 
@@ -390,6 +399,9 @@ transcribe_status init_backends(transcribe_backend_request requested,
                     return TRANSCRIBE_ERR_BACKEND;
                 }
                 out.scheduler_list.push_back(cpu_be);
+                for (auto be : out.scheduler_list) {
+                    register_active_backend(be);
+                }
                 return TRANSCRIBE_OK;
             }
 
@@ -429,6 +441,9 @@ transcribe_status init_backends(transcribe_backend_request requested,
                     out.primary_kind = BackendKind::Cpu;
                 }
                 out.scheduler_list.push_back(cpu_be);
+                for (auto be : out.scheduler_list) {
+                    register_active_backend(be);
+                }
                 return TRANSCRIBE_OK;
             }
     }
@@ -537,7 +552,7 @@ transcribe_status promote_conv_pw_f16_to_f32_on_cpu(const BackendPlan &         
         replacements.push_back(r);
     }
 
-    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, plan.primary);
+    ggml_backend_buffer_t buffer = alloc_ctx_tensors_with_reclaim(plan.primary, ctx);
     if (buffer == nullptr) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "%s: conv_pw f32 promotion buffer alloc failed", error_tag);
         ggml_free(ctx);

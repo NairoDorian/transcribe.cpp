@@ -67,6 +67,7 @@ mod result;
 mod session;
 mod streaming;
 mod types;
+mod vad;
 mod version;
 
 #[cfg(feature = "arch-dl")]
@@ -91,6 +92,7 @@ pub use types::{
     AbiStruct, Backend, CommitPolicy, Diarize, ExtSlot, Feature, Itn, KvType, Pnc, StreamState,
     Task, TimestampKind,
 };
+pub use vad::VoiceActivityDetector;
 pub use version::{
     abi_struct_align, abi_struct_size, compiled_version, header_hash, version, version_commit,
 };

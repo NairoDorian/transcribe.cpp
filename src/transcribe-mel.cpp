@@ -26,6 +26,11 @@
 #include "transcribe-mel.h"
 
 #include "transcribe-batch-util.h"
+#include "transcribe-env.h"
+
+#if defined(__AVX2__)
+#    include <immintrin.h>
+#endif
 
 #ifdef __APPLE__
 #    include <Accelerate/Accelerate.h>
@@ -269,6 +274,57 @@ void fft_radix2(double * data, int n) {
     }
 }
 
+static inline double compute_filterbank_dot(const float * fb_row, const float * pwr, int k_begin, int k_end, int n_freq, bool disable_simd) {
+#if defined(__AVX2__)
+    if (!disable_simd) {
+        __m256d acc0 = _mm256_setzero_pd();
+        __m256d acc1 = _mm256_setzero_pd();
+        int k = k_begin;
+        for (; k + 7 < k_end && k + 7 < n_freq; k += 8) {
+            __m128 a_lo = _mm_loadu_ps(fb_row + k);
+            __m128 b_lo = _mm_loadu_ps(pwr + k);
+            __m256d a_d0 = _mm256_cvtps_pd(a_lo);
+            __m256d b_d0 = _mm256_cvtps_pd(b_lo);
+            acc0 = _mm256_fmadd_pd(a_d0, b_d0, acc0);
+
+            __m128 a_hi = _mm_loadu_ps(fb_row + k + 4);
+            __m128 b_hi = _mm_loadu_ps(pwr + k + 4);
+            __m256d a_d1 = _mm256_cvtps_pd(a_hi);
+            __m256d b_d1 = _mm256_cvtps_pd(b_hi);
+            acc1 = _mm256_fmadd_pd(a_d1, b_d1, acc1);
+        }
+        for (; k + 3 < k_end && k + 3 < n_freq; k += 4) {
+            __m128 a_lo = _mm_loadu_ps(fb_row + k);
+            __m128 b_lo = _mm_loadu_ps(pwr + k);
+            __m256d a_d = _mm256_cvtps_pd(a_lo);
+            __m256d b_d = _mm256_cvtps_pd(b_lo);
+            acc0 = _mm256_fmadd_pd(a_d, b_d, acc0);
+        }
+        acc0 = _mm256_add_pd(acc0, acc1);
+        alignas(32) double vals[4];
+        _mm256_storeu_pd(vals, acc0);
+        double sum = vals[0] + vals[1] + vals[2] + vals[3];
+        for (; k < k_end && k < n_freq; ++k) {
+            sum += static_cast<double>(fb_row[k]) * static_cast<double>(pwr[k]);
+        }
+        return sum;
+    }
+#endif
+    (void)disable_simd;
+    double sum = 0.0;
+    int k = k_begin;
+    for (; k < n_freq - 3 && k < k_end; k += 4) {
+        sum += static_cast<double>(fb_row[k]) * static_cast<double>(pwr[k]) +
+               static_cast<double>(fb_row[k + 1]) * static_cast<double>(pwr[k + 1]) +
+               static_cast<double>(fb_row[k + 2]) * static_cast<double>(pwr[k + 2]) +
+               static_cast<double>(fb_row[k + 3]) * static_cast<double>(pwr[k + 3]);
+    }
+    for (; k < n_freq && k < k_end; ++k) {
+        sum += static_cast<double>(fb_row[k]) * static_cast<double>(pwr[k]);
+    }
+    return sum;
+}
+
 }  // namespace
 
 // ---------- MelFrontend ----------
@@ -498,6 +554,7 @@ transcribe_status MelFrontend::compute(const float *        pcm,
     std::vector<float> log_mel(static_cast<size_t>(n_mels) * static_cast<size_t>(n_frames));
 
     const bool whisper_mode = (cfg_.normalize == "per_utterance" || cfg_.normalize == "global");
+    const bool disable_mel_simd = env::flag("TRANSCRIBE_DISABLE_MEL_SIMD");
 
     int stft_threads = n_threads;
     if (stft_threads <= 0) {
@@ -565,18 +622,9 @@ transcribe_status MelFrontend::compute(const float *        pcm,
                     // order; the groups/elements skipped on either side are all
                     // fb_row[k] == 0.0f, and `sum += 0.0` is exact. Bit-identical
                     // to the dense loop.
-                    const int     k_end  = fb_end_[static_cast<size_t>(m)];
-                    double        sum    = 0.0;
-                    int           k      = (fb_begin_[static_cast<size_t>(m)] / 4) * 4;
-                    for (; k < n_freq - 3 && k < k_end; k += 4) {
-                        sum += static_cast<double>(fb_row[k]) * static_cast<double>(power_scratch[k]) +
-                               static_cast<double>(fb_row[k + 1]) * static_cast<double>(power_scratch[k + 1]) +
-                               static_cast<double>(fb_row[k + 2]) * static_cast<double>(power_scratch[k + 2]) +
-                               static_cast<double>(fb_row[k + 3]) * static_cast<double>(power_scratch[k + 3]);
-                    }
-                    for (; k < n_freq && k < k_end; ++k) {
-                        sum += static_cast<double>(fb_row[k]) * static_cast<double>(power_scratch[k]);
-                    }
+                    const int    k_end    = fb_end_[static_cast<size_t>(m)];
+                    const int    k_begin  = (fb_begin_[static_cast<size_t>(m)] / 4) * 4;
+                    double       sum      = compute_filterbank_dot(fb_row, power_scratch.data(), k_begin, k_end, n_freq, disable_mel_simd);
                     float result;
                     if (whisper_mode) {
                         if (sum < 1.0e-10) {
@@ -709,18 +757,9 @@ transcribe_status MelFrontend::compute(const float *        pcm,
                 const float * pwr = power.data() + static_cast<size_t>(t) * n_freq;
                 for (int m = 0; m < n_mels; ++m) {
                     const float * fb_row = mel_fb_.data() + static_cast<size_t>(m) * n_freq;
-                    const int     k_end  = fb_end_[static_cast<size_t>(m)];
-                    double        sum    = 0.0;
-                    int           k      = (fb_begin_[static_cast<size_t>(m)] / 4) * 4;
-                    for (; k < n_freq - 3 && k < k_end; k += 4) {
-                        sum += static_cast<double>(fb_row[k]) * static_cast<double>(pwr[k]) +
-                               static_cast<double>(fb_row[k + 1]) * static_cast<double>(pwr[k + 1]) +
-                               static_cast<double>(fb_row[k + 2]) * static_cast<double>(pwr[k + 2]) +
-                               static_cast<double>(fb_row[k + 3]) * static_cast<double>(pwr[k + 3]);
-                    }
-                    for (; k < n_freq && k < k_end; ++k) {
-                        sum += static_cast<double>(fb_row[k]) * static_cast<double>(pwr[k]);
-                    }
+                    const int    k_end    = fb_end_[static_cast<size_t>(m)];
+                    const int    k_begin  = (fb_begin_[static_cast<size_t>(m)] / 4) * 4;
+                    double       sum      = compute_filterbank_dot(fb_row, pwr, k_begin, k_end, n_freq, disable_mel_simd);
                     float result;
                     if (whisper_mode) {
                         if (sum < 1.0e-10) {

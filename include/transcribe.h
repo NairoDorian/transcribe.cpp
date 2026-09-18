@@ -1950,6 +1950,11 @@ struct transcribe_stream_params {
     const struct transcribe_ext *   family;
     transcribe_stream_commit_policy commit_policy;
     uint32_t                        stable_prefix_agreement_n;
+    /* --- Voice Activity Detection (VAD) --- */
+    bool                            enable_vad;      /* Default: true */
+    float                           vad_threshold;   /* Default: 0.50f (0.05f to 0.95f) */
+    uint32_t                        vad_prefill_ms;  /* Default: 450 ms */
+    uint32_t                        vad_hangover_ms; /* Default: 1200 ms */
 };
 
 TRANSCRIBE_API void transcribe_stream_params_init(struct transcribe_stream_params * params);
@@ -2020,6 +2025,11 @@ struct transcribe_stream_update {
     int64_t  buffered_ms;
     bool     committed_changed;
     bool     tentative_changed;
+    /* --- VAD Telemetry to Host App / Overlay --- */
+    bool     vad_speaking;     /* Whether user is currently speaking */
+    uint64_t vad_speech_ms;    /* Accumulated speech duration (ms) */
+    float    vad_last_score;   /* Raw speech probability [0.0, 1.0] of latest frame */
+    float    audio_level_dbfs; /* Peak RMS audio level in dBFS */
 };
 
 TRANSCRIBE_API void transcribe_stream_update_init(struct transcribe_stream_update * out);
@@ -2230,6 +2240,31 @@ TRANSCRIBE_API transcribe_status transcribe_stream_finalize(struct transcribe_se
  * No-op if session is NULL.
  */
 TRANSCRIBE_API void transcribe_stream_reset(struct transcribe_session * session);
+
+/*
+ * Dynamic runtime threshold update without restarting the stream.
+ *
+ * threshold: Desired sensitivity (0.05f to 0.95f).
+ * Returns TRANSCRIBE_ERR_INVALID_ARG if threshold is out of range or session is NULL.
+ */
+TRANSCRIBE_API transcribe_status transcribe_stream_set_vad_threshold(struct transcribe_session * session,
+                                                                     float                       threshold);
+
+/* ----------------------------------------------------------------------- */
+/* Voice Activity Detection (VAD)                                          */
+/* ----------------------------------------------------------------------- */
+
+typedef struct transcribe_vad transcribe_vad;
+
+/* Standalone VAD instance for history re-analysis or custom pipelines */
+TRANSCRIBE_API struct transcribe_vad * transcribe_vad_init(float threshold);
+TRANSCRIBE_API void                    transcribe_vad_free(struct transcribe_vad * vad);
+TRANSCRIBE_API float transcribe_vad_predict_frame(struct transcribe_vad * vad, const float * frame_256);
+TRANSCRIBE_API bool  transcribe_vad_process_frame(struct transcribe_vad * vad,
+                                                  const float *           frame_256,
+                                                  float *                 out_score);
+TRANSCRIBE_API void  transcribe_vad_set_threshold(struct transcribe_vad * vad, float threshold);
+TRANSCRIBE_API void  transcribe_vad_reset(struct transcribe_vad * vad);
 
 /*
  * Current stream lifecycle state. Returns TRANSCRIBE_STREAM_IDLE if

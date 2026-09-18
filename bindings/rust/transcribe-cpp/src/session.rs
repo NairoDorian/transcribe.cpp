@@ -622,6 +622,16 @@ impl Stream<'_> {
         }
     }
 
+    /// Dynamically update the VAD threshold while streaming without restarting.
+    ///
+    /// Threshold must be in `[0.05, 0.95]`.
+    pub fn set_vad_threshold(&mut self, threshold: f32) -> Result<()> {
+        let status = unsafe {
+            sys::transcribe_stream_set_vad_threshold(self.session.ptr, threshold)
+        };
+        check(status, "stream set vad threshold")
+    }
+
     /// Whether the stream was ended by cancellation.
     pub fn was_aborted(&self) -> bool {
         self.session.was_aborted()

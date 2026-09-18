@@ -477,10 +477,10 @@ transcribe_status whisper_load(Loader &                             loader,
     m->backend         = ggml_backend_name(m->plan.primary);
     m->primary_backend = m->plan.primary;
 
-    ggml_backend_buffer_t weights_buffer = ggml_backend_alloc_ctx_tensors(m->ctx_meta, m->plan.primary);
+    ggml_backend_buffer_t weights_buffer = alloc_ctx_tensors_with_reclaim(m->plan.primary, m->ctx_meta);
     if (weights_buffer == nullptr) {
         gguf_free(gguf_data);
-        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "whisper: ggml_backend_alloc_ctx_tensors failed");
+        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "whisper: alloc_ctx_tensors_with_reclaim failed");
         return TRANSCRIBE_ERR_GGUF;
     }
     m->backend_buffer = weights_buffer;
@@ -2161,7 +2161,8 @@ transcribe_status whisper_run(transcribe_session *          session,
             const bool primary_is_gpu = cm->plan.primary_kind != transcribe::BackendKind::Cpu &&
                                         cm->plan.primary_kind != transcribe::BackendKind::Accel &&
                                         cm->plan.primary_kind != transcribe::BackendKind::Unknown;
-            const bool use_step_graph = primary_is_gpu && !transcribe::debug::enabled();
+            const bool use_step_graph = (primary_is_gpu || !transcribe::env::flag("TRANSCRIBE_DISABLE_STATIC_DECODE")) &&
+                                        !transcribe::debug::enabled();
 
             // Sized to fit prompt + max generated tail, padded to next pow2,
             // capped at n_ctx_decoder (448).

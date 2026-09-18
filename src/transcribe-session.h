@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "transcribe-vad.h"
 #include "transcribe.h"
 
 #include <cmath>
@@ -261,6 +262,13 @@ struct transcribe_session {
     int64_t                         stream_audio_committed_us        = 0;
     transcribe_stream_commit_policy stream_commit_policy             = TRANSCRIBE_STREAM_COMMIT_AUTO;
     uint32_t                        stream_stable_prefix_agreement_n = 0;
+
+    // Native Voice Activity Detection (VAD) configuration & state
+    bool                              enable_vad      = true;
+    float                             vad_threshold   = 0.50f;
+    uint32_t                          vad_prefill_ms  = 450;
+    uint32_t                          vad_hangover_ms = 1200;
+    transcribe::VoiceActivityDetector stream_vad;
 
     // Session-owned copies of the caller's run-params strings, refreshed
     // on every transcribe_stream_begin. The dispatcher hands the family

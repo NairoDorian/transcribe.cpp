@@ -617,9 +617,9 @@ transcribe_status load_from_bin(const char *                                path
     m->primary_backend = m->plan.primary;
 
     // ---- Allocate backend buffer ----
-    ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(m->ctx_meta, m->plan.primary);
+    ggml_backend_buffer_t buf = alloc_ctx_tensors_with_reclaim(m->plan.primary, m->ctx_meta);
     if (buf == nullptr) {
-        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "%s: ggml_backend_alloc_ctx_tensors failed", kTag);
+        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "%s: alloc_ctx_tensors_with_reclaim failed", kTag);
         return TRANSCRIBE_ERR_GGUF;
     }
     m->backend_buffer = buf;

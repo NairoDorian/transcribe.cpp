@@ -113,6 +113,9 @@ set(TRANSCRIBE_SRCS
     transcribe-bin-loader.cpp
     transcribe-batch-util.cpp
     transcribe-stubs.cpp
+    transcribe-activity.cpp
+    transcribe-chunking.cpp
+    transcribe-vad.cpp
 )
 
 # Per-family source definitions
@@ -403,7 +406,11 @@ target_include_directories(transcribe
 # install(EXPORT). transcribe.h uses C++17 in its public surface, so a consumer
 # that lowers the global standard for its own code now gets a correct error
 # instead of a header that fails to parse.
-target_compile_features(transcribe PUBLIC cxx_std_17)
+target_compile_features(transcribe PUBLIC cxx_std_23)
+
+if(TRANSCRIBE_ENABLE_EARSHOT)
+    target_compile_definitions(transcribe PUBLIC TRANSCRIBE_ENABLE_EARSHOT=1)
+endif()
 
 target_compile_definitions(transcribe
     PRIVATE

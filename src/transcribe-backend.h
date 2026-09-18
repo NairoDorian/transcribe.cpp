@@ -133,17 +133,30 @@ void trim_backend_pools(ggml_backend_t backend);
 // holds. Null-safe; no-op where CUDA/HIP graphs are not compiled in.
 void evict_backend_graph_cache(ggml_backend_t backend, struct ggml_cgraph * graph);
 
+// Register an active backend instance (called during model backend initialization).
+void register_active_backend(ggml_backend_t backend);
+
+// Unregister a backend instance (called during backend teardown).
+void unregister_active_backend(ggml_backend_t backend) noexcept;
+
+// Retrieve all other active backends currently registered (thread-safe snapshot).
+std::vector<ggml_backend_t> get_other_active_backends(ggml_backend_t current);
+
 // ggml_backend_alloc_ctx_tensors(ctx, backend), and if that fails, hand back
 // cached pool memory and cached graph state — this backend's and, since the
 // memory in the way is usually another model's, every backend in
-// `reclaim_from` — then try exactly once more. Returns nullptr if the retry
-// fails as well, which is the same thing the direct call would have returned;
-// the reclaim attempts only ever change whether the second attempt succeeds.
-//
-// `graph` is optional and only used for the graph eviction.
+// `reclaim_from` (or all registered backends if empty) — then try exactly once more.
+// Returns nullptr if the retry fails as well.
 ggml_backend_buffer_t alloc_ctx_tensors_with_reclaim(ggml_backend_t                      backend,
                                                      ggml_context *                      ctx,
                                                      const std::vector<ggml_backend_t> & reclaim_from = {},
                                                      struct ggml_cgraph *                graph        = nullptr);
+
+inline ggml_backend_buffer_t alloc_ctx_tensors_with_reclaim(ggml_context *                      ctx,
+                                                            ggml_backend_t                      backend,
+                                                            const std::vector<ggml_backend_t> & reclaim_from = {},
+                                                            struct ggml_cgraph *                graph        = nullptr) {
+    return alloc_ctx_tensors_with_reclaim(backend, ctx, reclaim_from, graph);
+}
 
 }  // namespace transcribe

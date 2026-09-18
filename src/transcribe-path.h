@@ -36,6 +36,17 @@ inline std::filesystem::path path_from_utf8(const std::string & utf8) {
     return path_from_utf8(utf8.c_str());
 }
 
+// Convert a std::filesystem::path to a UTF-8 encoded std::string.
+// In C++20 and C++23, path::u8string() returns std::u8string (char8_t).
+inline std::string path_to_utf8(const std::filesystem::path & p) {
+#if defined(_WIN32)
+    auto u8 = p.u8string();
+    return std::string(reinterpret_cast<const char *>(u8.data()), u8.size());
+#else
+    return p.string();
+#endif
+}
+
 // Existence pre-check whose ONLY job is to distinguish "the file is
 // not at this path" from every other reason a subsequent open might
 // fail.

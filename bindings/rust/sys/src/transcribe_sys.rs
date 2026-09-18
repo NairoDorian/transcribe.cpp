@@ -606,11 +606,15 @@ pub struct transcribe_stream_params {
     pub family: *const transcribe_ext,
     pub commit_policy: transcribe_stream_commit_policy,
     pub stable_prefix_agreement_n: u32,
+    pub enable_vad: bool,
+    pub vad_threshold: f32,
+    pub vad_prefill_ms: i32,
+    pub vad_hangover_ms: i32,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
     ["Size of transcribe_stream_params"]
-        [::std::mem::size_of::<transcribe_stream_params>() - 24usize];
+        [::std::mem::size_of::<transcribe_stream_params>() - 40usize];
     ["Alignment of transcribe_stream_params"]
         [::std::mem::align_of::<transcribe_stream_params>() - 8usize];
     ["Offset of field: transcribe_stream_params::struct_size"]
@@ -621,6 +625,14 @@ const _: () = {
         [::std::mem::offset_of!(transcribe_stream_params, commit_policy) - 16usize];
     ["Offset of field: transcribe_stream_params::stable_prefix_agreement_n"]
         [::std::mem::offset_of!(transcribe_stream_params, stable_prefix_agreement_n) - 20usize];
+    ["Offset of field: transcribe_stream_params::enable_vad"]
+        [::std::mem::offset_of!(transcribe_stream_params, enable_vad) - 24usize];
+    ["Offset of field: transcribe_stream_params::vad_threshold"]
+        [::std::mem::offset_of!(transcribe_stream_params, vad_threshold) - 28usize];
+    ["Offset of field: transcribe_stream_params::vad_prefill_ms"]
+        [::std::mem::offset_of!(transcribe_stream_params, vad_prefill_ms) - 32usize];
+    ["Offset of field: transcribe_stream_params::vad_hangover_ms"]
+        [::std::mem::offset_of!(transcribe_stream_params, vad_hangover_ms) - 36usize];
 };
 unsafe extern "C" {
     pub fn transcribe_stream_params_init(params: *mut transcribe_stream_params);
@@ -637,11 +649,15 @@ pub struct transcribe_stream_update {
     pub buffered_ms: i64,
     pub committed_changed: bool,
     pub tentative_changed: bool,
+    pub vad_speaking: bool,
+    pub vad_speech_ms: i32,
+    pub vad_last_score: f32,
+    pub audio_level_dbfs: f32,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
     ["Size of transcribe_stream_update"]
-        [::std::mem::size_of::<transcribe_stream_update>() - 48usize];
+        [::std::mem::size_of::<transcribe_stream_update>() - 56usize];
     ["Alignment of transcribe_stream_update"]
         [::std::mem::align_of::<transcribe_stream_update>() - 8usize];
     ["Offset of field: transcribe_stream_update::struct_size"]
@@ -662,6 +678,14 @@ const _: () = {
         [::std::mem::offset_of!(transcribe_stream_update, committed_changed) - 40usize];
     ["Offset of field: transcribe_stream_update::tentative_changed"]
         [::std::mem::offset_of!(transcribe_stream_update, tentative_changed) - 41usize];
+    ["Offset of field: transcribe_stream_update::vad_speaking"]
+        [::std::mem::offset_of!(transcribe_stream_update, vad_speaking) - 42usize];
+    ["Offset of field: transcribe_stream_update::vad_speech_ms"]
+        [::std::mem::offset_of!(transcribe_stream_update, vad_speech_ms) - 44usize];
+    ["Offset of field: transcribe_stream_update::vad_last_score"]
+        [::std::mem::offset_of!(transcribe_stream_update, vad_last_score) - 48usize];
+    ["Offset of field: transcribe_stream_update::audio_level_dbfs"]
+        [::std::mem::offset_of!(transcribe_stream_update, audio_level_dbfs) - 52usize];
 };
 unsafe extern "C" {
     pub fn transcribe_stream_update_init(out: *mut transcribe_stream_update);
@@ -758,6 +782,32 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     pub fn transcribe_stream_last_status(session: *const transcribe_session) -> transcribe_status;
+}
+unsafe extern "C" {
+    pub fn transcribe_stream_set_vad_threshold(
+        session: *mut transcribe_session,
+        threshold: f32,
+    ) -> transcribe_status;
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct transcribe_vad {
+    _unused: [u8; 0],
+}
+unsafe extern "C" {
+    pub fn transcribe_vad_init(threshold: f32) -> *mut transcribe_vad;
+    pub fn transcribe_vad_free(vad: *mut transcribe_vad);
+    pub fn transcribe_vad_predict_frame(
+        vad: *mut transcribe_vad,
+        frame_256: *const f32,
+    ) -> f32;
+    pub fn transcribe_vad_process_frame(
+        vad: *mut transcribe_vad,
+        frame_256: *const f32,
+        out_score: *mut f32,
+    ) -> bool;
+    pub fn transcribe_vad_set_threshold(vad: *mut transcribe_vad, threshold: f32);
+    pub fn transcribe_vad_reset(vad: *mut transcribe_vad);
 }
 unsafe extern "C" {
     pub fn transcribe_tokenize(

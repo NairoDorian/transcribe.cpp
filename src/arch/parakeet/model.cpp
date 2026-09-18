@@ -553,10 +553,10 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
 
     // Allocate a backend buffer for every tensor in ctx_meta on the
     // primary backend; the weight bytes are streamed in below.
-    ggml_backend_buffer_t weights_buffer = ggml_backend_alloc_ctx_tensors(m->ctx_meta, m->plan.primary);
+    ggml_backend_buffer_t weights_buffer = alloc_ctx_tensors_with_reclaim(m->plan.primary, m->ctx_meta);
     if (weights_buffer == nullptr) {
         gguf_free(gguf_data);
-        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet: ggml_backend_alloc_ctx_tensors failed");
+        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet: alloc_ctx_tensors_with_reclaim failed");
         return TRANSCRIBE_ERR_GGUF;
     }
     m->backend_buffer = weights_buffer;

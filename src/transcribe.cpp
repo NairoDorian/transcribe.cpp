@@ -21,6 +21,7 @@
 #include "ggml-backend.h"
 #include "ggml.h"  // ggml_log_set: route ggml diagnostics into our sink
 #include "transcribe-abi.h"
+#include "transcribe-activity.h"
 #include "transcribe-arch.h"
 #include "transcribe-backend.h"
 #include "transcribe-build-info.h"  // configure-time provenance for transcribe_version()
@@ -643,7 +644,11 @@ extern "C" void transcribe_stream_params_init(struct transcribe_stream_params * 
         return;
     }
     std::memset(p, 0, sizeof(*p));
-    p->struct_size = sizeof(*p);
+    p->struct_size     = sizeof(*p);
+    p->enable_vad      = true;
+    p->vad_threshold   = 0.50f;
+    p->vad_prefill_ms  = 450;
+    p->vad_hangover_ms = 1200;
 }
 
 // Output struct init functions
@@ -683,7 +688,8 @@ extern "C" void transcribe_stream_update_init(struct transcribe_stream_update * 
         return;
     }
     std::memset(p, 0, sizeof(*p));
-    p->struct_size = sizeof(*p);
+    p->struct_size      = sizeof(*p);
+    p->audio_level_dbfs = -100.0f;
 }
 
 extern "C" void transcribe_stream_text_init(struct transcribe_stream_text * p) {
@@ -802,11 +808,20 @@ constexpr size_t k_min_stream_params_size           = TRANSCRIBE_FIELD_END(trans
 constexpr size_t k_stream_params_commit_policy_size = TRANSCRIBE_FIELD_END(transcribe_stream_params, commit_policy);
 constexpr size_t k_stream_params_agreement_n_size =
     TRANSCRIBE_FIELD_END(transcribe_stream_params, stable_prefix_agreement_n);
-constexpr size_t k_min_stream_update_size = TRANSCRIBE_FIELD_END(transcribe_stream_update, buffered_ms);
+constexpr size_t k_stream_params_enable_vad_size      = TRANSCRIBE_FIELD_END(transcribe_stream_params, enable_vad);
+constexpr size_t k_stream_params_vad_threshold_size   = TRANSCRIBE_FIELD_END(transcribe_stream_params, vad_threshold);
+constexpr size_t k_stream_params_vad_prefill_ms_size  = TRANSCRIBE_FIELD_END(transcribe_stream_params, vad_prefill_ms);
+constexpr size_t k_stream_params_vad_hangover_ms_size = TRANSCRIBE_FIELD_END(transcribe_stream_params, vad_hangover_ms);
+constexpr size_t k_min_stream_update_size             = TRANSCRIBE_FIELD_END(transcribe_stream_update, buffered_ms);
 constexpr size_t k_stream_update_committed_changed_size =
     TRANSCRIBE_FIELD_END(transcribe_stream_update, committed_changed);
 constexpr size_t k_stream_update_tentative_changed_size =
     TRANSCRIBE_FIELD_END(transcribe_stream_update, tentative_changed);
+constexpr size_t k_stream_update_vad_speaking_size   = TRANSCRIBE_FIELD_END(transcribe_stream_update, vad_speaking);
+constexpr size_t k_stream_update_vad_speech_ms_size  = TRANSCRIBE_FIELD_END(transcribe_stream_update, vad_speech_ms);
+constexpr size_t k_stream_update_vad_last_score_size = TRANSCRIBE_FIELD_END(transcribe_stream_update, vad_last_score);
+constexpr size_t k_stream_update_audio_level_dbfs_size =
+    TRANSCRIBE_FIELD_END(transcribe_stream_update, audio_level_dbfs);
 constexpr size_t k_min_stream_text_size     = TRANSCRIBE_FIELD_END(transcribe_stream_text, raw_tentative_start_bytes);
 constexpr size_t k_min_capabilities_size    = TRANSCRIBE_FIELD_END(transcribe_capabilities, supports_streaming);
 constexpr size_t k_min_session_limits_size  = TRANSCRIBE_FIELD_END(transcribe_session_limits, max_kv_bytes);
@@ -954,7 +969,7 @@ static transcribe_status transcribe_init_backends_impl(const char * artifact_dir
 
     std::error_code       ec;
     std::filesystem::path canonical = std::filesystem::weakly_canonical(transcribe::path_from_utf8(artifact_dir), ec);
-    const std::string     key       = ec ? std::string(artifact_dir) : canonical.u8string();
+    const std::string     key       = ec ? std::string(artifact_dir) : transcribe::path_to_utf8(canonical);
     if (s_loaded_dirs.find(key) == s_loaded_dirs.end()) {
         ggml_backend_load_all_from_path(artifact_dir);
         s_loaded_dirs.insert(key);
@@ -1904,6 +1919,34 @@ static transcribe_status transcribe_stream_begin_impl(struct transcribe_session 
     session->stream_commit_policy             = commit_policy;
     session->stream_stable_prefix_agreement_n = stable_prefix_agreement_n;
 
+    // Configure engine-native VAD
+    bool     enable_vad      = true;
+    float    vad_threshold   = 0.50f;
+    uint32_t vad_prefill_ms  = 450;
+    uint32_t vad_hangover_ms = 1200;
+
+    if (has_field(stream_params->struct_size, k_stream_params_enable_vad_size)) {
+        enable_vad = stream_params->enable_vad;
+    }
+    if (has_field(stream_params->struct_size, k_stream_params_vad_threshold_size)) {
+        vad_threshold = stream_params->vad_threshold;
+        if (vad_threshold < 0.05f || vad_threshold > 0.95f) {
+            vad_threshold = 0.50f;
+        }
+    }
+    if (has_field(stream_params->struct_size, k_stream_params_vad_prefill_ms_size)) {
+        vad_prefill_ms = stream_params->vad_prefill_ms;
+    }
+    if (has_field(stream_params->struct_size, k_stream_params_vad_hangover_ms_size)) {
+        vad_hangover_ms = stream_params->vad_hangover_ms;
+    }
+
+    session->enable_vad      = enable_vad;
+    session->vad_threshold   = vad_threshold;
+    session->vad_prefill_ms  = vad_prefill_ms;
+    session->vad_hangover_ms = vad_hangover_ms;
+    session->stream_vad      = transcribe::VoiceActivityDetector(vad_threshold, vad_prefill_ms, vad_hangover_ms);
+
     // Hand the family hook a params view whose pointers the LIBRARY owns.
     // Families may capture `*run_params` for the stream's lifetime
     // (parakeet re-reads .language on every feed), and the public contract
@@ -1987,6 +2030,56 @@ static transcribe_status transcribe_stream_feed_impl(struct transcribe_session *
         return TRANSCRIBE_ERR_NOT_IMPLEMENTED;
     }
 
+    // Step 1: Run native Earshot minGRU VAD on 256-sample chunks
+    if (session->enable_vad) {
+        int processed = 0;
+        while (processed + 256 <= n_samples) {
+            float frame_score = 0.0f;
+            std::ignore =
+                session->stream_vad.process_frame(std::span<const float, 256>(pcm + processed, 256), &frame_score);
+            processed += 256;
+        }
+    }
+
+    auto populate_vad_telemetry = [&](struct transcribe_stream_update * u) {
+        if (u != nullptr) {
+            if (has_field(u->struct_size, k_stream_update_vad_speaking_size)) {
+                u->vad_speaking = session->stream_vad.is_speaking();
+            }
+            if (has_field(u->struct_size, k_stream_update_vad_speech_ms_size)) {
+                u->vad_speech_ms = session->stream_vad.speech_ms();
+            }
+            if (has_field(u->struct_size, k_stream_update_vad_last_score_size)) {
+                u->vad_last_score = session->stream_vad.last_score();
+            }
+            if (has_field(u->struct_size, k_stream_update_audio_level_dbfs_size)) {
+                u->audio_level_dbfs = session->stream_vad.audio_level_dbfs();
+            }
+        }
+    };
+
+    // Fast-path: if audio activity gate is enabled and either silence energy OR native VAD not speaking:
+    // advance timeline and bypass expensive mel + model encoder pass.
+    const bool is_voiced = !session->enable_vad || session->stream_vad.is_speaking();
+    if (!transcribe::is_activity_gate_disabled() &&
+        session->stream_audio_committed_us == session->stream_audio_input_us &&
+        session->stream_tentative_text.empty() &&
+        (!is_voiced || !transcribe::is_audio_active(pcm, static_cast<size_t>(n_samples)))) {
+        const int64_t slice_us = (static_cast<int64_t>(n_samples) * 1000000LL) / 16000LL;
+        session->stream_audio_input_us += slice_us;
+        session->stream_audio_committed_us += slice_us;
+        if (update != nullptr) {
+            update->result_changed     = false;
+            update->revision           = session->stream_revision;
+            update->input_received_ms  = session->stream_audio_input_us / 1000LL;
+            update->audio_committed_ms = session->stream_audio_committed_us / 1000LL;
+            update->buffered_ms        = 0;
+            update->is_final           = false;
+            populate_vad_telemetry(update);
+        }
+        return TRANSCRIBE_OK;
+    }
+
     const int32_t     prev_revision   = session->stream_revision;
     const std::string prev_full_text  = session->full_text;
     const bool        prev_has_result = session->has_result;
@@ -1995,6 +2088,7 @@ static transcribe_status transcribe_stream_feed_impl(struct transcribe_session *
     if (st != TRANSCRIBE_OK) {
         session->stream_state       = TRANSCRIBE_STREAM_FAILED;
         session->stream_last_status = st;
+        populate_vad_telemetry(update);
         return st;
     }
     const StreamTextDelta text_delta = apply_stream_text_policy(session, /*is_finalize=*/false);
@@ -2007,6 +2101,7 @@ static transcribe_status transcribe_stream_feed_impl(struct transcribe_session *
     if (update != nullptr && session->stream_commit_policy == TRANSCRIBE_STREAM_COMMIT_ON_FINALIZE) {
         update->audio_committed_ms = 0;
     }
+    populate_vad_telemetry(update);
     return st;
 }
 

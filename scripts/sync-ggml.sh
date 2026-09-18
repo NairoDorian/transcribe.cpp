@@ -95,8 +95,8 @@ done
 [ -f "$UPSTREAM_FILE" ] || die "missing $UPSTREAM_FILE — run from a checkout with vendored ggml"
 
 # ---- read current pin -------------------------------------------------------
-CUR_REPO="$(sed -n 's/^repo:[[:space:]]*//p' "$UPSTREAM_FILE" | head -1)"
-CUR_SHA="$(sed -n 's/^sha:[[:space:]]*//p'  "$UPSTREAM_FILE" | head -1)"
+CUR_REPO="$(sed -n 's/^repo:[[:space:]]*//p' "$UPSTREAM_FILE" | tr -d '\r' | head -1)"
+CUR_SHA="$(sed -n 's/^sha:[[:space:]]*//p'  "$UPSTREAM_FILE" | tr -d '\r' | head -1)"
 [ -n "$CUR_REPO" ] || die "no 'repo:' line in $UPSTREAM_FILE"
 [ -n "$CUR_SHA"  ] || die "no 'sha:' line in $UPSTREAM_FILE"
 
@@ -194,9 +194,9 @@ done
 # value describes what actually landed (a patch could, in principle, move it).
 GGML_VERSION=""
 if [ -f "${STAGE_DIR}/CMakeLists.txt" ]; then
-    _maj="$(sed -n 's/^set(GGML_VERSION_MAJOR[[:space:]]*\([0-9]*\)).*/\1/p' "${STAGE_DIR}/CMakeLists.txt" | head -1)"
-    _min="$(sed -n 's/^set(GGML_VERSION_MINOR[[:space:]]*\([0-9]*\)).*/\1/p' "${STAGE_DIR}/CMakeLists.txt" | head -1)"
-    _pat="$(sed -n 's/^set(GGML_VERSION_PATCH[[:space:]]*\([0-9]*\)).*/\1/p' "${STAGE_DIR}/CMakeLists.txt" | head -1)"
+    _maj="$(sed -n 's/^set(GGML_VERSION_MAJOR[[:space:]]*\([0-9]*\)).*/\1/p' "${STAGE_DIR}/CMakeLists.txt" | tr -d '\r' | head -1)"
+    _min="$(sed -n 's/^set(GGML_VERSION_MINOR[[:space:]]*\([0-9]*\)).*/\1/p' "${STAGE_DIR}/CMakeLists.txt" | tr -d '\r' | head -1)"
+    _pat="$(sed -n 's/^set(GGML_VERSION_PATCH[[:space:]]*\([0-9]*\)).*/\1/p' "${STAGE_DIR}/CMakeLists.txt" | tr -d '\r' | head -1)"
     [ -n "$_maj" ] && GGML_VERSION="${_maj}.${_min:-0}.${_pat:-0}"
 fi
 GGML_DATE="$(git -C "$CLONE_DIR" show -s --format=%cs "$RESOLVED" 2>/dev/null || echo unknown)"

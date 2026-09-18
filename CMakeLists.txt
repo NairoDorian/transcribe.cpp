@@ -118,9 +118,15 @@ set(TRANSCRIBE_VERSION "${TRANSCRIBE_VERSION_MAJOR}.${TRANSCRIBE_VERSION_MINOR}.
 
 set(CMAKE_C_STANDARD            11)
 set(CMAKE_C_STANDARD_REQUIRED   ON)
-set(CMAKE_CXX_STANDARD          17)
+set(CMAKE_CXX_STANDARD          23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS        OFF)
+
+if(CMAKE_CUDA_COMPILER_LOADED)
+    set(CMAKE_CUDA_STANDARD 20)
+    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+    set(CMAKE_CUDA_EXTENSIONS OFF)
+endif()
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
@@ -177,6 +183,7 @@ endif()
 option(TRANSCRIBE_BUILD_TESTS    "Build unit / smoke tests" ON)
 option(TRANSCRIBE_BUILD_EXAMPLES "Build example CLI"        ON)
 option(TRANSCRIBE_BUILD_TOOLS    "Build inspect / quantize" OFF)  # post pass 2
+option(TRANSCRIBE_ENABLE_EARSHOT "Build engine-native Earshot VAD" ON)
 # Numerical-parity validation hooks: reference-mel injection (TRANSCRIBE_MEL_FROM_REF)
 # and per-layer tensor dumps (TRANSCRIBE_DUMP_ALL_BLOCKS / _SUB_BLOCKS). OFF for
 # release so the hook code is not compiled into shipped binaries — the env-var

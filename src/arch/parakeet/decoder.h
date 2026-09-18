@@ -235,6 +235,13 @@ transcribe_status decode_rnnt_greedy(const HostDecoderWeights & w,
                                      int                        n_threads,
                                      std::vector<TdtToken> &    out_tokens);
 
+// Opaque persistent decoder graph for streaming sessions (caches PredGraph and JointGraph
+// across feeds, avoiding per-chunk threadpool allocations and teardowns).
+struct ParakeetStreamingDecoderGraph;
+
+ParakeetStreamingDecoderGraph * parakeet_streaming_decoder_graph_new();
+void                            parakeet_streaming_decoder_graph_free(ParakeetStreamingDecoderGraph * g);
+
 // Streaming variant of RNN-T greedy decode. Consumes T_enc_new encoder
 // frames (the chunk just produced) and APPENDS emitted tokens to
 // out_tokens. LSTM state and previous-token id carry across calls via
@@ -242,15 +249,18 @@ transcribe_status decode_rnnt_greedy(const HostDecoderWeights & w,
 // index of this chunk's first frame (so step_at_emit lands in
 // stream-wide coordinates). state_io must have been reset to a fresh
 // start-of-sequence state at stream_begin (last_token_io = -1).
-transcribe_status decode_rnnt_greedy_streaming(const HostDecoderWeights & w,
-                                               const float *              enc_out,
-                                               int                        T_enc_new,
-                                               int                        d_enc,
-                                               LstmState &                state_io,
-                                               int &                      last_token_io,
-                                               int                        frame_offset,
-                                               int                        n_threads,
-                                               std::vector<TdtToken> &    out_tokens);
+// If dec_graph is non-null and valid, its cached PredGraph and JointGraph are
+// reused across calls without reallocating threadpools.
+transcribe_status decode_rnnt_greedy_streaming(const HostDecoderWeights &      w,
+                                               const float *                   enc_out,
+                                               int                             T_enc_new,
+                                               int                             d_enc,
+                                               LstmState &                     state_io,
+                                               int &                           last_token_io,
+                                               int                             frame_offset,
+                                               int                             n_threads,
+                                               std::vector<TdtToken> &         out_tokens,
+                                               ParakeetStreamingDecoderGraph * dec_graph = nullptr);
 
 // Run CTC greedy decode end-to-end. Per-frame: logits = W @ enc[t] + b,
 // argmax; collapse rule "drop adjacent duplicates, then drop blanks"

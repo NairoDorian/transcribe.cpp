@@ -385,6 +385,9 @@ void reset_streaming_decoder_state(ParakeetSession * pc, const ParakeetModel * p
     pc->stream_dec_state.lstm_state.reset(n_layers, pred_hidden);
     pc->stream_dec_state.prev_token_id = -1;
     pc->stream_dec_state.frame_offset  = 0;
+    if (!pc->stream_dec_state.dec_graph) {
+        pc->stream_dec_state.dec_graph.reset(parakeet_streaming_decoder_graph_new());
+    }
     pc->stream_dec_state.initialized   = true;
 }
 
@@ -2274,7 +2277,7 @@ transcribe_status emit_streaming_chunk(ParakeetSession * pc,
     if (const transcribe_status st = decode_rnnt_greedy_streaming(
             pm->host_decoder, pc->enc_host.data(), T_q_new, d_enc, pc->stream_dec_state.lstm_state,
             pc->stream_dec_state.prev_token_id, static_cast<int>(pc->stream_dec_state.frame_offset), pc->n_threads,
-            pc->raw_tokens);
+            pc->raw_tokens, pc->stream_dec_state.dec_graph.get());
         st != TRANSCRIBE_OK) {
         return st;
     }
@@ -2667,7 +2670,7 @@ transcribe_status emit_buffered_chunk(ParakeetSession * pc,
     if (const transcribe_status st = decode_rnnt_greedy_streaming(
             pm->host_decoder, enc_chunk, T_to_decode, d_enc, pc->stream_dec_state.lstm_state,
             pc->stream_dec_state.prev_token_id, static_cast<int>(pc->stream_dec_state.frame_offset), pc->n_threads,
-            pc->raw_tokens);
+            pc->raw_tokens, pc->stream_dec_state.dec_graph.get());
         st != TRANSCRIBE_OK) {
         return st;
     }
@@ -3421,6 +3424,7 @@ void stream_reset(transcribe_session * session) {
     }
     pc->stream_pcm_buffer.clear();  // keep the allocation
     pc->stream_audio_input_samples = 0;
+    pc->stream_dec_state.dec_graph.reset();
 }
 
 // Kind+slot probe. No run-slot extensions (always false on _RUN). On

@@ -6,6 +6,7 @@
 #include "ggml-cpu.h"
 #include "ggml.h"
 #include "transcribe-backend.h"
+#include "transcribe-env.h"
 #include "transcribe-log.h"
 #include "transcribe-session.h"
 
@@ -387,7 +388,17 @@ std::vector<int> performance_cpu_ids(int n_threads) {
             out.push_back(cpu);
         }
     }
-    // If still more requested, wrap around available P-core logical CPUs (never touching Core 0 or E-cores)
+    // If still more requested than physical P-cores + SMT, utilize remaining logical CPUs
+    // (including Core 0 and E-cores) rather than duplicating already-assigned P-cores.
+    if (static_cast<int>(out.size()) < n_threads) {
+        const int total_usable = usable_cpu_count();
+        for (int i = 0; i < total_usable && static_cast<int>(out.size()) < n_threads; ++i) {
+            if (std::find(out.begin(), out.end(), i) == out.end()) {
+                out.push_back(i);
+            }
+        }
+    }
+    // If still more requested (threads exceed total system CPUs), wrap around available logical CPUs:
     if (!out.empty()) {
         const size_t base_count = out.size();
         size_t       idx        = 0;
@@ -420,14 +431,29 @@ struct ggml_threadpool_params make_threadpool_params(int n_threads) {
     }
     struct ggml_threadpool_params tpp;
     ggml_threadpool_params_init(&tpp, n_threads);
-    tpp.strict_cpu = true;
-    tpp.poll       = 50;
-    tpp.prio       = GGML_SCHED_PRIO_NORMAL;
 
-    const std::vector<int> cpus = performance_cpu_ids(n_threads);
-    for (int cpu : cpus) {
-        if (cpu >= 0 && cpu < GGML_MAX_N_THREADS) {
-            tpp.cpumask[cpu] = true;
+    // strict_cpu: false by default, matching upstream GGML. Hard core-pinning
+    // prevents OS work-stealing and causes severe thread starvation / livelock
+    // when multiple models or streaming runs concurrently (measured ~31x slowdown).
+    // Can be explicitly forced via TRANSCRIBE_STRICT_CPU=1.
+    tpp.strict_cpu = transcribe::env::flag("TRANSCRIBE_STRICT_CPU");
+
+    // Hybrid polling level: default 50 (keeps threads warm for sub-millisecond
+    // dispatches without excessive context switching). Can be tuned via TRANSCRIBE_CPU_POLL.
+    tpp.poll = 50;
+    if (const char * env_poll = transcribe::env::str("TRANSCRIBE_CPU_POLL")) {
+        tpp.poll = static_cast<uint32_t>(std::max(0, std::atoi(env_poll)));
+    }
+    tpp.prio = GGML_SCHED_PRIO_NORMAL;
+
+    // By default, if affinity is disabled via TRANSCRIBE_DISABLE_AFFINITY=1,
+    // cpumask is left all-zero (default system scheduling).
+    if (!transcribe::env::flag("TRANSCRIBE_DISABLE_AFFINITY")) {
+        const std::vector<int> cpus = performance_cpu_ids(n_threads);
+        for (int cpu : cpus) {
+            if (cpu >= 0 && cpu < GGML_MAX_N_THREADS) {
+                tpp.cpumask[cpu] = true;
+            }
         }
     }
     return tpp;

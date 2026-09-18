@@ -65,6 +65,22 @@ bool detect_direct_dw_in_pre_encode(const char * backend) {
                                      /*backend_default=*/!is_metal);
 }
 
+// Pre-encode conv0 direct dispatch:
+// Causal padding uses ggml_pad_ext which produces non-contiguous strides;
+// ggml-cuda rejects non-contiguous CONV_2D and falls back to CPU.
+// On CPU backend it is native; on CUDA/Metal keep false to use ggml_conv_2d (im2col).
+bool detect_direct_conv0_in_pre_encode(const char * backend, bool causal_pe) {
+    if (causal_pe) {
+        const bool is_cpu = backend == nullptr ||
+                            (std::strstr(backend, "CPU") != nullptr || std::strstr(backend, "cpu") != nullptr);
+        return is_cpu;
+    }
+    const bool is_metal =
+        backend != nullptr && (std::strstr(backend, "Metal") != nullptr || std::strstr(backend, "metal") != nullptr);
+    return conf::resolve_conv_direct("TRANSCRIBE_CONV_DIRECT_CONV0", "TRANSCRIBE_CONV_NO_DIRECT_CONV0",
+                                     /*backend_default=*/!is_metal);
+}
+
 // ----- Views ------------------------------------------------------
 
 conf::PreEncodeView to_view(const ParakeetPreEncode & pe) {
@@ -325,15 +341,11 @@ EncoderBuild build_encoder_graph(ggml_context *                     ctx,
     }
     const bool       var_len_masks = batch_var_len && n_batch > 1;
     conf::ConvPolicy policy{};
+    policy.causal_pre_encode          = (hp.enc_att_context_style == ParakeetHParams::AttContextStyle::ChunkedLimited);
     policy.direct_pw                  = conf::detect_direct_pw(backend_name);
-    policy.direct_conv0_in_pre_encode = true;
+    policy.direct_conv0_in_pre_encode = detect_direct_conv0_in_pre_encode(backend_name, policy.causal_pre_encode);
     policy.direct_dw_in_block         = detect_direct_dw_in_block(backend_name);
     policy.direct_dw_in_pre_encode    = detect_direct_dw_in_pre_encode(backend_name);
-    // Cache-aware streaming (NeMo causal_downsampling=true) uses
-    // CausalConv2D for the pre-encode subsample (left=k-1, right=stride-1).
-    // Inferred from the attention style — only ChunkedLimited is causal.
-    // Independent of the conformer conv-module's conv_context.
-    policy.causal_pre_encode          = (hp.enc_att_context_style == ParakeetHParams::AttContextStyle::ChunkedLimited);
 
     EncoderBuild eb{};
 
@@ -703,12 +715,11 @@ EncoderBuild build_encoder_graph_streaming(ggml_context *            ctx,
                                            const char *              backend_name,
                                            bool                      spk_supervision) {
     conf::ConvPolicy policy{};
+    policy.causal_pre_encode          = (hp.enc_att_context_style == ParakeetHParams::AttContextStyle::ChunkedLimited);
     policy.direct_pw                  = conf::detect_direct_pw(backend_name);
-    policy.direct_conv0_in_pre_encode = true;
+    policy.direct_conv0_in_pre_encode = detect_direct_conv0_in_pre_encode(backend_name, policy.causal_pre_encode);
     policy.direct_dw_in_block         = detect_direct_dw_in_block(backend_name);
     policy.direct_dw_in_pre_encode    = detect_direct_dw_in_pre_encode(backend_name);
-    // Causal pre-encode is the cache-aware streaming convention only.
-    policy.causal_pre_encode          = (hp.enc_att_context_style == ParakeetHParams::AttContextStyle::ChunkedLimited);
 
     EncoderBuild eb{};
 

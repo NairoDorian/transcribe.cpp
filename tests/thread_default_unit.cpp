@@ -102,7 +102,7 @@ void test_make_threadpool_params() {
     const int                    n_req = 3;
     const ggml_threadpool_params tpp   = transcribe::make_threadpool_params(n_req);
     CHECK(tpp.n_threads == n_req);
-    CHECK(tpp.strict_cpu == true);
+    CHECK(tpp.strict_cpu == false);  // Default is non-strict placement to prevent livelocks under concurrency
 
     if (std::thread::hardware_concurrency() > 2) {
         CHECK(tpp.cpumask[0] == false);  // Core 0 excluded

@@ -220,6 +220,14 @@ struct ParakeetStreamingCaches {
     bool initialized = false;
 };
 
+struct ParakeetStreamingDecoderGraphDeleter {
+    void operator()(ParakeetStreamingDecoderGraph * g) const noexcept {
+        parakeet_streaming_decoder_graph_free(g);
+    }
+};
+using ParakeetStreamingDecoderGraphPtr =
+    std::unique_ptr<ParakeetStreamingDecoderGraph, ParakeetStreamingDecoderGraphDeleter>;
+
 // Per-context streaming RNN-T decoder state, owned on the context so it
 // carries across stream_feed calls. Reset at each stream_begin to a fresh
 // start-of-sequence state.
@@ -233,6 +241,9 @@ struct ParakeetStreamingDecoderState {
     // Absolute encoder-frame offset for converting per-chunk step_at_emit
     // into stream-wide frame indices.
     int64_t frame_offset = 0;
+
+    // Persistent decode graph (PredGraph + JointGraph) cached across feeds.
+    ParakeetStreamingDecoderGraphPtr dec_graph;
 
     bool initialized = false;
 };

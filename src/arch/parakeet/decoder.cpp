@@ -580,6 +580,32 @@ struct PredGraph {
     PredGraph & operator=(const PredGraph &) = delete;
 };
 
+}  // namespace
+
+struct ParakeetStreamingDecoderGraph {
+    std::unique_ptr<PredGraph>  pg;
+    std::unique_ptr<JointGraph> jg;
+    int                         nt    = 0;
+    bool                        ready = false;
+
+    void reset() {
+        jg.reset();
+        pg.reset();
+        ready = false;
+        nt    = 0;
+    }
+};
+
+ParakeetStreamingDecoderGraph * parakeet_streaming_decoder_graph_new() {
+    return new ParakeetStreamingDecoderGraph();
+}
+
+void parakeet_streaming_decoder_graph_free(ParakeetStreamingDecoderGraph * g) {
+    delete g;
+}
+
+namespace {
+
 // Build the per-call LSTM graph around the resident p.lstm[*].g_Wx/g_Wh/g_b.
 // Returns false if the resident weights are absent or any ggml step fails
 // (→ hard decode error). n_threads is the resolved (>0) thread count.
@@ -1672,15 +1698,16 @@ transcribe_status decode_rnnt_greedy(const HostDecoderWeights & w,
 // LSTM state (state_io) and previous token (last_token_io). The
 // chunk's encoder frames are decoded in stream-wide coordinates
 // (step_at_emit = frame_offset + local_step). No timing log.
-transcribe_status decode_rnnt_greedy_streaming(const HostDecoderWeights & w,
-                                               const float *              enc_out,
-                                               int                        T_enc_new,
-                                               int                        d_enc,
-                                               LstmState &                state_io,
-                                               int &                      last_token_io,
-                                               int                        frame_offset,
-                                               int                        n_threads,
-                                               std::vector<TdtToken> &    out_tokens) {
+transcribe_status decode_rnnt_greedy_streaming(const HostDecoderWeights &      w,
+                                               const float *                   enc_out,
+                                               int                             T_enc_new,
+                                               int                             d_enc,
+                                               LstmState &                     state_io,
+                                               int &                           last_token_io,
+                                               int                             frame_offset,
+                                               int                             n_threads,
+                                               std::vector<TdtToken> &         out_tokens,
+                                               ParakeetStreamingDecoderGraph * dec_graph) {
     if (enc_out == nullptr || T_enc_new <= 0 || d_enc <= 0) {
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
@@ -1708,17 +1735,47 @@ transcribe_status decode_rnnt_greedy_streaming(const HostDecoderWeights & w,
     const int n_token_cls = w.predictor.pred_vocab;
     const int blank_id    = w.blank_id;
 
-    // Per-call decode graphs (see decode_tdt_greedy for the lifecycle).
-    PredGraph  pg;
-    JointGraph jg;
-    build_pred_graph(pg, w.predictor, nt);
-    if (pg.ready) {
-        build_joint_graph(jg, w.joint, pg.backend);
+    // Reuse persistent decode graphs if provided, otherwise fall back to local per-call graphs.
+    PredGraph *  p_pg = nullptr;
+    JointGraph * p_jg = nullptr;
+    PredGraph    local_pg;
+    JointGraph   local_jg;
+
+    if (dec_graph != nullptr) {
+        if (!dec_graph->ready || dec_graph->nt != nt || !dec_graph->pg || !dec_graph->jg) {
+            dec_graph->reset();
+            dec_graph->pg = std::make_unique<PredGraph>();
+            dec_graph->jg = std::make_unique<JointGraph>();
+            build_pred_graph(*dec_graph->pg, w.predictor, nt);
+            if (dec_graph->pg->ready) {
+                build_joint_graph(*dec_graph->jg, w.joint, dec_graph->pg->backend);
+            }
+            if (dec_graph->pg->ready && dec_graph->jg->ready) {
+                dec_graph->nt    = nt;
+                dec_graph->ready = true;
+            }
+        }
+        if (dec_graph->ready) {
+            p_pg = dec_graph->pg.get();
+            p_jg = dec_graph->jg.get();
+        }
     }
-    if (!pg.ready || !jg.ready) {
-        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet decoder: ggml decode graph build failed");
-        return TRANSCRIBE_ERR_BACKEND;
+
+    if (p_pg == nullptr || p_jg == nullptr) {
+        build_pred_graph(local_pg, w.predictor, nt);
+        if (local_pg.ready) {
+            build_joint_graph(local_jg, w.joint, local_pg.backend);
+        }
+        if (!local_pg.ready || !local_jg.ready) {
+            log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet decoder: ggml decode graph build failed");
+            return TRANSCRIBE_ERR_BACKEND;
+        }
+        p_pg = &local_pg;
+        p_jg = &local_jg;
     }
+
+    PredGraph &  pg = *p_pg;
+    JointGraph & jg = *p_jg;
 
     // Validate state_io shape; reset if degenerate.
     if (static_cast<int>(state_io.h.size()) != n_layers || static_cast<int>(state_io.c.size()) != n_layers) {

@@ -12,6 +12,7 @@
 #include "transcribe-debug.h"
 #include "transcribe-env.h"
 #include "transcribe-flash-policy.h"
+#include "transcribe-graph-opt.h"
 #include "transcribe-load-common.h"
 #include "transcribe-loader.h"
 #include "transcribe-log.h"
@@ -292,7 +293,10 @@ transcribe_status init_context(transcribe_model *                model,
 
     auto cc       = std::make_unique<QwenAsrSession>();
     cc->model     = model;
-    cc->n_threads = params->n_threads;
+    // Single-stream quantized decoding is bandwidth-bound. A conservative
+    // worker budget avoids synchronization overhead without constraining OS
+    // placement. Explicit caller thread counts remain authoritative.
+    cc->n_threads = params->n_threads > 0 ? params->n_threads : transcribe::default_n_threads(5);
     cc->kv_type   = params->kv_type;
     cc->n_ctx     = transcribe_session_params_n_ctx(params);
 
@@ -643,7 +647,7 @@ transcribe_status run(transcribe_session *          session,
         }
     }
     ggml_backend_sched_reset(cc->sched);
-    if (!ggml_backend_sched_alloc_graph(cc->sched, eb.graph)) {
+    if (!alloc_inference_graph(cc->sched, eb.graph)) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "qwen3_asr run: encoder graph allocation failed — out of memory.");
         return TRANSCRIBE_ERR_OOM;
@@ -791,7 +795,7 @@ transcribe_status run(transcribe_session *          session,
 
     // Allocate + compute prefill on the same scheduler.
     ggml_backend_sched_reset(cc->sched);
-    if (!ggml_backend_sched_alloc_graph(cc->sched, pb.graph)) {
+    if (!alloc_inference_graph(cc->sched, pb.graph)) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "qwen3_asr run: prefill graph allocation failed (T_prompt=%d) — "
                             "out of memory. Lower transcribe_session_params.n_ctx or shorten "
@@ -959,7 +963,7 @@ transcribe_status run(transcribe_session *          session,
         }
     }
     ggml_backend_sched_reset(cc->sched);
-    if (!ggml_backend_sched_alloc_graph(cc->sched, k_drafts == 0 ? sb.graph : vb.graph)) {
+    if (!alloc_inference_graph(cc->sched, k_drafts == 0 ? sb.graph : vb.graph)) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "qwen3_asr step: decode graph allocation failed — out of memory. "
                             "Lower transcribe_session_params.n_ctx or shorten the audio.");
@@ -1386,7 +1390,7 @@ transcribe_status encode_all_batched(QwenAsrSession *                  cc,
         }
     }
     ggml_backend_sched_reset(cc->sched);
-    if (!ggml_backend_sched_alloc_graph(cc->sched, eb.graph)) {
+    if (!alloc_inference_graph(cc->sched, eb.graph)) {
         return TRANSCRIBE_ERR_GGUF;
     }
 
@@ -1489,7 +1493,7 @@ transcribe_status prefill_all_batched(QwenAsrSession *                          
     }
 
     ggml_backend_sched_reset(cc->sched);
-    if (!ggml_backend_sched_alloc_graph(cc->sched, pb.graph)) {
+    if (!alloc_inference_graph(cc->sched, pb.graph)) {
         return TRANSCRIBE_ERR_GGUF;
     }
 
@@ -1812,7 +1816,7 @@ transcribe_status run_batch(transcribe_session *          session,
         return TRANSCRIBE_ERR_GGUF;
     }
     ggml_backend_sched_reset(cc->sched);
-    if (!ggml_backend_sched_alloc_graph(cc->sched, sb.graph)) {
+    if (!alloc_inference_graph(cc->sched, sb.graph)) {
         return TRANSCRIBE_ERR_GGUF;
     }
 

@@ -13,6 +13,7 @@
 #include "transcribe-debug.h"
 #include "transcribe-env.h"
 #include "transcribe-flash-policy.h"
+#include "transcribe-graph-opt.h"
 #include "transcribe-load-common.h"
 #include "transcribe-loader.h"
 #include "transcribe-log.h"
@@ -845,7 +846,7 @@ transcribe_status run(transcribe_session *          ctx_base,
         }
     }
     ggml_backend_sched_reset(cc->sched);
-    if (!ggml_backend_sched_alloc_graph(cc->sched, eb.graph)) {
+    if (!alloc_inference_graph(cc->sched, eb.graph)) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "granite run: encoder graph allocation failed — out of memory.");
         return TRANSCRIBE_ERR_OOM;
@@ -951,7 +952,7 @@ transcribe_status run(transcribe_session *          ctx_base,
     }
 
     ggml_backend_sched_reset(cc->sched);
-    if (!ggml_backend_sched_alloc_graph(cc->sched, pb.graph)) {
+    if (!alloc_inference_graph(cc->sched, pb.graph)) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "granite run: projector graph allocation failed — out of memory.");
         ggml_free(proj_ctx);
@@ -1127,7 +1128,7 @@ transcribe_status run(transcribe_session *          ctx_base,
     }
 
     ggml_backend_sched_reset(cc->sched);
-    if (!ggml_backend_sched_alloc_graph(cc->sched, dec.graph)) {
+    if (!alloc_inference_graph(cc->sched, dec.graph)) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "granite run: decoder prefill graph allocation failed — "
                             "out of memory.");
@@ -1235,7 +1236,7 @@ transcribe_status run(transcribe_session *          ctx_base,
         return TRANSCRIBE_ERR_GGUF;
     }
     ggml_backend_sched_reset(cc->sched);
-    if (!ggml_backend_sched_alloc_graph(cc->sched, step.graph)) {
+    if (!alloc_inference_graph(cc->sched, step.graph)) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "granite run: decode step graph allocation failed — "
                             "out of memory.");
@@ -1379,7 +1380,7 @@ transcribe_status encode_one(GraniteSession *           cc,
         }
     }
     ggml_backend_sched_reset(cc->sched);
-    if (!ggml_backend_sched_alloc_graph(cc->sched, eb.graph)) {
+    if (!alloc_inference_graph(cc->sched, eb.graph)) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "granite encode_one: encoder graph allocation failed — "
                             "out of memory.");
@@ -1437,7 +1438,7 @@ transcribe_status encode_one(GraniteSession *           cc,
         return TRANSCRIBE_ERR_GGUF;
     }
     ggml_backend_sched_reset(cc->sched);
-    if (!ggml_backend_sched_alloc_graph(cc->sched, pb.graph)) {
+    if (!alloc_inference_graph(cc->sched, pb.graph)) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "granite encode_one: projector graph allocation failed — "
                             "out of memory.");
@@ -1671,7 +1672,7 @@ transcribe_status run_batch(transcribe_session *          session,
             return TRANSCRIBE_ERR_GGUF;
         }
         ggml_backend_sched_reset(cc->sched);
-        if (!ggml_backend_sched_alloc_graph(cc->sched, pb.graph)) {
+        if (!alloc_inference_graph(cc->sched, pb.graph)) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "granite run_batch: batched prefill graph allocation failed "
                                 "— out of memory.");
@@ -1763,7 +1764,7 @@ transcribe_status run_batch(transcribe_session *          session,
         return TRANSCRIBE_ERR_GGUF;
     }
     ggml_backend_sched_reset(cc->sched);
-    if (!ggml_backend_sched_alloc_graph(cc->sched, sb.graph)) {
+    if (!alloc_inference_graph(cc->sched, sb.graph)) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "granite run_batch: batched step graph allocation failed — "
                             "out of memory.");

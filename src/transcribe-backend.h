@@ -89,10 +89,14 @@ struct BackendPlan {
 // Check if a backend device is the CPU backend. DL-safe (uses ggml_backend_dev_type).
 bool is_cpu_backend(ggml_backend_t backend);
 
-// Attach or update a topology-aware persistent threadpool on a CPU backend.
+// Attach or update a persistent threadpool on a CPU backend.
 // Reuses the existing threadpool if parameters match; otherwise frees the previous
-// threadpool and instantiates a new one configured for performance cores.
+// threadpool and instantiates a new one with normal OS scheduling.
 void safe_set_cpu_backend_threadpool(ggml_backend_t backend, int n_threads);
+
+// Park an idle pool without freeing its workers. The next configure reattaches
+// it, and GGML resumes it when a graph is dispatched.
+void pause_cpu_backend_threadpool(ggml_backend_t backend);
 
 // Detach and cleanly free any threadpool associated with the backend.
 void cleanup_cpu_backend_threadpool(ggml_backend_t backend) noexcept;
@@ -155,7 +159,7 @@ ggml_backend_buffer_t alloc_ctx_tensors_with_reclaim(ggml_backend_t             
 inline ggml_backend_buffer_t alloc_ctx_tensors_with_reclaim(ggml_context *                      ctx,
                                                             ggml_backend_t                      backend,
                                                             const std::vector<ggml_backend_t> & reclaim_from = {},
-                                                            struct ggml_cgraph *                graph        = nullptr) {
+                                                            struct ggml_cgraph *                graph = nullptr) {
     return alloc_ctx_tensors_with_reclaim(backend, ctx, reclaim_from, graph);
 }
 

@@ -1777,6 +1777,25 @@ transcribe_status decode_rnnt_greedy_streaming(const HostDecoderWeights &      w
     PredGraph &  pg = *p_pg;
     JointGraph & jg = *p_jg;
 
+    // The cached decoder survives chunk boundaries. Park its polling workers
+    // while mel/encoder work runs; otherwise two CPU pools fight for the same
+    // cores. Retain the graph, weights and workers, and resume on dispatch.
+    struct pool_lease {
+        ggml_backend_t     backend;
+        pfn_set_threadpool set_pool;
+
+        ~pool_lease() {
+            if (set_pool != nullptr) {
+                set_pool(backend, nullptr);
+            }
+        }
+    } lease{ pg.backend,
+             reinterpret_cast<pfn_set_threadpool>(cpu_backend_proc(pg.backend, "ggml_backend_cpu_set_threadpool")) };
+
+    if (lease.set_pool != nullptr && pg.tp != nullptr) {
+        lease.set_pool(pg.backend, pg.tp);
+    }
+
     // Validate state_io shape; reset if degenerate.
     if (static_cast<int>(state_io.h.size()) != n_layers || static_cast<int>(state_io.c.size()) != n_layers) {
         state_io.reset(n_layers, H);

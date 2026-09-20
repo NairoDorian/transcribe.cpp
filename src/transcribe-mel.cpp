@@ -274,31 +274,36 @@ void fft_radix2(double * data, int n) {
     }
 }
 
-static inline double compute_filterbank_dot(const float * fb_row, const float * pwr, int k_begin, int k_end, int n_freq, bool disable_simd) {
+static inline double compute_filterbank_dot(const float * fb_row,
+                                            const float * pwr,
+                                            int           k_begin,
+                                            int           k_end,
+                                            int           n_freq,
+                                            bool          disable_simd) {
 #if defined(__AVX2__)
     if (!disable_simd) {
         __m256d acc0 = _mm256_setzero_pd();
         __m256d acc1 = _mm256_setzero_pd();
-        int k = k_begin;
+        int     k    = k_begin;
         for (; k + 7 < k_end && k + 7 < n_freq; k += 8) {
-            __m128 a_lo = _mm_loadu_ps(fb_row + k);
-            __m128 b_lo = _mm_loadu_ps(pwr + k);
+            __m128  a_lo = _mm_loadu_ps(fb_row + k);
+            __m128  b_lo = _mm_loadu_ps(pwr + k);
             __m256d a_d0 = _mm256_cvtps_pd(a_lo);
             __m256d b_d0 = _mm256_cvtps_pd(b_lo);
-            acc0 = _mm256_fmadd_pd(a_d0, b_d0, acc0);
+            acc0         = _mm256_fmadd_pd(a_d0, b_d0, acc0);
 
-            __m128 a_hi = _mm_loadu_ps(fb_row + k + 4);
-            __m128 b_hi = _mm_loadu_ps(pwr + k + 4);
+            __m128  a_hi = _mm_loadu_ps(fb_row + k + 4);
+            __m128  b_hi = _mm_loadu_ps(pwr + k + 4);
             __m256d a_d1 = _mm256_cvtps_pd(a_hi);
             __m256d b_d1 = _mm256_cvtps_pd(b_hi);
-            acc1 = _mm256_fmadd_pd(a_d1, b_d1, acc1);
+            acc1         = _mm256_fmadd_pd(a_d1, b_d1, acc1);
         }
         for (; k + 3 < k_end && k + 3 < n_freq; k += 4) {
-            __m128 a_lo = _mm_loadu_ps(fb_row + k);
-            __m128 b_lo = _mm_loadu_ps(pwr + k);
-            __m256d a_d = _mm256_cvtps_pd(a_lo);
-            __m256d b_d = _mm256_cvtps_pd(b_lo);
-            acc0 = _mm256_fmadd_pd(a_d, b_d, acc0);
+            __m128  a_lo = _mm_loadu_ps(fb_row + k);
+            __m128  b_lo = _mm_loadu_ps(pwr + k);
+            __m256d a_d  = _mm256_cvtps_pd(a_lo);
+            __m256d b_d  = _mm256_cvtps_pd(b_lo);
+            acc0         = _mm256_fmadd_pd(a_d, b_d, acc0);
         }
         acc0 = _mm256_add_pd(acc0, acc1);
         alignas(32) double vals[4];
@@ -310,9 +315,9 @@ static inline double compute_filterbank_dot(const float * fb_row, const float * 
         return sum;
     }
 #endif
-    (void)disable_simd;
+    (void) disable_simd;
     double sum = 0.0;
-    int k = k_begin;
+    int    k   = k_begin;
     for (; k < n_freq - 3 && k < k_end; k += 4) {
         sum += static_cast<double>(fb_row[k]) * static_cast<double>(pwr[k]) +
                static_cast<double>(fb_row[k + 1]) * static_cast<double>(pwr[k + 1]) +
@@ -553,7 +558,7 @@ transcribe_status MelFrontend::compute(const float *        pcm,
     // to the per-bin mean/std normalize that follows).
     std::vector<float> log_mel(static_cast<size_t>(n_mels) * static_cast<size_t>(n_frames));
 
-    const bool whisper_mode = (cfg_.normalize == "per_utterance" || cfg_.normalize == "global");
+    const bool whisper_mode     = (cfg_.normalize == "per_utterance" || cfg_.normalize == "global");
     const bool disable_mel_simd = env::flag("TRANSCRIBE_DISABLE_MEL_SIMD");
 
     int stft_threads = n_threads;
@@ -572,20 +577,13 @@ transcribe_status MelFrontend::compute(const float *        pcm,
             worker(0);
             return;
         }
-        const std::vector<int>   target_cpus = performance_cpu_ids(stft_threads);
+
         std::vector<std::thread> pool;
         pool.reserve(static_cast<size_t>(stft_threads - 1));
         for (int tid = 1; tid < stft_threads; ++tid) {
-            const int cpu = (tid < static_cast<int>(target_cpus.size())) ? target_cpus[static_cast<size_t>(tid)] : -1;
-            pool.emplace_back([&worker, tid, cpu]() {
-                if (cpu >= 0) {
-                    bind_thread_to_cpu(cpu);
-                }
-                worker(tid);
-            });
+            pool.emplace_back([&worker, tid]() { worker(tid); });
         }
-        const int             main_cpu = (!target_cpus.empty()) ? target_cpus[0] : -1;
-        thread_affinity_guard guard(main_cpu);
+
         worker(0);
 
         for (auto & th : pool) {
@@ -615,16 +613,17 @@ transcribe_status MelFrontend::compute(const float *        pcm,
                     power_scratch[k] = re * re + im * im;
                 }
                 for (int m = 0; m < n_mels; ++m) {
-                    const float * fb_row = mel_fb_.data() + static_cast<size_t>(m) * n_freq;
+                    const float * fb_row  = mel_fb_.data() + static_cast<size_t>(m) * n_freq;
                     // Restrict to the band's nonzero span. k starts on the same
                     // 4-aligned boundary the dense loop would have used, so every
                     // group that contains a nonzero keeps its exact accumulation
                     // order; the groups/elements skipped on either side are all
                     // fb_row[k] == 0.0f, and `sum += 0.0` is exact. Bit-identical
                     // to the dense loop.
-                    const int    k_end    = fb_end_[static_cast<size_t>(m)];
-                    const int    k_begin  = (fb_begin_[static_cast<size_t>(m)] / 4) * 4;
-                    double       sum      = compute_filterbank_dot(fb_row, power_scratch.data(), k_begin, k_end, n_freq, disable_mel_simd);
+                    const int     k_end   = fb_end_[static_cast<size_t>(m)];
+                    const int     k_begin = (fb_begin_[static_cast<size_t>(m)] / 4) * 4;
+                    double        sum =
+                        compute_filterbank_dot(fb_row, power_scratch.data(), k_begin, k_end, n_freq, disable_mel_simd);
                     float result;
                     if (whisper_mode) {
                         if (sum < 1.0e-10) {
@@ -756,11 +755,11 @@ transcribe_status MelFrontend::compute(const float *        pcm,
             for (int t = tid; t < n_frames; t += stft_threads) {
                 const float * pwr = power.data() + static_cast<size_t>(t) * n_freq;
                 for (int m = 0; m < n_mels; ++m) {
-                    const float * fb_row = mel_fb_.data() + static_cast<size_t>(m) * n_freq;
-                    const int    k_end    = fb_end_[static_cast<size_t>(m)];
-                    const int    k_begin  = (fb_begin_[static_cast<size_t>(m)] / 4) * 4;
-                    double       sum      = compute_filterbank_dot(fb_row, pwr, k_begin, k_end, n_freq, disable_mel_simd);
-                    float result;
+                    const float * fb_row  = mel_fb_.data() + static_cast<size_t>(m) * n_freq;
+                    const int     k_end   = fb_end_[static_cast<size_t>(m)];
+                    const int     k_begin = (fb_begin_[static_cast<size_t>(m)] / 4) * 4;
+                    double        sum = compute_filterbank_dot(fb_row, pwr, k_begin, k_end, n_freq, disable_mel_simd);
+                    float         result;
                     if (whisper_mode) {
                         if (sum < 1.0e-10) {
                             sum = 1.0e-10;

@@ -181,7 +181,7 @@ void evict_backend_graph_cache(ggml_backend_t backend, struct ggml_cgraph * grap
     }
 }
 
-static std::mutex                 g_active_backends_mutex;
+static std::mutex                  g_active_backends_mutex;
 static std::vector<ggml_backend_t> g_active_backends;
 
 void register_active_backend(ggml_backend_t backend) {
@@ -200,7 +200,7 @@ void unregister_active_backend(ggml_backend_t backend) noexcept {
     }
     try {
         std::lock_guard<std::mutex> lock(g_active_backends_mutex);
-        auto it = std::find(g_active_backends.begin(), g_active_backends.end(), backend);
+        auto                        it = std::find(g_active_backends.begin(), g_active_backends.end(), backend);
         if (it != g_active_backends.end()) {
             g_active_backends.erase(it);
         }
@@ -286,6 +286,7 @@ void safe_set_cpu_backend_threadpool(ggml_backend_t backend, int n_threads) {
     auto                        it = g_backend_tps.find(backend);
     if (it != g_backend_tps.end()) {
         if (ggml_threadpool_params_match(&it->second.params, &desired)) {
+            tp_set(backend, it->second.tp);
             return;
         }
         tp_set(backend, nullptr);
@@ -300,6 +301,18 @@ void safe_set_cpu_backend_threadpool(ggml_backend_t backend, int n_threads) {
     if (tp != nullptr) {
         tp_set(backend, tp);
         g_backend_tps[backend] = { tp, desired };
+    }
+}
+
+void pause_cpu_backend_threadpool(ggml_backend_t backend) {
+    if (!is_cpu_backend(backend)) {
+        return;
+    }
+    // GGML's setter parks the old pool when detaching it. It remains owned by
+    // g_backend_tps and can be reused, but no longer spins against the decoder.
+    if (auto set_pool =
+            reinterpret_cast<pfn_set_threadpool>(cpu_backend_proc(backend, "ggml_backend_cpu_set_threadpool"))) {
+        set_pool(backend, nullptr);
     }
 }
 

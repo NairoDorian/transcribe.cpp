@@ -335,7 +335,7 @@ vendoring scheme exists to prevent.
 | # | Item | Why it might win | How to verify |
 |---|---|---|---|
 | T2.1 | **Port the graph optimiser (A1)** | `CONT 4.6% + ADD 9% + MUL 4.9%` of encoder time are exactly its targets | **measured and declined** — the premise is wrong; see the census below |
-| T2.2 | **Lift the `default_n_threads` cap** | `int cap = 8` at `src/transcribe-batch-util.cpp:406` caps a 16-P-core desktop at 8; `make_threadpool_params` (`:417`) then masks the pool to `performance_cpu_ids(n_threads)` | **Not measurable on the current box** (>8 P-cores required). Do it with a reason, or not at all |
+| T2.2 | **Measure thread budgets** | The default caps worker count at 8; placement is delegated to the OS. The former topology ranking and masks were removed on 2026-09-19. | Compare explicit thread counts with the three-run CPU/CUDA suite; do not restore affinity or priority overrides. |
 | T2.3 | **Unify the 5 KV caches + decode loops** | Removes five copies of the same layout and the per-family runner loops; this is the fusion project's concluded "build first" layer | Structural + byte-identical transcripts across every family with a local GGUF |
 | T2.4 | **Adopt the chunk planner/rebaser (A2)** | Closes the long-form gap; complements `docs/input-limits.md` | Word-timestamp rebasing is directly diffable |
 | T2.5 | **`trim_backend_pools` retry path (A7)** | 4 models on an 8 GB card is a real Handy scenario | Handy's real multi-STT flow, not a synthetic one. **Requires a `patches/ggml/` patch first** — see the note below |

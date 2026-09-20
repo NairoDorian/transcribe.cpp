@@ -24,41 +24,11 @@ typedef struct ggml_backend_sched * ggml_backend_sched_t;
 
 namespace transcribe {
 
-// Ordered list of logical CPU indices to bind compute threads to. Picks the
-// primary logical CPU for physical P-cores (SMT collapsed), strictly excluding
-// the 1st CPU core (Core 0 / CPUs 0,1, reserved for Windows system/OS duties)
-// when >= 2 physical cores exist. If n_threads > primary P-core count, secondary
-// SMT siblings on those same P-cores are appended before wrapping.
-// n_threads <= 0 returns all primary P-core CPUs.
-std::vector<int> performance_cpu_ids(int n_threads = 0);
-
-// Count of usable performance cores (excluding Core 0).
-int performance_cpu_count();
-
-// Create initialized threadpool params configured with strict CPU placement,
-// targeting the performance_cpu_ids for n_threads.
+// Create a normal-priority GGML pool without changing OS CPU placement.
 struct ggml_threadpool_params make_threadpool_params(int n_threads);
-
-// Bind the calling thread to the specified logical CPU and disable Windows power
-// throttling so worker threads run at maximum clock speed on performance cores.
-void bind_thread_to_cpu(int cpu_id);
-
-// RAII guard that temporarily binds the calling thread to a logical CPU,
-// restoring previous affinity on destruction.
-class thread_affinity_guard {
-  public:
-    explicit thread_affinity_guard(int cpu_id);
-    ~thread_affinity_guard();
-    thread_affinity_guard(const thread_affinity_guard &)             = delete;
-    thread_affinity_guard & operator=(const thread_affinity_guard &) = delete;
-
-  private:
-    uint64_t prev_mask_ = 0;
-};
 
 // Invoke `work(i)` for every i in [0, n) across up to `n_threads` worker
 // threads (clamped to [1, n]; n_threads <= 0 means default_n_threads()).
-// Worker threads are bound to dedicated performance cores.
 // `work` MUST be reentrant: each index runs on one thread with no shared
 // mutable state (write per-index outputs into index-disjoint storage).
 // Returns true iff every invocation returned true; a false return does not
@@ -71,9 +41,6 @@ bool parallel_for_all(int n, int n_threads, const std::function<bool(int)> & wor
 // actually run on (the affinity mask via sched_getaffinity on Linux /
 // GetProcessAffinityMask on Windows), NOT the host's total core count, then
 // clamps to [1, cap].
-// Resolves one thread per PERFORMANCE physical core (SMT siblings collapsed;
-// on a hybrid CPU only the fastest core class; Core 0 excluded for OS duties)
-// when the platform can report the topology, else every usable CPU.
 // Never exceeds the usable-CPU count.
 int default_n_threads(int cap = 8);
 

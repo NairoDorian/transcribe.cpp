@@ -13,7 +13,7 @@ import ctypes as _c
 # Stable digest of the ABI surface below (structs, enums, macros, layout,
 # prototypes). A native provider package echoes this back so the API
 # package can reject an ABI-mismatched provider before dlopen.
-PUBLIC_HEADER_HASH = "7b32fd3376361b54"
+PUBLIC_HEADER_HASH = "4867800ba6f83bb1"
 
 # === enum constants ===
 TRANSCRIBE_OK = 0
@@ -170,8 +170,8 @@ transcribe_session_params._fields_ = [("struct_size", _c.c_uint64), ("n_threads"
 transcribe_run_params._fields_ = [("struct_size", _c.c_uint64), ("task", _c.c_int), ("timestamps", _c.c_int), ("pnc", _c.c_int), ("itn", _c.c_int), ("diarize", _c.c_int), ("language", _c.c_char_p), ("target_language", _c.c_char_p), ("keep_special_tags", _c.c_bool), ("family", _c.POINTER(transcribe_ext)), ("spec_k_drafts", _c.c_int32)]
 transcribe_capabilities._fields_ = [("struct_size", _c.c_uint64), ("native_sample_rate", _c.c_int32), ("n_languages", _c.c_int), ("languages", _c.POINTER(_c.c_char_p)), ("max_timestamp_kind", _c.c_int), ("supports_language_detect", _c.c_bool), ("supports_translate", _c.c_bool), ("supports_streaming", _c.c_bool), ("supports_spec_decode", _c.c_bool), ("max_audio_ms", _c.c_int64), ("n_translate_target_languages", _c.c_int), ("translate_target_languages", _c.POINTER(_c.c_char_p))]
 transcribe_session_limits._fields_ = [("struct_size", _c.c_uint64), ("effective_n_ctx", _c.c_int32), ("effective_max_audio_ms", _c.c_int64), ("max_kv_bytes", _c.c_int64)]
-transcribe_stream_params._fields_ = [("struct_size", _c.c_uint64), ("family", _c.POINTER(transcribe_ext)), ("commit_policy", _c.c_int), ("stable_prefix_agreement_n", _c.c_uint32)]
-transcribe_stream_update._fields_ = [("struct_size", _c.c_uint64), ("result_changed", _c.c_bool), ("is_final", _c.c_bool), ("revision", _c.c_int32), ("input_received_ms", _c.c_int64), ("audio_committed_ms", _c.c_int64), ("buffered_ms", _c.c_int64), ("committed_changed", _c.c_bool), ("tentative_changed", _c.c_bool)]
+transcribe_stream_params._fields_ = [("struct_size", _c.c_uint64), ("family", _c.POINTER(transcribe_ext)), ("commit_policy", _c.c_int), ("stable_prefix_agreement_n", _c.c_uint32), ("enable_vad", _c.c_bool), ("vad_threshold", _c.c_float), ("vad_prefill_ms", _c.c_uint32), ("vad_hangover_ms", _c.c_uint32)]
+transcribe_stream_update._fields_ = [("struct_size", _c.c_uint64), ("result_changed", _c.c_bool), ("is_final", _c.c_bool), ("revision", _c.c_int32), ("input_received_ms", _c.c_int64), ("audio_committed_ms", _c.c_int64), ("buffered_ms", _c.c_int64), ("committed_changed", _c.c_bool), ("tentative_changed", _c.c_bool), ("vad_speaking", _c.c_bool), ("vad_speech_ms", _c.c_uint64), ("vad_last_score", _c.c_float), ("audio_level_dbfs", _c.c_float)]
 transcribe_stream_text._fields_ = [("struct_size", _c.c_uint64), ("full_text", _c.c_char_p), ("full_text_bytes", _c.c_uint64), ("committed_text", _c.c_char_p), ("committed_text_bytes", _c.c_uint64), ("tentative_text", _c.c_char_p), ("tentative_text_bytes", _c.c_uint64), ("raw_tentative_start_bytes", _c.c_uint64)]
 transcribe_timings._fields_ = [("struct_size", _c.c_uint64), ("load_ms", _c.c_float), ("mel_ms", _c.c_float), ("encode_ms", _c.c_float), ("decode_ms", _c.c_float)]
 transcribe_segment._fields_ = [("struct_size", _c.c_uint64), ("t0_ms", _c.c_int64), ("t1_ms", _c.c_int64), ("first_word", _c.c_int), ("n_words", _c.c_int), ("first_token", _c.c_int), ("n_tokens", _c.c_int), ("text", _c.c_char_p), ("speaker_id", _c.c_int32)]
@@ -215,8 +215,8 @@ STRUCT_LAYOUT = {
     'transcribe_run_params': {'size': 72, 'align': 8, 'offsets': {'struct_size': 0, 'task': 8, 'timestamps': 12, 'pnc': 16, 'itn': 20, 'diarize': 24, 'language': 32, 'target_language': 40, 'keep_special_tags': 48, 'family': 56, 'spec_k_drafts': 64}},
     'transcribe_capabilities': {'size': 56, 'align': 8, 'offsets': {'struct_size': 0, 'native_sample_rate': 8, 'n_languages': 12, 'languages': 16, 'max_timestamp_kind': 24, 'supports_language_detect': 28, 'supports_translate': 29, 'supports_streaming': 30, 'supports_spec_decode': 31, 'max_audio_ms': 32, 'n_translate_target_languages': 40, 'translate_target_languages': 48}},
     'transcribe_session_limits': {'size': 32, 'align': 8, 'offsets': {'struct_size': 0, 'effective_n_ctx': 8, 'effective_max_audio_ms': 16, 'max_kv_bytes': 24}},
-    'transcribe_stream_params': {'size': 24, 'align': 8, 'offsets': {'struct_size': 0, 'family': 8, 'commit_policy': 16, 'stable_prefix_agreement_n': 20}},
-    'transcribe_stream_update': {'size': 48, 'align': 8, 'offsets': {'struct_size': 0, 'result_changed': 8, 'is_final': 9, 'revision': 12, 'input_received_ms': 16, 'audio_committed_ms': 24, 'buffered_ms': 32, 'committed_changed': 40, 'tentative_changed': 41}},
+    'transcribe_stream_params': {'size': 40, 'align': 8, 'offsets': {'struct_size': 0, 'family': 8, 'commit_policy': 16, 'stable_prefix_agreement_n': 20, 'enable_vad': 24, 'vad_threshold': 28, 'vad_prefill_ms': 32, 'vad_hangover_ms': 36}},
+    'transcribe_stream_update': {'size': 64, 'align': 8, 'offsets': {'struct_size': 0, 'result_changed': 8, 'is_final': 9, 'revision': 12, 'input_received_ms': 16, 'audio_committed_ms': 24, 'buffered_ms': 32, 'committed_changed': 40, 'tentative_changed': 41, 'vad_speaking': 42, 'vad_speech_ms': 48, 'vad_last_score': 56, 'audio_level_dbfs': 60}},
     'transcribe_stream_text': {'size': 64, 'align': 8, 'offsets': {'struct_size': 0, 'full_text': 8, 'full_text_bytes': 16, 'committed_text': 24, 'committed_text_bytes': 32, 'tentative_text': 40, 'tentative_text_bytes': 48, 'raw_tentative_start_bytes': 56}},
     'transcribe_timings': {'size': 24, 'align': 8, 'offsets': {'struct_size': 0, 'load_ms': 8, 'mel_ms': 12, 'encode_ms': 16, 'decode_ms': 20}},
     'transcribe_segment': {'size': 56, 'align': 8, 'offsets': {'struct_size': 0, 't0_ms': 8, 't1_ms': 16, 'first_word': 24, 'n_words': 28, 'first_token': 32, 'n_tokens': 36, 'text': 40, 'speaker_id': 48}},
@@ -413,6 +413,8 @@ def configure(lib):
     lib.transcribe_stream_reset.argtypes = [_c.c_void_p]
     lib.transcribe_stream_revision.restype = _c.c_int
     lib.transcribe_stream_revision.argtypes = [_c.c_void_p]
+    lib.transcribe_stream_set_vad_threshold.restype = _c.c_int
+    lib.transcribe_stream_set_vad_threshold.argtypes = [_c.c_void_p, _c.c_float]
     lib.transcribe_stream_text_init.restype = None
     lib.transcribe_stream_text_init.argtypes = [_c.POINTER(transcribe_stream_text)]
     lib.transcribe_stream_update_init.restype = None
@@ -423,6 +425,18 @@ def configure(lib):
     lib.transcribe_token_init.argtypes = [_c.POINTER(transcribe_token)]
     lib.transcribe_tokenize.restype = _c.c_int
     lib.transcribe_tokenize.argtypes = [_c.c_void_p, _c.c_char_p, _c.POINTER(_c.c_int32), _c.c_size_t]
+    lib.transcribe_vad_free.restype = None
+    lib.transcribe_vad_free.argtypes = [_c.c_void_p]
+    lib.transcribe_vad_init.restype = _c.c_void_p
+    lib.transcribe_vad_init.argtypes = [_c.c_float]
+    lib.transcribe_vad_predict_frame.restype = _c.c_float
+    lib.transcribe_vad_predict_frame.argtypes = [_c.c_void_p, _c.POINTER(_c.c_float)]
+    lib.transcribe_vad_process_frame.restype = _c.c_bool
+    lib.transcribe_vad_process_frame.argtypes = [_c.c_void_p, _c.POINTER(_c.c_float), _c.POINTER(_c.c_float)]
+    lib.transcribe_vad_reset.restype = None
+    lib.transcribe_vad_reset.argtypes = [_c.c_void_p]
+    lib.transcribe_vad_set_threshold.restype = None
+    lib.transcribe_vad_set_threshold.argtypes = [_c.c_void_p, _c.c_float]
     lib.transcribe_version.restype = _c.c_char_p
     lib.transcribe_version.argtypes = []
     lib.transcribe_version_commit.restype = _c.c_char_p

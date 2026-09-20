@@ -111,6 +111,14 @@ fn main() {
             )
         });
         println!("cargo:rerun-if-changed={}", manifest.display());
+        // Reinstalling an edited library need not change the link manifest.
+        // Watch its artifacts too, otherwise Windows keeps the old staged DLLs.
+        for subdir in ["bin", "lib", "lib64", "include"] {
+            let artifacts = prefix.join(subdir);
+            if artifacts.exists() {
+                println!("cargo:rerun-if-changed={}", artifacts.display());
+            }
+        }
         emit_link_lines(&prefix, &manifest);
         return;
     }

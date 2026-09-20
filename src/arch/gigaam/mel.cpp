@@ -184,21 +184,13 @@ transcribe_status GigaamMelFrontend::compute(const float *        pcm,
             }
         }
     };
-    const std::vector<int>   target_cpus = transcribe::performance_cpu_ids(n_workers);
+
     std::vector<std::thread> workers;
     workers.reserve(n_workers > 0 ? static_cast<size_t>(n_workers - 1) : 0);
     for (int worker_id = 1; worker_id < n_workers; ++worker_id) {
-        const int cpu =
-            (worker_id < static_cast<int>(target_cpus.size())) ? target_cpus[static_cast<size_t>(worker_id)] : -1;
-        workers.emplace_back([&worker, worker_id, cpu]() {
-            if (cpu >= 0) {
-                transcribe::bind_thread_to_cpu(cpu);
-            }
-            worker(worker_id);
-        });
+        workers.emplace_back([&worker, worker_id]() { worker(worker_id); });
     }
-    const int                         main_cpu = (!target_cpus.empty()) ? target_cpus[0] : -1;
-    transcribe::thread_affinity_guard guard(main_cpu);
+
     worker(0);
 
     for (auto & thread : workers) {
@@ -230,21 +222,13 @@ transcribe_status GigaamMelFrontend::compute(const float *        pcm,
                 }
             }
         };
-        const std::vector<int>   mm_cpus = transcribe::performance_cpu_ids(n_mm);
+
         std::vector<std::thread> mm_workers;
         mm_workers.reserve(n_mm > 0 ? static_cast<size_t>(n_mm - 1) : 0);
         for (int worker_id = 1; worker_id < n_mm; ++worker_id) {
-            const int cpu =
-                (worker_id < static_cast<int>(mm_cpus.size())) ? mm_cpus[static_cast<size_t>(worker_id)] : -1;
-            mm_workers.emplace_back([&mm, worker_id, cpu]() {
-                if (cpu >= 0) {
-                    transcribe::bind_thread_to_cpu(cpu);
-                }
-                mm(worker_id);
-            });
+            mm_workers.emplace_back([&mm, worker_id]() { mm(worker_id); });
         }
-        const int                         mm_main_cpu = (!mm_cpus.empty()) ? mm_cpus[0] : -1;
-        transcribe::thread_affinity_guard mm_guard(mm_main_cpu);
+
         mm(0);
 
         for (auto & thread : mm_workers) {

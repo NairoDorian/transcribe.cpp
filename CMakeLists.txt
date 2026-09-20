@@ -608,5 +608,7 @@ endif()
 
 # Consumer install rules (same placement constraint as above).
 if(TRANSCRIBE_INSTALL AND NOT SKBUILD)
+    install(FILES licenses/audio-cpp-Apache-2.0.txt
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/transcribe)
     include(cmake/transcribe-install.cmake)
 endif()

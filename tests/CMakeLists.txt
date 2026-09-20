@@ -1459,3 +1459,10 @@ if(TRANSCRIBE_BUILD_EXAMPLES)
             -DWAV=${CMAKE_SOURCE_DIR}/samples/jfk.wav
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cli_device_arg_smoke.cmake)
 endif()
+# Numerical and alias-preservation checks for the opt-in graph rewrite pass.
+if(TARGET ggml-cpu)
+    add_executable(transcribe_graph_optimizer_unit graph_optimizer_unit.cpp)
+    target_include_directories(transcribe_graph_optimizer_unit PRIVATE ${PROJECT_SOURCE_DIR}/src)
+    target_link_libraries(transcribe_graph_optimizer_unit PRIVATE transcribe ggml ggml-cpu)
+    add_test(NAME transcribe_graph_optimizer_unit COMMAND transcribe_graph_optimizer_unit)
+endif()

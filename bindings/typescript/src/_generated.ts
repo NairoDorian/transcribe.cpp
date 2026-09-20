@@ -11,7 +11,7 @@
 // Stable digest of the ABI surface (structs, enums, macros, layout,
 // prototypes), computed by the Python oracle and pinned here so a header
 // ABI change turns this binding's drift check red for conscious review.
-export const PUBLIC_HEADER_HASH = "7b32fd3376361b54";
+export const PUBLIC_HEADER_HASH = "4867800ba6f83bb1";
 
 // === enum constants ===
 export const TRANSCRIBE_OK = 0;
@@ -124,8 +124,8 @@ export const STRUCT_LAYOUT: Record<string, StructLayout> = {
   'transcribe_run_params': { size: 72, align: 8, offsets: {'struct_size': 0, 'task': 8, 'timestamps': 12, 'pnc': 16, 'itn': 20, 'diarize': 24, 'language': 32, 'target_language': 40, 'keep_special_tags': 48, 'family': 56, 'spec_k_drafts': 64} },
   'transcribe_capabilities': { size: 56, align: 8, offsets: {'struct_size': 0, 'native_sample_rate': 8, 'n_languages': 12, 'languages': 16, 'max_timestamp_kind': 24, 'supports_language_detect': 28, 'supports_translate': 29, 'supports_streaming': 30, 'supports_spec_decode': 31, 'max_audio_ms': 32, 'n_translate_target_languages': 40, 'translate_target_languages': 48} },
   'transcribe_session_limits': { size: 32, align: 8, offsets: {'struct_size': 0, 'effective_n_ctx': 8, 'effective_max_audio_ms': 16, 'max_kv_bytes': 24} },
-  'transcribe_stream_params': { size: 24, align: 8, offsets: {'struct_size': 0, 'family': 8, 'commit_policy': 16, 'stable_prefix_agreement_n': 20} },
-  'transcribe_stream_update': { size: 48, align: 8, offsets: {'struct_size': 0, 'result_changed': 8, 'is_final': 9, 'revision': 12, 'input_received_ms': 16, 'audio_committed_ms': 24, 'buffered_ms': 32, 'committed_changed': 40, 'tentative_changed': 41} },
+  'transcribe_stream_params': { size: 40, align: 8, offsets: {'struct_size': 0, 'family': 8, 'commit_policy': 16, 'stable_prefix_agreement_n': 20, 'enable_vad': 24, 'vad_threshold': 28, 'vad_prefill_ms': 32, 'vad_hangover_ms': 36} },
+  'transcribe_stream_update': { size: 64, align: 8, offsets: {'struct_size': 0, 'result_changed': 8, 'is_final': 9, 'revision': 12, 'input_received_ms': 16, 'audio_committed_ms': 24, 'buffered_ms': 32, 'committed_changed': 40, 'tentative_changed': 41, 'vad_speaking': 42, 'vad_speech_ms': 48, 'vad_last_score': 56, 'audio_level_dbfs': 60} },
   'transcribe_stream_text': { size: 64, align: 8, offsets: {'struct_size': 0, 'full_text': 8, 'full_text_bytes': 16, 'committed_text': 24, 'committed_text_bytes': 32, 'tentative_text': 40, 'tentative_text_bytes': 48, 'raw_tentative_start_bytes': 56} },
   'transcribe_timings': { size: 24, align: 8, offsets: {'struct_size': 0, 'load_ms': 8, 'mel_ms': 12, 'encode_ms': 16, 'decode_ms': 20} },
   'transcribe_segment': { size: 56, align: 8, offsets: {'struct_size': 0, 't0_ms': 8, 't1_ms': 16, 'first_word': 24, 'n_words': 28, 'first_token': 32, 'n_tokens': 36, 'text': 40, 'speaker_id': 48} },
@@ -169,8 +169,8 @@ export function defineTypes(koffi: any): Record<string, any> {
   T['transcribe_run_params'] = koffi.struct({ struct_size: 'uint64_t', task: 'int', timestamps: 'int', pnc: 'int', itn: 'int', diarize: 'int', language: 'char *', target_language: 'char *', keep_special_tags: 'bool', family: 'void *', spec_k_drafts: 'int32_t' });
   T['transcribe_capabilities'] = koffi.struct({ struct_size: 'uint64_t', native_sample_rate: 'int32_t', n_languages: 'int', languages: 'void *', max_timestamp_kind: 'int', supports_language_detect: 'bool', supports_translate: 'bool', supports_streaming: 'bool', supports_spec_decode: 'bool', max_audio_ms: 'int64_t', n_translate_target_languages: 'int', translate_target_languages: 'void *' });
   T['transcribe_session_limits'] = koffi.struct({ struct_size: 'uint64_t', effective_n_ctx: 'int32_t', effective_max_audio_ms: 'int64_t', max_kv_bytes: 'int64_t' });
-  T['transcribe_stream_params'] = koffi.struct({ struct_size: 'uint64_t', family: 'void *', commit_policy: 'int', stable_prefix_agreement_n: 'uint32_t' });
-  T['transcribe_stream_update'] = koffi.struct({ struct_size: 'uint64_t', result_changed: 'bool', is_final: 'bool', revision: 'int32_t', input_received_ms: 'int64_t', audio_committed_ms: 'int64_t', buffered_ms: 'int64_t', committed_changed: 'bool', tentative_changed: 'bool' });
+  T['transcribe_stream_params'] = koffi.struct({ struct_size: 'uint64_t', family: 'void *', commit_policy: 'int', stable_prefix_agreement_n: 'uint32_t', enable_vad: 'bool', vad_threshold: 'float', vad_prefill_ms: 'uint32_t', vad_hangover_ms: 'uint32_t' });
+  T['transcribe_stream_update'] = koffi.struct({ struct_size: 'uint64_t', result_changed: 'bool', is_final: 'bool', revision: 'int32_t', input_received_ms: 'int64_t', audio_committed_ms: 'int64_t', buffered_ms: 'int64_t', committed_changed: 'bool', tentative_changed: 'bool', vad_speaking: 'bool', vad_speech_ms: 'uint64_t', vad_last_score: 'float', audio_level_dbfs: 'float' });
   T['transcribe_stream_text'] = koffi.struct({ struct_size: 'uint64_t', full_text: 'char *', full_text_bytes: 'uint64_t', committed_text: 'char *', committed_text_bytes: 'uint64_t', tentative_text: 'char *', tentative_text_bytes: 'uint64_t', raw_tentative_start_bytes: 'uint64_t' });
   T['transcribe_timings'] = koffi.struct({ struct_size: 'uint64_t', load_ms: 'float', mel_ms: 'float', encode_ms: 'float', decode_ms: 'float' });
   T['transcribe_segment'] = koffi.struct({ struct_size: 'uint64_t', t0_ms: 'int64_t', t1_ms: 'int64_t', first_word: 'int', n_words: 'int', first_token: 'int', n_tokens: 'int', text: 'char *', speaker_id: 'int32_t' });
@@ -278,11 +278,18 @@ export const FUNCTION_SIGNATURES: Record<string, FnSig> = {
   'transcribe_stream_params_init': { ret: 'void', args: ['struct transcribe_stream_params *'] },
   'transcribe_stream_reset': { ret: 'void', args: ['struct transcribe_session *'] },
   'transcribe_stream_revision': { ret: 'int', args: ['const struct transcribe_session *'] },
+  'transcribe_stream_set_vad_threshold': { ret: 'transcribe_status', args: ['struct transcribe_session *', 'float'] },
   'transcribe_stream_text_init': { ret: 'void', args: ['struct transcribe_stream_text *'] },
   'transcribe_stream_update_init': { ret: 'void', args: ['struct transcribe_stream_update *'] },
   'transcribe_timings_init': { ret: 'void', args: ['struct transcribe_timings *'] },
   'transcribe_token_init': { ret: 'void', args: ['struct transcribe_token *'] },
   'transcribe_tokenize': { ret: 'int', args: ['const struct transcribe_model *', 'const char *', 'int32_t *', 'size_t'] },
+  'transcribe_vad_free': { ret: 'void', args: ['struct transcribe_vad *'] },
+  'transcribe_vad_init': { ret: 'struct transcribe_vad *', args: ['float'] },
+  'transcribe_vad_predict_frame': { ret: 'float', args: ['struct transcribe_vad *', 'const float *'] },
+  'transcribe_vad_process_frame': { ret: '_Bool', args: ['struct transcribe_vad *', 'const float *', 'float *'] },
+  'transcribe_vad_reset': { ret: 'void', args: ['struct transcribe_vad *'] },
+  'transcribe_vad_set_threshold': { ret: 'void', args: ['struct transcribe_vad *', 'float'] },
   'transcribe_version': { ret: 'const char *', args: [] },
   'transcribe_version_commit': { ret: 'const char *', args: [] },
   'transcribe_voxtral_realtime_stream_ext_init': { ret: 'void', args: ['struct transcribe_voxtral_realtime_stream_ext *'] },

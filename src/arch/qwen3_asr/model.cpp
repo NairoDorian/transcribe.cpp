@@ -6,6 +6,7 @@
 #include "ggml-backend.h"
 #include "ggml.h"
 #include "gguf.h"
+#include "mel_pack.h"
 #include "qwen3_asr.h"
 #include "r2t2-package.h"
 #include "r2t2-stream.h"
@@ -585,28 +586,14 @@ transcribe_status encode_language_prefix(const transcribe::Tokenizer & tok,
 
 namespace {  // reopen anon for the rest of the file's helpers.
 
-// Host-side pack [n_mels, T_mel] mel into batched chunks
-// [mel_per_chunk, n_mels, 1, n_chunks]. Chunks shorter than
-// mel_per_chunk are zero-padded.
-void pack_mel_chunks(const float *         mel,  // [n_mels, T_mel]
-                     int                   n_mels,
-                     int                   n_mel_frames,
-                     const EncoderTiming & t,
-                     std::vector<float> &  out) {
-    const size_t per_chunk_elems = static_cast<size_t>(t.mel_per_chunk) * n_mels;
-    out.assign(per_chunk_elems * t.n_chunks, 0.0f);
-
-    for (int c = 0; c < t.n_chunks; ++c) {
-        const int tail = (c == t.n_chunks - 1) ? t.last_chunk_real_mel : t.mel_per_chunk;
-        for (int m = 0; m < n_mels; ++m) {
-            const float * src = mel + static_cast<size_t>(m) * n_mel_frames + static_cast<size_t>(c) * t.mel_per_chunk;
-            float *       dst =
-                out.data() + static_cast<size_t>(c) * per_chunk_elems + static_cast<size_t>(m) * t.mel_per_chunk;
-            std::memcpy(dst, src, tail * sizeof(float));
-            // trailing frames in the tail chunk stay 0.0 (zero pad).
-        }
-    }
-}
+// mel framing + the encoder cache's mel bookkeeping live in mel_pack.h so the
+// unit test can reach them without a model, a backend or a run; they are pure
+// functions of the [n_mels, n_frames] layout below and have no state of their
+// own. Use-qualified rather than `using` so the call sites read as the header
+// they come from.
+using transcribe::qwen3_asr::copy_mel_prefix;
+using transcribe::qwen3_asr::mel_prefix_matches;
+using transcribe::qwen3_asr::pack_mel_chunks;
 
 }  // namespace
 
@@ -637,7 +624,10 @@ transcribe_status run_decode_pass(transcribe_session *          session,
                                   const transcribe_run_params * params,
                                   const std::vector<int32_t> *  suffix_ids,
                                   int                           max_new_tokens,
-                                  DecodePassResult *            out) {
+                                  DecodePassResult *            out,
+                                  const std::vector<int32_t> *  draft_seed,
+                                  EncoderPrefixCache *          enc_cache,
+                                  transcribe::MelStreamState *  mel_stream) {
     if (session == nullptr || pcm == nullptr || n_samples <= 0 || out == nullptr) {
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
@@ -664,12 +654,28 @@ transcribe_status run_decode_pass(transcribe_session *          session,
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr run: model has no MelFrontend");
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
-    const int64_t t_mel_start  = ggml_time_us();
-    int           mel_n_mels   = 0;
-    int           mel_n_frames = 0;
-    if (const transcribe_status mst =
+    const int64_t     t_mel_start  = ggml_time_us();
+    int               mel_n_mels   = 0;
+    int               mel_n_frames = 0;
+    // Streaming passes in a MelStreamState, so the STFT + filterbank runs
+    // only over the frames this tick added instead of re-deriving the whole
+    // utterance (a 320 ms tick at 35 s of audio otherwise spends ~26 ms of an
+    // 80 ms budget here). The two paths are bit-identical -- that is the
+    // contract compute_incremental() is tested against -- so the encoder
+    // prefix cache below sees the same mel either way and its reuse decision
+    // is unaffected. A model whose frontend cannot do it incrementally (or a
+    // one-shot pass, which has no state to carry) uses compute() unchanged.
+    transcribe_status mst          = TRANSCRIBE_OK;
+    MelStreamState *  stream =
+        (mel_stream != nullptr && !transcribe::env::flag("TRANSCRIBE_R2T2_NO_MEL_CACHE")) ? mel_stream : nullptr;
+    if (stream != nullptr && cm->mel->supports_incremental()) {
+        mst = cm->mel->compute_incremental(*stream, pcm, static_cast<size_t>(n_samples), cc->mel_buf, mel_n_mels,
+                                           mel_n_frames, cc->n_threads);
+    } else {
+        mst =
             cm->mel->compute(pcm, static_cast<size_t>(n_samples), cc->mel_buf, mel_n_mels, mel_n_frames, cc->n_threads);
-        mst != TRANSCRIBE_OK) {
+    }
+    if (mst != TRANSCRIBE_OK) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr run: MelFrontend::compute failed (%s)",
                 transcribe_status_string(mst));
         return mst;
@@ -694,6 +700,102 @@ transcribe_status run_decode_pass(transcribe_session *          session,
                 mel_n_frames);
         return TRANSCRIBE_ERR_GGUF;
     }
+
+    // ------------------------------------------------------------------
+    // Encoder prefix reuse (R2T2 streaming — see EncoderPrefixCache).
+    //
+    // Decide, before anything is built, whether this pass encodes the whole
+    // utterance or only its trailing windows. Offline (enc_cache == null) and
+    // on any doubt this is the full encode it has always been.
+    // ------------------------------------------------------------------
+    EncoderPrefixCache * cache =
+        (enc_cache != nullptr && !transcribe::env::flag("TRANSCRIBE_R2T2_NO_ENC_CACHE")) ? enc_cache : nullptr;
+
+    // One window is `window_tokens` after-CNN tokens = window_tokens /
+    // per_chunk_aftercnn whole chunks = that many times mel_per_chunk mel
+    // frames. The cache is aligned to that grid and only to it: a partial
+    // window's rows still move when more audio lands inside it.
+    const int32_t tokens_per_window = timing.window_tokens;
+    const int32_t frames_per_window = (tokens_per_window > 0 && timing.per_chunk_aftercnn > 0) ?
+                                          (tokens_per_window / timing.per_chunk_aftercnn) * timing.mel_per_chunk :
+                                          0;
+
+    // Every clause here is a precondition of the *bit-exactness* claim, so it
+    // fails closed: the grid must exist and attention must be windowed (under
+    // global attention every row depends on the whole utterance), the cached
+    // rows and mel must be self-consistent and cover whole windows, the mel
+    // must not have shrunk, and — the real test — the frames the cached rows
+    // were computed from must be byte-identical to the ones this pass just
+    // produced. The front-end normalizes per utterance over the whole buffer,
+    // so a new global maximum rewrites the level of every earlier frame; that
+    // memcmp catches it and the pass re-encodes in full, exactly as before.
+    int32_t cached_tokens = 0;
+    if (cache != nullptr && frames_per_window > 0 && encoder_window_attention_enabled() && cache->tokens > 0 &&
+        cache->n_mels == mel_n_mels && cache->tokens % tokens_per_window == 0 &&
+        cache->frames == (cache->tokens / tokens_per_window) * frames_per_window && cache->frames <= mel_n_frames &&
+        cache->rows.size() == static_cast<size_t>(cache->tokens) * static_cast<size_t>(cm->hparams.enc_output_dim) &&
+        mel_prefix_matches(cache->mel, cache->frames, cc->mel_buf.data(), mel_n_frames, mel_n_mels)) {
+        cached_tokens = cache->tokens;
+    }
+    const bool cache_hit = cached_tokens > 0;
+
+    // Why a prefix that looked usable did not survive. A miss is expected
+    // sometimes (the front-end's per-utterance normalization rewrites earlier
+    // frames whenever a new global maximum arrives) but a permanent miss means
+    // the cache is dead weight, so the reason has to be visible rather than
+    // inferred from timings: this reports how many frames moved and which,
+    // which separates "one new maximum re-levelled the buffer" from "the frame
+    // grid itself shifted".
+    if (cache != nullptr && !cache_hit && cache->tokens > 0) {
+        int32_t moved = 0, first_moved = -1, last_moved = -1;
+        if (cache->mel.size() == static_cast<size_t>(cache->n_mels) * cache->frames && cache->n_mels == mel_n_mels &&
+            cache->frames <= mel_n_frames) {
+            for (int32_t f = 0; f < cache->frames; ++f) {
+                bool differs = false;
+                for (int32_t m = 0; m < cache->n_mels && !differs; ++m) {
+                    differs = cache->mel[static_cast<size_t>(m) * cache->frames + f] !=
+                              cc->mel_buf[static_cast<size_t>(m) * mel_n_frames + f];
+                }
+                if (differs) {
+                    if (first_moved < 0) {
+                        first_moved = f;
+                    }
+                    last_moved = f;
+                    ++moved;
+                }
+            }
+        }
+        log_msg(TRANSCRIBE_LOG_LEVEL_DEBUG,
+                "qwen3_asr run: encoder cache miss — cached %d tok / %d frames, mel %d x %d vs %d x %d, "
+                "%d of %d cached frames moved (first %d, last %d)",
+                cache->tokens, cache->frames, cache->n_mels, cache->frames, mel_n_mels, mel_n_frames, moved,
+                cache->frames, first_moved, last_moved);
+    }
+
+    // Encode mel frames [tail_frame0, mel_n_frames) and prepend the cached rows
+    // for everything before it. The tail starts on a chunk *and* window
+    // boundary, so its own chunk packing, positional table and window partition
+    // reproduce the full pass's rows for those positions token for token.
+    int32_t       tail_frame0 = 0;
+    int32_t       tail_frames = mel_n_frames;
+    EncoderTiming enc_timing  = timing;
+    if (cache_hit) {
+        const int32_t       cand_frame0 = (cached_tokens / tokens_per_window) * frames_per_window;
+        const EncoderTiming cand        = compute_encoder_timing(mel_n_frames - cand_frame0, cm->hparams);
+        if (cand.T_enc == timing.T_enc - cached_tokens) {
+            tail_frame0 = cand_frame0;
+            tail_frames = mel_n_frames - cand_frame0;
+            enc_timing  = cand;
+        } else {
+            // aftercnn_len is additive over chunks, so this cannot fire; if it
+            // ever does the prefix is not a whole number of windows and the
+            // only safe answer is the full encode.
+            log_msg(TRANSCRIBE_LOG_LEVEL_DEBUG, "qwen3_asr run: encoder cache dropped — tail timing %d != %d - %d",
+                    cand.T_enc, timing.T_enc, cached_tokens);
+            cached_tokens = 0;
+        }
+    }
+    const bool enc_tail = tail_frames > 0;
 
     // Reset per-call compute state. The phase timers below break out
     // per-run cost (graph build, sched alloc, uploads, prefill compute)
@@ -725,50 +827,77 @@ transcribe_status run_decode_pass(transcribe_session *          session,
         }
     }
 
-    // Build encoder graph.
-    EncoderBuild eb = build_encoder_graph(cc->compute_ctx, cm->weights, cm->hparams, timing, cc->encoder_use_flash);
-    if (eb.graph == nullptr || eb.out == nullptr) {
-        return TRANSCRIBE_ERR_GGUF;
-    }
-
-    // Allocate + compute encoder graph.
-    if (cc->sched == nullptr) {
-        cc->sched = ggml_backend_sched_new(cm->plan.scheduler_list.data(), nullptr,
-                                           static_cast<int>(cm->plan.scheduler_list.size()), 16384, false, true);
-        if (cc->sched == nullptr) {
-            log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr run: ggml_backend_sched_new failed");
+    // Build encoder graph. Skipped entirely when the cache already covers the
+    // whole utterance (the mel length landed exactly on a window boundary),
+    // which is the one case where a tick needs no encoder at all.
+    EncoderBuild eb;
+    if (enc_tail) {
+        eb = build_encoder_graph(cc->compute_ctx, cm->weights, cm->hparams, enc_timing, cc->encoder_use_flash);
+        if (eb.graph == nullptr || eb.out == nullptr) {
             return TRANSCRIBE_ERR_GGUF;
         }
+
+        // Allocate + compute encoder graph.
+        if (cc->sched == nullptr) {
+            cc->sched = ggml_backend_sched_new(cm->plan.scheduler_list.data(), nullptr,
+                                               static_cast<int>(cm->plan.scheduler_list.size()), 16384, false, true);
+            if (cc->sched == nullptr) {
+                log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr run: ggml_backend_sched_new failed");
+                return TRANSCRIBE_ERR_GGUF;
+            }
+        }
+        ggml_backend_sched_reset(cc->sched);
+        if (!alloc_inference_graph(cc->sched, eb.graph)) {
+            transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
+                                "qwen3_asr run: encoder graph allocation failed — out of memory.");
+            return TRANSCRIBE_ERR_OOM;
+        }
+
+        // Pack + upload mel. On a cache hit this is the tail's frames only,
+        // starting on a whole chunk. The start frame goes to pack_mel_chunks as
+        // a frame offset — the mel buffer's row stride is the *whole* frame
+        // count, so the tail is a column slice of it and its rows must still be
+        // walked with mel_n_frames.
+        std::vector<float> mel_batched;
+        pack_mel_chunks(cc->mel_buf.data(), mel_n_mels, mel_n_frames, enc_timing, mel_batched, tail_frame0);
+        ggml_backend_tensor_set(eb.mel_in, mel_batched.data(), 0, mel_batched.size() * sizeof(float));
+
+        // Positional embedding.
+        {
+            std::vector<float> pe = build_sinusoid_pe(cm->hparams.enc_d_model, enc_timing.per_chunk_aftercnn);
+            ggml_backend_tensor_set(eb.pos_emb_in, pe.data(), 0, pe.size() * sizeof(float));
+        }
+
+        // Windowed-attention mask (null when the sequence fits in one window).
+        // Deterministic in T_enc, so the streaming path pays only a fill of
+        // T_enc^2 fp16 values per tick. The tail's windows are laid down from
+        // its own row 0, and its row 0 is a global window boundary, so they
+        // coincide with the windows the full pass would have used.
+        if (eb.mask_in != nullptr) {
+            std::vector<ggml_fp16_t> mask(static_cast<size_t>(enc_timing.T_enc) *
+                                          static_cast<size_t>(enc_timing.T_enc));
+            fill_encoder_window_mask(mask.data(), enc_timing.T_enc, enc_timing.T_enc, enc_timing.window_tokens,
+                                     enc_timing.T_enc);
+            ggml_backend_tensor_set(eb.mask_in, mask.data(), 0, mask.size() * sizeof(ggml_fp16_t));
+        }
+
+        transcribe::configure_sched_n_threads(cc->sched, cc->n_threads);
+
+        const int64_t t_enc_start = ggml_time_us();
+        t_enc_build_us            = t_enc_start - t_enc_build_start;
+        if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, eb.graph); gs != GGML_STATUS_SUCCESS) {
+            log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr run: encoder graph compute failed (%d)",
+                    static_cast<int>(gs));
+            return TRANSCRIBE_ERR_GGUF;
+        }
+        cc->t_encode_us = ggml_time_us() - t_enc_start;
+    } else {
+        cc->t_encode_us = 0;
+        t_enc_build_us  = 0;
     }
-    ggml_backend_sched_reset(cc->sched);
-    if (!alloc_inference_graph(cc->sched, eb.graph)) {
-        transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
-                            "qwen3_asr run: encoder graph allocation failed — out of memory.");
-        return TRANSCRIBE_ERR_OOM;
-    }
 
-    // Pack + upload mel.
-    std::vector<float> mel_batched;
-    pack_mel_chunks(cc->mel_buf.data(), mel_n_mels, mel_n_frames, timing, mel_batched);
-    ggml_backend_tensor_set(eb.mel_in, mel_batched.data(), 0, mel_batched.size() * sizeof(float));
-
-    // Positional embedding.
-    {
-        std::vector<float> pe = build_sinusoid_pe(cm->hparams.enc_d_model, timing.per_chunk_aftercnn);
-        ggml_backend_tensor_set(eb.pos_emb_in, pe.data(), 0, pe.size() * sizeof(float));
-    }
-
-    transcribe::configure_sched_n_threads(cc->sched, cc->n_threads);
-
-    const int64_t t_enc_start = ggml_time_us();
-    t_enc_build_us            = t_enc_start - t_enc_build_start;
-    if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, eb.graph); gs != GGML_STATUS_SUCCESS) {
-        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr run: encoder graph compute failed (%d)", static_cast<int>(gs));
-        return TRANSCRIBE_ERR_GGUF;
-    }
-    cc->t_encode_us = ggml_time_us() - t_enc_start;
-
-    // Dump encoder intermediates.
+    // Dump encoder intermediates. With a cache hit these are the tail's, not
+    // the utterance's: the debug contract is "what this graph computed".
     auto try_dump = [](const char * name, ggml_tensor * t, const char * stage) {
         if (t != nullptr) {
             transcribe::debug::dump_tensor(name, t, stage);
@@ -786,15 +915,72 @@ transcribe_status run_decode_pass(transcribe_session *          session,
     try_dump("enc.proj.out", eb.dumps.proj_out, "enc.proj");
 
     // Read encoder output to host for the LM prefill. The graph already
-    // dropped the aftercnn pad rows (see encoder.cpp), so eb.out is exactly
-    // [d_enc, T_enc] — the reference's `padded_embed[padded_mask_after_cnn]`
-    // shape.
-    const int d_enc = static_cast<int>(eb.out->ne[0]);
-    const int T_enc = static_cast<int>(eb.out->ne[1]);
+    // dropped the aftercnn pad rows (see encoder.cpp), so what it produces is
+    // exactly [d_enc, T_enc] — the reference's
+    // `padded_embed[padded_mask_after_cnn]` shape. On a cache hit the first
+    // `cached_tokens` columns were not computed by this pass at all: they are
+    // copied from the cache, which the hit test proved describes this mel.
+    const int d_enc = static_cast<int>(cm->hparams.enc_output_dim);
+    const int T_enc = static_cast<int>(enc_timing.T_enc) + cached_tokens;
+    if (T_enc != timing.T_enc) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr run: encoder cache arithmetic is inconsistent (%d + %d != %d)",
+                static_cast<int>(enc_timing.T_enc), cached_tokens, timing.T_enc);
+        return TRANSCRIBE_ERR_GGUF;
+    }
     cc->enc_host.resize(static_cast<size_t>(d_enc) * static_cast<size_t>(T_enc));
     const int64_t t_d2h_start = ggml_time_us();
-    ggml_backend_tensor_get(eb.out, cc->enc_host.data(), 0, cc->enc_host.size() * sizeof(float));
+    if (cached_tokens > 0) {
+        std::memcpy(cc->enc_host.data(), cache->rows.data(),
+                    static_cast<size_t>(cached_tokens) * static_cast<size_t>(d_enc) * sizeof(float));
+    }
+    if (enc_tail) {
+        ggml_backend_tensor_get(eb.out,
+                                cc->enc_host.data() + static_cast<size_t>(cached_tokens) * static_cast<size_t>(d_enc),
+                                0, static_cast<size_t>(enc_timing.T_enc) * static_cast<size_t>(d_enc) * sizeof(float));
+    }
     t_enc_d2h_us = ggml_time_us() - t_d2h_start;
+
+    // Hand the next tick everything that is final now: every *complete* window
+    // this pass covered (the cached prefix, plus whatever the tail filled)
+    // whose mel frames the front-end can vouch for. Complete windows are
+    // exactly the rows more audio cannot change, and the mel they were computed
+    // from goes with them so the next pass can prove it.
+    //
+    // The frame cut is the front-end's `final_frame_count`, not the mel length:
+    // a centered reflect-padded STFT builds the last frame or two of every
+    // buffer from the end padding, so those frames move the moment more samples
+    // arrive, and a window containing one is not final no matter how complete
+    // its chunk count looks. Cutting at a whole window keeps the prefix on the
+    // grid the encoder's attention windows are laid on.
+    if (cache != nullptr) {
+        const int32_t final_frames  = cm->mel->final_frame_count(static_cast<size_t>(n_samples));
+        const int32_t final_windows = (frames_per_window > 0) ? std::max(0, final_frames / frames_per_window) : 0;
+        int32_t       complete      = (frames_per_window > 0) ? (T_enc / tokens_per_window) * tokens_per_window : 0;
+        complete                    = std::min(complete, final_windows * tokens_per_window);
+        if (complete <= 0) {
+            cache->clear();
+        } else {
+            const int32_t keep_rows = std::min(cached_tokens, complete);
+            const int32_t new_rows  = complete - keep_rows;
+            const int32_t frames    = (complete / tokens_per_window) * frames_per_window;
+            const size_t  want_mel  = static_cast<size_t>(mel_n_mels) * static_cast<size_t>(frames);
+
+            cache->rows.resize(static_cast<size_t>(complete) * static_cast<size_t>(d_enc));
+            if (new_rows > 0) {
+                std::memcpy(cache->rows.data() + static_cast<size_t>(keep_rows) * static_cast<size_t>(d_enc),
+                            cc->enc_host.data() + static_cast<size_t>(keep_rows) * static_cast<size_t>(d_enc),
+                            static_cast<size_t>(new_rows) * static_cast<size_t>(d_enc) * sizeof(float));
+            }
+            if (!cache_hit || cache->n_mels != mel_n_mels || cache->frames != frames || cache->mel.size() != want_mel) {
+                copy_mel_prefix(cc->mel_buf.data(), mel_n_frames, mel_n_mels, frames, cache->mel);
+                cache->n_mels = mel_n_mels;
+            }
+            cache->frames = frames;
+            cache->tokens = complete;
+        }
+        cache->reused_tokens  = cached_tokens;
+        cache->encoded_tokens = T_enc - cached_tokens;
+    }
 
     // Decode phase begins. t_dec_start covers prompt + KV init + prefill
     // build/compute + step loop (prefill is part of "decode" to users).
@@ -1002,6 +1188,24 @@ transcribe_status run_decode_pass(transcribe_session *          session,
         // through to the family default (matches the silent-ignore semantics).
     }
 
+    // External seed (streaming): a caller-supplied guess at this pass's first
+    // tokens. It sets the draft length itself, because the verify graph needs
+    // one column per seeded token, and it takes precedence over the run params
+    // — a caller that computed a seed has evidence the 1-gram lookup cannot
+    // match, and the seed costs nothing when it misses (its columns ride along
+    // with the mandatory one).
+    //
+    // The seed is indexed by generation position: seed[0] is a guess at the
+    // token the PREFILL just produced (so it is not a draft column — the
+    // mandatory column already carries it), seed[1] a guess at the token the
+    // first column predicts, and so on. The loop keeps that index moving as it
+    // commits, so a seed longer than one run keeps aiming at the right position
+    // in later runs instead of restarting at the prompt boundary.
+    const bool seeded = draft_seed != nullptr && !draft_seed->empty();
+    if (seeded) {
+        k_drafts = std::min(static_cast<int>(draft_seed->size()), QWEN3_ASR_SPEC_K_MAX);
+    }
+
     // Build the step graph ONCE and reuse every step, sized for the actual
     // workload (T_prompt written + up to max_new generated). Metal's flash-attn
     // kernels dispatch ~30% faster (M4 Max) when K/V ne[1] is a power of 2, so
@@ -1170,6 +1374,10 @@ transcribe_status run_decode_pass(transcribe_session *          session,
         std::vector<int64_t>     kv_idxs(T_verify, 0);
         std::vector<ggml_fp16_t> verify_mask(static_cast<size_t>(max_n_kv) * T_verify, mask_neg_inf);
         std::vector<int32_t>     predicted(T_verify, 0);
+        // Where the next token to be fed sits in the seed's frame: 0 on the
+        // first run (the prefill produced the token the seed starts at), and
+        // advanced by every commitment so later runs keep the same alignment.
+        int                      seed_pos = 0;
 
         while (next_tok != eos_id && static_cast<int32_t>(generated_ids.size()) < max_new &&
                cur_past + T_verify <= max_n_kv) {
@@ -1182,9 +1390,17 @@ transcribe_status run_decode_pass(transcribe_session *          session,
             positions[0] = cur_past;
             kv_idxs[0]   = cur_past;
             for (int c = 1; c < T_verify; ++c) {
-                const int src = (draft_origin >= 0) ? (draft_origin + c) : -1;
-                in_ids[c] =
-                    (src >= 0 && src < static_cast<int>(all_ids.size())) ? all_ids[static_cast<size_t>(src)] : next_tok;
+                // The seeded columns come first and the 1-gram lookup fills
+                // whatever the seed does not cover: outside the seed's window
+                // there is no better guess, and a column rides along with the
+                // mandatory one, so guessing is free and only the acceptance
+                // chain decides what is committed.
+                const int  seed_index = seed_pos + c;
+                const int  src        = (draft_origin >= 0) ? (draft_origin + c) : -1;
+                const bool from_seed  = seeded && seed_index < static_cast<int>(draft_seed->size());
+                in_ids[c] = from_seed ? (*draft_seed)[static_cast<size_t>(seed_index)] :
+                            (src >= 0 && src < static_cast<int>(all_ids.size())) ? all_ids[static_cast<size_t>(src)] :
+                                                                                   next_tok;
                 positions[c] = cur_past + c;
                 kv_idxs[c]   = cur_past + c;
             }
@@ -1250,6 +1466,7 @@ transcribe_status run_decode_pass(transcribe_session *          session,
             }
 
             cur_past += n_commit;
+            seed_pos += n_commit;
             cc->kv_cache.n    = cur_past + 1;
             cc->kv_cache.head = cur_past + 1;
             t_step_get_us += ggml_time_us() - t_comp1;
@@ -1296,6 +1513,7 @@ transcribe_status run_decode_pass(transcribe_session *          session,
                 "  enc_build        %8.2f ms  (graph + sched + uploads)\n"
                 "  enc_compute      %8.2f ms\n"
                 "  enc_d2h          %8.2f ms  (%d floats)\n"
+                "  enc_cache        %8d     tokens reused, %d encoded\n"
                 "  prefill_build    %8.2f ms  (kv_init + prompt + graph + sched + uploads)\n"
                 "  prefill_compute  %8.2f ms  (T_prompt=%d)\n"
                 "  prefill_logits   %8.2f ms  (readback + argmax, vocab=%d)\n"
@@ -1309,10 +1527,10 @@ transcribe_status run_decode_pass(transcribe_session *          session,
                 "  ---\n"
                 "  sum              %8.2f ms",
                 cc->t_mel_us * ms, t_enc_build_us * ms, cc->t_encode_us * ms, t_enc_d2h_us * ms,
-                static_cast<int>(cc->enc_host.size()), t_prefill_build_us * ms, t_prefill_compute_us * ms, T_prompt,
-                t_prefill_logits_us * ms, vocab, t_step_loop_us * ms, n_steps, per_step_ms, t_step_ctx_us * ms,
-                (n_steps > 0) ? (t_step_ctx_us * ms / n_steps) : 0.0, t_step_build_us * ms,
-                (n_steps > 0) ? (t_step_build_us * ms / n_steps) : 0.0, t_step_alloc_us * ms,
+                static_cast<int>(cc->enc_host.size()), cached_tokens, T_enc - cached_tokens, t_prefill_build_us * ms,
+                t_prefill_compute_us * ms, T_prompt, t_prefill_logits_us * ms, vocab, t_step_loop_us * ms, n_steps,
+                per_step_ms, t_step_ctx_us * ms, (n_steps > 0) ? (t_step_ctx_us * ms / n_steps) : 0.0,
+                t_step_build_us * ms, (n_steps > 0) ? (t_step_build_us * ms / n_steps) : 0.0, t_step_alloc_us * ms,
                 (n_steps > 0) ? (t_step_alloc_us * ms / n_steps) : 0.0, t_step_set_us * ms,
                 (n_steps > 0) ? (t_step_set_us * ms / n_steps) : 0.0, t_step_comp_us * ms,
                 (n_steps > 0) ? (t_step_comp_us * ms / n_steps) : 0.0, t_step_get_us * ms,
@@ -1326,6 +1544,7 @@ transcribe_status run_decode_pass(transcribe_session *          session,
     out->raw_text    = std::move(raw_text);
     out->truncated   = truncated;
     out->n_generated = static_cast<int>(generated_ids.size());
+    out->gen_ids     = generated_ids;
     return TRANSCRIBE_OK;
 }
 
@@ -1591,9 +1810,21 @@ transcribe_status encode_all_batched(QwenAsrSession *                  cc,
         ggml_backend_tensor_set(eb.pos_emb_in, pe.data(), 0, pe.size() * sizeof(float));
     }
 
-    // NOTE: key-pad mask upload removed — qwen3_asr encoder uses bounded
-    // chunked subsample so padded rows are trimmed before the attention blocks,
-    // no explicit mask tensor is required.
+    // NOTE: the key-pad mask is not needed — the bounded chunked subsample
+    // trims each chunk's own conv padding before the attention blocks. What
+    // is uploaded here is the *window* mask (one slab per utterance), which
+    // is a different thing: it bounds attention to the reference's
+    // n_window_infer-sized blocks and isolates each utterance's unused chunk
+    // slots. Null when the whole batch fits in one window.
+    if (eb.mask_in != nullptr) {
+        const size_t             slab = static_cast<size_t>(T_pad_max) * static_cast<size_t>(T_pad_max);
+        std::vector<ggml_fp16_t> masks(slab * static_cast<size_t>(n));
+        for (int b = 0; b < n; ++b) {
+            fill_encoder_window_mask(masks.data() + static_cast<size_t>(b) * slab, T_pad_max, T_pad_max,
+                                     eb.window_tokens, T_enc_out[b]);
+        }
+        ggml_backend_tensor_set(eb.mask_in, masks.data(), 0, masks.size() * sizeof(ggml_fp16_t));
+    }
     apply_sched_threads(cc);
 
     const int64_t t_enc0 = ggml_time_us();

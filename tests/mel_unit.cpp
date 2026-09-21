@@ -204,12 +204,293 @@ void test_n_frames_for() {
     CHECK(mf.n_frames_for(0) == 1);
 }
 
+// ---------------------------------------------------------------------
+// Incremental (streaming) extraction: the equality gate.
+//
+// compute_incremental() claims to be compute() restricted to the frames
+// that changed -- not an approximation of it. Everything downstream of the
+// frontend (the encoder prefix cache in arch/qwen3_asr, which reuses
+// encoder rows across R2T2 ticks) is built on that claim, and a silent
+// divergence here would show up as transcript drift far from the cause. So
+// the claim is tested directly: feed the same audio in growing prefixes and
+// require every emitted buffer to be bit-identical to compute()'s over the
+// same prefix.
+//
+// Bit-identical (`==` on the floats), not near-equal: both paths run the
+// same FusedFrameStepper::frame on the same padded values, and the clamp
+// level is the same maximum, so anything other than exact equality means a
+// frame is being reused that should have been recomputed.
+// ---------------------------------------------------------------------
+
+// Qwen3-ASR / Whisper-style frontend: this is what R2T2 streams through.
+transcribe::MelConfig qwen3_asr_config() {
+    transcribe::MelConfig cfg;
+    cfg.sample_rate  = 16000;
+    cfg.num_mels     = 128;
+    cfg.n_fft        = 400;
+    cfg.win_length   = 400;
+    cfg.hop_length   = 160;
+    cfg.pre_emphasis = 0.0f;
+    cfg.f_min        = 0.0f;
+    cfg.f_max        = 8000.0f;
+    cfg.pad_mode     = "reflect";
+    cfg.window_type  = "hann_periodic";
+    cfg.normalize    = "per_utterance";
+    return cfg;
+}
+
+// Deterministic pseudo-random audio in [-1, 1). A LCG rather than
+// sin()+rand() so the test is reproducible across machines and libm
+// versions -- the point is to exercise the arithmetic, not to be pretty.
+// Mixed amplitude is deliberate: a signal whose level wanders is what makes
+// the per-utterance maximum move, which is the case the running-maximum
+// bookkeeping exists for.
+std::vector<float> make_audio(size_t n) {
+    std::vector<float> pcm(n);
+    unsigned long long s    = 0x2545F4914F6CDD1DULL;
+    auto               next = [&]() {
+        s = s * 6364136223846793005ULL + 1442695040888963407ULL;
+        return static_cast<double>((s >> 11) & 0xFFFFFFFFULL) / 2147483648.0 - 1.0;
+    };
+    double env = 0.05;
+    for (size_t i = 0; i < n; ++i) {
+        // A slow envelope, so loud passages arrive late and the global max
+        // rises after many frames are already final.
+        if ((i % 4096) == 0) {
+            env = 0.02 + 0.9 * std::fabs(next());
+        }
+        pcm[i] = static_cast<float>(env * next());
+    }
+    return pcm;
+}
+
+// Feed `pcm` in growing prefixes and compare against the batch result.
+// `steps` is the prefix length in samples for each call; the last entry
+// must be pcm.size().
+void check_incremental_equivalence(const char *                  tag,
+                                   const transcribe::MelConfig & cfg,
+                                   const std::vector<float> &    pcm,
+                                   const std::vector<size_t> &   steps) {
+    transcribe::MelFrontend    mf(cfg);
+    transcribe::MelStreamState st;
+
+    if (!mf.supports_incremental()) {
+        std::fprintf(stderr, "FAIL %s: config should support incremental extraction\n", tag);
+        ++g_failures;
+        return;
+    }
+
+    int compared = 0;
+    for (size_t n : steps) {
+        std::vector<float> inc;
+        int                inc_mels = 0, inc_frames = 0;
+        const auto         rc = mf.compute_incremental(st, pcm.data(), n, inc, inc_mels, inc_frames);
+        if (rc != TRANSCRIBE_OK) {
+            std::fprintf(stderr, "FAIL %s: compute_incremental returned %d at n=%zu\n", tag, static_cast<int>(rc), n);
+            ++g_failures;
+            return;
+        }
+
+        std::vector<float> batch;
+        int                b_mels = 0, b_frames = 0;
+        if (mf.compute(pcm.data(), n, batch, b_mels, b_frames) != TRANSCRIBE_OK) {
+            continue;  // prefix too short for the batch path; nothing to compare
+        }
+
+        if (inc_frames != b_frames || inc_mels != b_mels) {
+            std::fprintf(stderr, "FAIL %s: shape at n=%zu: incremental [%d,%d] vs batch [%d,%d]\n", tag, n, inc_mels,
+                         inc_frames, b_mels, b_frames);
+            ++g_failures;
+            return;
+        }
+        if (inc.size() != batch.size()) {
+            std::fprintf(stderr, "FAIL %s: size at n=%zu: %zu vs %zu\n", tag, n, inc.size(), batch.size());
+            ++g_failures;
+            return;
+        }
+        for (size_t i = 0; i < inc.size(); ++i) {
+            if (inc[i] != batch[i]) {
+                const int t = static_cast<int>(i % static_cast<size_t>(inc_frames));
+                const int m = static_cast<int>(i / static_cast<size_t>(inc_frames));
+                std::fprintf(stderr, "FAIL %s: n=%zu mel[%d][%d]: %.9g (incremental) != %.9g (batch)\n", tag, n, m, t,
+                             static_cast<double>(inc[i]), static_cast<double>(batch[i]));
+                ++g_failures;
+                return;
+            }
+        }
+        ++compared;
+    }
+    // A gate that silently compared nothing would pass for the wrong reason.
+    if (compared < 4) {
+        std::fprintf(stderr, "FAIL %s: only %d prefixes compared\n", tag, compared);
+        ++g_failures;
+    }
+}
+
+void test_incremental_equivalence() {
+    // Long enough to cross many frames and several envelope changes; no
+    // network, so the cost is the batch re-derivation, which is the point
+    // (it is the work the incremental path avoids).
+    const auto pcm = make_audio(300000);  // 18.75 s @ 16 kHz
+
+    // Regular 80 ms ticks (1280 samples = 8 hops), which is the cadence the
+    // 80 ms R2T2 mode streams at.
+    {
+        std::vector<size_t> steps;
+        for (size_t n = 1280; n <= pcm.size(); n += 1280) {
+            steps.push_back(n);
+        }
+        if (steps.empty() || steps.back() != pcm.size()) {
+            steps.push_back(pcm.size());
+        }
+        transcribe::MelConfig cfg = qwen3_asr_config();
+        check_incremental_equivalence("qwen3_asr/80ms", cfg, pcm, steps);
+    }
+
+    // Irregular prefixes: audio does not arrive on a frame boundary, and a
+    // stream that starts late (or an early flush) feeds a prefix that is not
+    // a multiple of hop. The increments here are deliberately not multiples
+    // of the 160-sample hop, so the prefix length walks through every phase
+    // of the frame grid. Every prefix must be exact, not just the ones that
+    // land on a hop.
+    //
+    // The list is kept short on purpose: each entry costs a full batch
+    // extraction (that is the reference the incremental result is checked
+    // against), so the useful thing is a handful of awkward prefixes, not
+    // thousands of redundant ones.
+    {
+        std::vector<size_t> steps;
+        unsigned long long  s = 12345;
+        size_t              n = 1280;
+        while (n < 40000) {
+            steps.push_back(n);
+            s = s * 6364136223846793005ULL + 1442695040888963407ULL;
+            n += 161 + static_cast<size_t>((s >> 33) % 4000);
+        }
+        steps.push_back(pcm.size());
+        transcribe::MelConfig cfg = qwen3_asr_config();
+        check_incremental_equivalence("qwen3_asr/irregular", cfg, pcm, steps);
+    }
+
+    // normalize="global" (Voxtral Realtime): no running maximum at all, the
+    // clamp level is a constant, so this isolates the frame-reuse logic from
+    // the level bookkeeping.
+    {
+        std::vector<size_t> steps;
+        for (size_t n = 3200; n <= pcm.size(); n += 3200) {
+            steps.push_back(n);
+        }
+        if (steps.back() != pcm.size()) {
+            steps.push_back(pcm.size());
+        }
+        transcribe::MelConfig cfg = qwen3_asr_config();
+        cfg.normalize             = "global";
+        cfg.global_log_mel_max    = 1.5f;
+        check_incremental_equivalence("global", cfg, pcm, steps);
+    }
+
+    // normalize="none": emits every raw frame plus the zeroed trailing
+    // center-pad column, so the emitted count differs from the Whisper
+    // modes and the last column is written by the mask rather than by the
+    // STFT. Also exercises the non-whisper log() branch of the frame body.
+    {
+        std::vector<size_t> steps;
+        for (size_t n = 1600; n <= pcm.size(); n += 6400) {
+            steps.push_back(n);
+        }
+        if (steps.back() != pcm.size()) {
+            steps.push_back(pcm.size());
+        }
+        transcribe::MelConfig cfg = qwen3_asr_config();
+        cfg.normalize             = "none";
+        check_incremental_equivalence("none", cfg, pcm, steps);
+    }
+
+    // pad_mode="constant": zero padding, so every frame is final as soon as
+    // its window fits and the provisional tail is empty. Same values must
+    // come out as the batch path's.
+    {
+        std::vector<size_t> steps;
+        for (size_t n = 1280; n <= pcm.size(); n += 5120) {
+            steps.push_back(n);
+        }
+        if (steps.back() != pcm.size()) {
+            steps.push_back(pcm.size());
+        }
+        transcribe::MelConfig cfg = qwen3_asr_config();
+        cfg.pad_mode              = "constant";
+        check_incremental_equivalence("constant-pad", cfg, pcm, steps);
+    }
+}
+
+void test_incremental_rejects_unsupported() {
+    transcribe::MelFrontend mf(parakeet_config());  // per_feature, pow2 n_fft
+    CHECK(!mf.supports_incremental());
+
+    transcribe::MelConfig cfg = parakeet_config();
+    cfg.normalize             = "per_feature";
+    cfg.n_fft                 = 400;
+    cfg.win_length            = 400;
+    cfg.window_type           = "hann_periodic";
+    transcribe::MelFrontend mf2(cfg);
+    CHECK(!mf2.supports_incremental());
+
+    // pad_mode="none" has its own frame grid; not offered.
+    transcribe::MelConfig cfg3 = qwen3_asr_config();
+    cfg3.pad_mode              = "none";
+    transcribe::MelFrontend mf3(cfg3);
+    CHECK(!mf3.supports_incremental());
+
+    // The call must refuse rather than silently fall back, so a caller that
+    // forgets to check cannot get a wrong answer.
+    transcribe::MelStreamState st;
+    std::vector<float>         out;
+    int                        m = 0, f = 0;
+    const std::vector<float>   pcm(16000, 0.1f);
+    CHECK(mf.compute_incremental(st, pcm.data(), pcm.size(), out, m, f) == TRANSCRIBE_ERR_NOT_IMPLEMENTED);
+}
+
+// A state reused across a config change (or a restarted stream) must not mix
+// frames from two frontends; it restarts instead. Distinct configs whose
+// frames differ (different n_fft) must both come out equal to their batch
+// results from the same state object.
+void test_incremental_state_reuse() {
+    const auto pcm = make_audio(40000);
+
+    transcribe::MelConfig cfg_a = qwen3_asr_config();
+    transcribe::MelConfig cfg_b = qwen3_asr_config();
+    cfg_b.n_fft                 = 200;
+    cfg_b.win_length            = 200;
+    cfg_b.normalize             = "global";
+
+    transcribe::MelFrontend    a(cfg_a);
+    transcribe::MelFrontend    b(cfg_b);
+    transcribe::MelStreamState st;
+
+    for (int pass = 0; pass < 2; ++pass) {
+        const transcribe::MelFrontend & mf = (pass == 0) ? a : b;
+        for (size_t n = 8000; n <= pcm.size(); n += 8000) {
+            std::vector<float> inc, batch;
+            int                im = 0, ifr = 0, bm = 0, bfr = 0;
+            CHECK(mf.compute_incremental(st, pcm.data(), n, inc, im, ifr) == TRANSCRIBE_OK);
+            CHECK(mf.compute(pcm.data(), n, batch, bm, bfr) == TRANSCRIBE_OK);
+            CHECK(im == bm && ifr == bfr && inc.size() == batch.size());
+            for (size_t i = 0; i < inc.size() && i < batch.size(); ++i) {
+                CHECK(inc[i] == batch[i]);
+            }
+        }
+    }
+}
+
 }  // namespace
 
 int main() {
     test_window();
     test_mel_filterbank();
     test_n_frames_for();
+    test_incremental_equivalence();
+    test_incremental_rejects_unsupported();
+    test_incremental_state_reuse();
 
     if (g_failures > 0) {
         std::fprintf(stderr, "mel_unit: %d failures\n", g_failures);

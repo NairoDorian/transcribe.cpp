@@ -7,6 +7,7 @@
 
 #include "ggml.h"
 #include "transcribe-debug.h"
+#include "transcribe-env.h"
 #include "transcribe-log.h"
 
 #include <algorithm>
@@ -48,7 +49,68 @@ EncoderTiming compute_encoder_timing(int32_t n_mel_frames, const QwenAsrHParams 
     t.T_enc_padded        = t.n_chunks * t.per_chunk_aftercnn;
     t.T_enc               = (t.n_chunks - 1) * t.per_chunk_aftercnn + t.last_chunk_aftercnn;
     t.aftercnn_lens_total = aftercnn_len(n_mel_frames);
+
+    // Attention window, in after-CNN tokens. The reference takes the widest
+    // chunk's after-CNN length (`padded_mask_after_cnn.shape[-1]`, i.e. the
+    // longest chunk after the conv stack — the last chunk here when the
+    // utterance is a single short chunk) times the integer ratio
+    // n_window_infer / (n_window*2). Both factors are per-model constants:
+    // for R2T2, 13 * (800 / 100) = 104 tokens = eight chunks = 8 s of audio.
+    if (hp.enc_n_window_infer > 0 && t.mel_per_chunk > 0) {
+        const int32_t widest_chunk_tokens = std::max(t.per_chunk_aftercnn, t.last_chunk_aftercnn);
+        t.window_tokens                   = widest_chunk_tokens * (hp.enc_n_window_infer / t.mel_per_chunk);
+    }
     return t;
+}
+
+void fill_encoder_window_mask(ggml_fp16_t * dst, int32_t T_kv, int32_t T_q, int32_t window_tokens, int32_t valid) {
+    if (dst == nullptr || T_kv <= 0 || T_q <= 0) {
+        return;
+    }
+    const ggml_fp16_t zero    = ggml_fp32_to_fp16(0.0f);
+    const ggml_fp16_t neg_inf = ggml_fp32_to_fp16(-INFINITY);
+
+    valid = std::min(std::max(valid, 0), T_q);
+    if (window_tokens <= 0) {
+        window_tokens = T_q;
+    }
+
+    // Inside a window: 0 (attend). Across windows: -inf. Rows past `valid`
+    // are padding and attend only themselves, so a padded row can never be
+    // attended by a real one.
+    for (int32_t row = 0; row < T_q; ++row) {
+        ggml_fp16_t * out = dst + static_cast<size_t>(row) * static_cast<size_t>(T_kv);
+        std::fill(out, out + T_kv, neg_inf);
+        if (row >= valid) {
+            out[row] = zero;
+            continue;
+        }
+        const int32_t begin = (row / window_tokens) * window_tokens;
+        const int32_t end   = std::min(valid, begin + window_tokens);
+        std::fill(out + begin, out + end, zero);
+    }
+}
+
+bool encoder_window_attention_enabled() {
+    return !transcribe::env::flag("TRANSCRIBE_QWEN3_ASR_ENC_NO_WINDOW");
+}
+
+// Window mask for the single-utterance graph, or null when the graph is one
+// window (the short-utterance case, where windowing is the identity).
+ggml_tensor * maybe_add_window_mask(ggml_context * ctx, const EncoderTiming & timing, ggml_tensor ** out) {
+    if (!encoder_window_attention_enabled() || timing.window_tokens <= 0 || timing.T_enc <= timing.window_tokens) {
+        return nullptr;
+    }
+    ggml_tensor * mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, timing.T_enc, timing.T_enc);
+    if (mask == nullptr) {
+        return nullptr;
+    }
+    ggml_set_name(mask, "enc.mask.in");
+    ggml_set_input(mask);
+    if (out != nullptr) {
+        *out = mask;
+    }
+    return mask;
 }
 
 std::vector<float> build_sinusoid_pe(int32_t d_model, int32_t length, double max_timescale) {
@@ -348,9 +410,13 @@ EncoderBuild build_encoder_graph(ggml_context *         ctx,
     transcribe::debug::mark_tensor_for_dump(x);
 
     // ----- 18 encoder blocks -----
+    // Windowed attention (see the header note). Null for an utterance that
+    // fits in a single window, which is the graph this builder produced
+    // before windows existed.
+    eb.mask_in         = maybe_add_window_mask(ctx, timing, nullptr);
     const int n_layers = static_cast<int>(weights.enc_blocks.size());
     for (int i = 0; i < n_layers; ++i) {
-        x = build_enc_block(ctx, x, /*mask=*/nullptr, weights.enc_blocks[i], static_cast<int>(d_model),
+        x = build_enc_block(ctx, x, eb.mask_in, weights.enc_blocks[i], static_cast<int>(d_model),
                             static_cast<int>(n_heads), use_flash);
         if (i == 0) {
             named(x, "enc.block.0.out");
@@ -470,10 +536,31 @@ EncoderBuildBatched build_encoder_graph_batched(ggml_context *         ctx,
     x = ggml_reshape_4d(ctx, x, d_model, T_per_chunk, n_chunks_max, B);
     x = ggml_reshape_3d(ctx, x, d_model, T_pad_max, B);
 
+    // ----- Window mask (batch on ne[3]) -----
+    // The windowed counterpart of the single-shot graph. Every utterance in
+    // the batch carries its own slab: rows [0, T_enc[b]) are windowed over
+    // the utterance's real tokens, and rows at or past T_enc[b] — the last
+    // chunk's trimmed conv padding plus this utterance's unused chunk slots
+    // — attend only themselves, so the widened batch cannot leak padding
+    // into a real row. (Under full bidirectional attention those padded
+    // rows *are* attended, which is why the batched graph and the
+    // single-shot graph only agreed row-for-row when every utterance in the
+    // batch happened to fill n_chunks_max.)
+    if (hp.enc_n_window_infer > 0 && mel_per_chunk > 0) {
+        eb.window_tokens = static_cast<int>(T_per_chunk) * (hp.enc_n_window_infer / static_cast<int>(mel_per_chunk));
+    }
+    if (encoder_window_attention_enabled() && eb.window_tokens > 0 && T_pad_max > eb.window_tokens) {
+        eb.mask_in = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, T_pad_max, T_pad_max, 1, B);
+        if (eb.mask_in != nullptr) {
+            ggml_set_name(eb.mask_in, "enc.mask.in");
+            ggml_set_input(eb.mask_in);
+        }
+    }
+
     // ----- 18 encoder blocks (batch on ne[2]) -----
     const int n_layers = static_cast<int>(weights.enc_blocks.size());
     for (int i = 0; i < n_layers; ++i) {
-        x = build_enc_block(ctx, x, /*mask=*/nullptr, weights.enc_blocks[i], static_cast<int>(d_model),
+        x = build_enc_block(ctx, x, eb.mask_in, weights.enc_blocks[i], static_cast<int>(d_model),
                             static_cast<int>(n_heads), use_flash);
     }
 

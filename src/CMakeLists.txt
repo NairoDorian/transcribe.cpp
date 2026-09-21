@@ -164,6 +164,7 @@ set(_srcs_qwen3_asr
     arch/qwen3_asr/weights.cpp
     arch/qwen3_asr/encoder.cpp
     arch/qwen3_asr/decoder.cpp
+    arch/qwen3_asr/mel_pack.cpp
     causal_lm/causal_lm.cpp
     # Confucius4-R2T2 is a repackaging of this same encoder/decoder graph, so it
     # ships inside this family rather than as its own plugin: the extra work is

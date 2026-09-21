@@ -58,6 +58,13 @@ namespace {
 constexpr float kLogEps  = 5.9604644775390625e-08f;  // 2^-24
 constexpr float kNormEps = 1.0e-05f;                 // NeMo CONSTANT
 
+// compute_incremental() recomputes only the frames whose centered window
+// still runs off the end -- normally two or three. Below this span the
+// per-frame work is smaller than the cost of starting a thread pool, so the
+// recompute runs on the calling thread; a first call over a long stream, or
+// any call that starts from scratch, is wide enough to parallelize.
+constexpr int kIncrementalThreadMinFrames = 32;
+
 // ---------- Slaney mel scale (matches librosa.filters.mel) ----------
 
 constexpr double kSlaneyFsp      = 200.0 / 3.0;
@@ -330,6 +337,82 @@ static inline double compute_filterbank_dot(const float * fb_row,
     return sum;
 }
 
+// One frame of the fused non-pow2 pipeline: window -> mixed-radix FFT ->
+// power -> mel filterbank dot + log, reading padded[padded_off + t*hop,
+// ... + n_fft) and writing the n_mels values to dst[m * stride].
+//
+// This is the single definition of a frame's arithmetic. It is shared by
+// MelFrontend::compute() (which lays frames out at stride n_frames) and
+// MelFrontend::compute_incremental() (which lays them out at stride
+// capacity and only for the frames that changed). Sharing it is what makes
+// the two bit-identical by construction rather than by agreement: the
+// filterbank band bounds, the 4-aligned accumulation, the log10 clamp and
+// the fp32/fp64 split all exist once.
+struct FusedFrameStepper {
+    const float * padded       = nullptr;
+    size_t        padded_off   = 0;
+    const float * window       = nullptr;
+    int           n_fft        = 0;
+    int           n_freq       = 0;
+    int           n_mels       = 0;
+    int           hop          = 0;
+    const float * fb           = nullptr;
+    const int *   fb_begin     = nullptr;
+    const int *   fb_end       = nullptr;
+    const float * cos_lut      = nullptr;
+    const float * sin_lut      = nullptr;
+    int           lut_size     = 0;
+    bool          whisper_mode = false;  // log10 (per_utterance/global) vs log(x + 2^-24)
+    bool          disable_simd = false;
+
+    struct Scratch {
+        std::vector<float> fft_in;
+        std::vector<float> fft_out;
+        std::vector<float> power;
+    };
+
+    void init_scratch(Scratch & s) const {
+        s.fft_in.assign(2 * static_cast<size_t>(n_fft), 0.0f);
+        s.fft_out.assign(8 * static_cast<size_t>(n_fft), 0.0f);
+        s.power.assign(static_cast<size_t>(n_freq), 0.0f);
+    }
+
+    void frame(int t, Scratch & s, float * dst, size_t stride) const {
+        const size_t start = padded_off + static_cast<size_t>(t) * static_cast<size_t>(hop);
+        for (int n = 0; n < n_fft; ++n) {
+            s.fft_in[n] = padded[start + n] * window[n];
+        }
+        mixed_radix_fft_f32(s.fft_in.data(), n_fft, cos_lut, sin_lut, lut_size, s.fft_out.data());
+        for (int k = 0; k < n_freq; ++k) {
+            const float re = s.fft_out[2 * k];
+            const float im = s.fft_out[2 * k + 1];
+            s.power[k]     = re * re + im * im;
+        }
+        for (int m = 0; m < n_mels; ++m) {
+            const float * fb_row  = fb + static_cast<size_t>(m) * n_freq;
+            // Restrict to the band's nonzero span. k starts on the same
+            // 4-aligned boundary the dense loop would have used, so every
+            // group that contains a nonzero keeps its exact accumulation
+            // order; the groups/elements skipped on either side are all
+            // fb_row[k] == 0.0f, and `sum += 0.0` is exact. Bit-identical
+            // to the dense loop.
+            const int     k_end   = fb_end[m];
+            const int     k_begin = (fb_begin[m] / 4) * 4;
+            double        sum = compute_filterbank_dot(fb_row, s.power.data(), k_begin, k_end, n_freq, disable_simd);
+            float         result;
+            if (whisper_mode) {
+                if (sum < 1.0e-10) {
+                    sum = 1.0e-10;
+                }
+                result = static_cast<float>(std::log10(sum));
+            } else {
+                result = static_cast<float>(std::log(sum + static_cast<double>(kLogEps)));
+            }
+            dst[static_cast<size_t>(m) * stride] = result;
+        }
+    }
+};
+
 }  // namespace
 
 // ---------- MelFrontend ----------
@@ -419,6 +502,309 @@ int MelFrontend::n_frames_for(size_t n_samples) const {
     // Matches NeMo features_lens = (waveforms_lens / hop_length) + 1.
     // The +1 accounts for the centered first frame.
     return static_cast<int>(n_samples / static_cast<size_t>(cfg_.hop_length)) + 1;
+}
+
+int MelFrontend::final_frame_count(size_t n_samples) const {
+    const int n_frames = n_frames_for(n_samples);
+    // "none" left-aligns the window at t*hop, so a frame reads
+    // [t*hop, t*hop + win) and never reaches past the end of the audio:
+    // every frame of the current grid is final.
+    if (cfg_.pad_mode == "none") {
+        return n_frames;
+    }
+    // Centered layouts (reflect AND constant), frame t reads the padded
+    // signal at [t*hop, t*hop + n_fft), i.e. audio samples [t*hop - pad,
+    // t*hop + pad). It is final once that right edge lands inside the audio,
+    // t*hop + pad <= n_samples, hence the count below.
+    //
+    // "constant" is *not* exempt from this, which is easy to get wrong: the
+    // zero pad itself never changes, but a frame near the end reads that pad
+    // instead of audio it has not seen yet, and the same frame read at a
+    // longer buffer gets the real samples. Only frames whose whole window is
+    // inside the audio are stable, whatever the pad fills the rest with.
+    const size_t pad = static_cast<size_t>(cfg_.n_fft / 2);
+    if (n_samples <= pad) {
+        return 0;
+    }
+    const int last = static_cast<int>((n_samples - pad) / static_cast<size_t>(cfg_.hop_length));
+    return std::min(n_frames, last + 1);
+}
+
+bool MelFrontend::supports_incremental() const {
+    // The Whisper-style emit rule is what makes the output incremental:
+    // emitted frame t is a function of that frame's own raw log-mel and one
+    // scalar (the per_utterance maximum, or the fixed "global" level, or
+    // nothing at all for "none").
+    //
+    // Everything else is excluded, and each exclusion is a correctness
+    // boundary rather than a preference:
+    //   per_feature — normalizes with a per-bin mean and variance over the
+    //     whole utterance, so appending audio rewrites every frame's value
+    //     and there is no scalar to track.
+    //   pad_mode "none" — there is no padding, so the frame grid is
+    //     (n - win)/hop + 1 rather than the centered grid final_frame_count()
+    //     describes; a second finality rule for no gain on any model here.
+    //   nemo_seq_len_ceil — a different (ceil) frame count rule.
+    //   pow2 n_fft — those configs use the shared power[] + cblas_sgemm
+    //     post-pass (and log_clamp_min), whose accumulation order differs
+    //     from the fused per-frame dot. Reusing fused frames there would not
+    //     be bit-identical to compute(), so it is not offered.
+    const std::string & norm = cfg_.normalize;
+    if (norm != "per_utterance" && norm != "global" && norm != "none") {
+        return false;
+    }
+    if (cfg_.pad_mode == "none" || cfg_.nemo_seq_len_ceil) {
+        return false;
+    }
+    const int n_fft = cfg_.n_fft;
+    if (n_fft <= 0 || (n_fft & (n_fft - 1)) == 0) {
+        return false;
+    }
+    return cfg_.hop_length > 0 && cfg_.win_length > 0 && cfg_.win_length <= n_fft && cfg_.num_mels > 0;
+}
+
+transcribe_status MelFrontend::compute_incremental(MelStreamState &     state,
+                                                   const float *        pcm,
+                                                   size_t               n_samples,
+                                                   std::vector<float> & out_mel,
+                                                   int &                out_n_mels,
+                                                   int &                out_n_frames,
+                                                   int                  n_threads) const {
+    if (pcm == nullptr) {
+        return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+    if (!supports_incremental()) {
+        return TRANSCRIBE_ERR_NOT_IMPLEMENTED;
+    }
+
+    const int  n_fft       = cfg_.n_fft;
+    const int  hop         = cfg_.hop_length;
+    const int  win         = cfg_.win_length;
+    const int  n_mels      = cfg_.num_mels;
+    const int  n_freq      = n_freq_;
+    const int  pad         = n_fft / 2;
+    const bool use_reflect = (cfg_.pad_mode != "constant");
+
+    // The raw frame grid is the centered one for every supported mode, so
+    // the emitted count is the only mode-dependent part: the Whisper modes
+    // drop the trailing center-pad frame, "none" keeps it and zeroes it.
+    const int  n_frames  = n_frames_for(n_samples);
+    const int  n_out     = n_frames - 1;  // frames we must actually compute
+    const bool keep_last = (cfg_.normalize == "none");
+    const int  emitted   = keep_last ? n_frames : n_out;
+
+    if (n_out <= 0 || (use_reflect && n_samples < static_cast<size_t>(pad + 1)) ||
+        (static_cast<int>(n_samples) < win)) {
+        return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+
+    // State identity. A state built for another frontend (or one whose
+    // buffer went backwards, which a stream never does) restarts from
+    // scratch rather than mixing frames from two configs.
+    if (state.n_mels != n_mels || state.n_fft != n_fft || state.hop != hop || state.win != win ||
+        state.emitted > emitted) {
+        state.clear();
+        state.n_mels     = n_mels;
+        state.n_fft      = n_fft;
+        state.hop        = hop;
+        state.win        = win;
+        state.stable_max = -std::numeric_limits<double>::infinity();
+    }
+
+    // Capacity grows geometrically: a re-stride is O(frames), so doubling
+    // keeps the amortized cost of growth off the per-tick path.
+    if (emitted > state.capacity) {
+        int cap = (state.capacity > 0) ? state.capacity : 4096;
+        while (cap < emitted) {
+            cap *= 2;
+        }
+        std::vector<float> grown(static_cast<size_t>(n_mels) * static_cast<size_t>(cap));
+        for (int m = 0; m < n_mels; ++m) {
+            std::memcpy(grown.data() + static_cast<size_t>(m) * static_cast<size_t>(cap),
+                        state.raw.data() + static_cast<size_t>(m) * static_cast<size_t>(state.capacity),
+                        static_cast<size_t>(state.emitted) * sizeof(float));
+        }
+        state.raw.swap(grown);
+        state.capacity = cap;
+    }
+
+    // Which frames are final, and therefore which must be recomputed:
+    // everything from the last final frame to the end of the emitted range.
+    // The final prefix is computed once and never again; the provisional
+    // tail (the frames whose centered window still runs off the end) is
+    // recomputed on every call. Both are O(1) frames wide -- the final
+    // prefix does not grow with the utterance, only the number of calls to
+    // fold it does.
+    const int final = std::min(final_frame_count(n_samples), n_out);
+    const int from  = std::min(state.stable, n_out);
+
+    if (from < n_out) {
+        // The padded signal, built only over the span these frames read:
+        // [from*hop, (n_out-1)*hop + n_fft). The value rules below are the
+        // ones compute() applies to the whole buffer -- the centered
+        // reflect/zero pad of n_fft/2 samples on each side, with
+        // pre-emphasis on the interior -- evaluated at an offset, so the
+        // numbers are identical without materializing n_samples + 2*pad of
+        // them.
+        const size_t p_from = static_cast<size_t>(from) * static_cast<size_t>(hop);
+        const size_t p_to   = static_cast<size_t>(n_out - 1) * static_cast<size_t>(hop) + static_cast<size_t>(n_fft);
+        std::vector<float> region(p_to - p_from);
+
+        const float  alpha   = cfg_.pre_emphasis;
+        const size_t n       = n_samples;
+        // compute() writes the pre-emphasized signal as pcm[0] for index 0
+        // and pcm[i] - alpha*pcm[i-1] after it (or a plain copy when
+        // pre_emphasis is 0); this is that same expression, and `alpha` is
+        // the same fp32 value.
+        auto         emph_at = [&](size_t k) -> float {
+            return (alpha != 0.0f && k > 0) ? pcm[k] - alpha * pcm[k - 1] : pcm[k];
+        };
+
+        for (size_t i = 0; i < region.size(); ++i) {
+            const size_t j = p_from + i;
+            if (j < static_cast<size_t>(pad)) {
+                // Left reflect: padded[j] = padded[2*pad - j], which is an
+                // interior sample whenever n_samples >= pad + 1.
+                region[i] = use_reflect ? emph_at(static_cast<size_t>(pad) - j) : 0.0f;
+            } else if (j < static_cast<size_t>(pad) + n) {
+                region[i] = emph_at(j - static_cast<size_t>(pad));
+            } else {
+                // Right reflect: compute() mirrors about the last sample,
+                // padded[pad + n + i] = padded[pad + n - 2 - i], so with
+                // j = pad + n + i the source is emph[n - 2 - i] -- always an
+                // interior sample once n_samples >= pad + 1 (the guard).
+                const size_t i_right = j - static_cast<size_t>(pad) - n;
+                region[i]            = use_reflect ? emph_at(n - 2 - i_right) : 0.0f;
+            }
+        }
+
+        std::vector<float> window_f32(static_cast<size_t>(n_fft));
+        for (int i = 0; i < n_fft; ++i) {
+            window_f32[static_cast<size_t>(i)] = static_cast<float>(window_[static_cast<size_t>(i)]);
+        }
+
+        FusedFrameStepper step{};
+        step.padded       = region.data();
+        step.padded_off   = 0;
+        step.window       = window_f32.data();
+        step.n_fft        = n_fft;
+        step.n_freq       = n_freq;
+        step.n_mels       = n_mels;
+        step.hop          = hop;
+        step.fb           = mel_fb_.data();
+        step.fb_begin     = fb_begin_.data();
+        step.fb_end       = fb_end_.data();
+        step.cos_lut      = cos_lut_.data();
+        step.sin_lut      = sin_lut_.data();
+        step.lut_size     = static_cast<int>(cos_lut_.size());
+        step.whisper_mode = (cfg_.normalize != "none");
+        step.disable_simd = env::flag("TRANSCRIBE_DISABLE_MEL_SIMD");
+
+        int stft_threads = n_threads;
+        if (stft_threads <= 0) {
+            stft_threads = default_n_threads();
+        }
+        stft_threads = std::max(1, std::min(stft_threads, n_out - from));
+        // Steady state recomputes ~3 frames (the provisional tail), where
+        // spawning a pool costs more than the frames do. Only parallelize a
+        // span wide enough to pay for the threads -- the first call on a long
+        // stream is the one that needs them.
+        if (n_out - from < kIncrementalThreadMinFrames) {
+            stft_threads = 1;
+        }
+
+        const size_t stride     = static_cast<size_t>(state.capacity);
+        auto         write_span = [&](int tid) {
+            FusedFrameStepper::Scratch scratch;
+            step.init_scratch(scratch);
+            for (int t = from + tid; t < n_out; t += stft_threads) {
+                // The stepper reads padded[off + t*hop]; with off == 0 the
+                // region starts at p_from, and p_from is a whole number of
+                // hops (from*hop), so frame t sits at region frame t - from.
+                step.frame(t - from, scratch, state.raw.data() + static_cast<size_t>(t), stride);
+            }
+        };
+        if (stft_threads <= 1) {
+            write_span(0);
+        } else {
+            std::vector<std::thread> pool;
+            pool.reserve(static_cast<size_t>(stft_threads - 1));
+            for (int tid = 1; tid < stft_threads; ++tid) {
+                pool.emplace_back([&write_span, tid]() { write_span(tid); });
+            }
+            write_span(0);
+            for (auto & th : pool) {
+                th.join();
+            }
+        }
+    }
+
+    // Fold the frames that became final into the running maximum, then read
+    // the level off that plus the provisional tail. Together that is the
+    // maximum over exactly the emitted frames -- the same set compute()
+    // scans -- so a new global maximum is detected here at the same moment
+    // compute() would see it.
+    //
+    // The running maximum covers the FINAL frames only, and the provisional
+    // tail is re-read every call rather than folded in. That asymmetry is
+    // load-bearing: a provisional frame's reflected value can exceed its
+    // final one, so folding it in would leave the running maximum above the
+    // true emitted maximum, and the clamp floor would sit too high for the
+    // rest of the stream. Hence no write-back of `level_max` here.
+    if (cfg_.normalize == "per_utterance") {
+        for (int t = state.stable; t < final; ++t) {
+            for (int m = 0; m < n_mels; ++m) {
+                const double v = static_cast<double>(state.raw[static_cast<size_t>(m) * state.capacity + t]);
+                if (v > state.stable_max) {
+                    state.stable_max = v;
+                }
+            }
+        }
+    }
+
+    double level_max = state.stable_max;
+    if (cfg_.normalize == "per_utterance") {
+        for (int t = final; t < n_out; ++t) {
+            for (int m = 0; m < n_mels; ++m) {
+                const double v = static_cast<double>(state.raw[static_cast<size_t>(m) * state.capacity + t]);
+                if (v > level_max) {
+                    level_max = v;
+                }
+            }
+        }
+    }
+    const double floor_val =
+        (cfg_.normalize == "per_utterance") ? level_max - 8.0 : static_cast<double>(cfg_.global_log_mel_max) - 8.0;
+
+    // Emit. This re-strides every frame (the ragged contract the encoder
+    // consumer expects), so it is the one O(frames) pass left; it reads the
+    // cached raw value instead of re-running the STFT + filterbank, which
+    // is where the saving is. The expression is compute()'s.
+    out_mel.resize(static_cast<size_t>(n_mels) * static_cast<size_t>(emitted));
+    for (int m = 0; m < n_mels; ++m) {
+        const float * src = state.raw.data() + static_cast<size_t>(m) * state.capacity;
+        float *       dst = out_mel.data() + static_cast<size_t>(m) * static_cast<size_t>(emitted);
+        if (cfg_.normalize == "none") {
+            for (int t = 0; t < n_out; ++t) {
+                dst[t] = src[t];
+            }
+            dst[n_out] = 0.0f;  // NeMo's trailing-frame mask (see compute())
+        } else {
+            for (int t = 0; t < emitted; ++t) {
+                double v = static_cast<double>(src[t]);
+                if (v < floor_val) {
+                    v = floor_val;
+                }
+                dst[t] = static_cast<float>((v + 4.0) / 4.0);
+            }
+        }
+    }
+
+    state.stable  = final;
+    state.emitted = emitted;
+    out_n_mels    = n_mels;
+    out_n_frames  = emitted;
+    return TRANSCRIBE_OK;
 }
 
 transcribe_status MelFrontend::compute(const float *        pcm,
@@ -594,47 +980,30 @@ transcribe_status MelFrontend::compute(const float *        pcm,
     if (!n_fft_is_pow2) {
         // Fused worker: window mul → mixed-radix FFT → power → mel
         // matmul + log → log_mel, all fp32, all per-frame on this thread.
-        // Matmul uses a 4-way-unrolled fp64 accumulator for numerical
-        // stability; cast back to fp32 at the log boundary.
+        // The per-frame body lives in FusedFrameStepper so that the
+        // incremental path (compute_incremental) runs the identical
+        // arithmetic on the identical padded values.
+        FusedFrameStepper step{};
+        step.padded       = padded_f32.data();
+        step.window       = window_f32.data();
+        step.n_fft        = n_fft;
+        step.n_freq       = n_freq;
+        step.n_mels       = n_mels;
+        step.hop          = hop;
+        step.fb           = mel_fb_.data();
+        step.fb_begin     = fb_begin_.data();
+        step.fb_end       = fb_end_.data();
+        step.cos_lut      = cos_lut_.data();
+        step.sin_lut      = sin_lut_.data();
+        step.lut_size     = static_cast<int>(cos_lut_.size());
+        step.whisper_mode = whisper_mode;
+        step.disable_simd = disable_mel_simd;
+
         auto worker = [&](int tid) {
-            std::vector<float> fft_in(2 * static_cast<size_t>(n_fft), 0.0f);
-            std::vector<float> fft_out(8 * static_cast<size_t>(n_fft), 0.0f);
-            std::vector<float> power_scratch(static_cast<size_t>(n_freq));
+            FusedFrameStepper::Scratch scratch;
+            step.init_scratch(scratch);
             for (int t = tid; t < n_frames; t += stft_threads) {
-                const size_t start = static_cast<size_t>(t) * static_cast<size_t>(hop);
-                for (int n = 0; n < n_fft; ++n) {
-                    fft_in[n] = padded_f32[start + n] * window_f32[n];
-                }
-                mixed_radix_fft_f32(fft_in.data(), n_fft, cos_lut_.data(), sin_lut_.data(),
-                                    static_cast<int>(cos_lut_.size()), fft_out.data());
-                for (int k = 0; k < n_freq; ++k) {
-                    const float re   = fft_out[2 * k];
-                    const float im   = fft_out[2 * k + 1];
-                    power_scratch[k] = re * re + im * im;
-                }
-                for (int m = 0; m < n_mels; ++m) {
-                    const float * fb_row  = mel_fb_.data() + static_cast<size_t>(m) * n_freq;
-                    // Restrict to the band's nonzero span. k starts on the same
-                    // 4-aligned boundary the dense loop would have used, so every
-                    // group that contains a nonzero keeps its exact accumulation
-                    // order; the groups/elements skipped on either side are all
-                    // fb_row[k] == 0.0f, and `sum += 0.0` is exact. Bit-identical
-                    // to the dense loop.
-                    const int     k_end   = fb_end_[static_cast<size_t>(m)];
-                    const int     k_begin = (fb_begin_[static_cast<size_t>(m)] / 4) * 4;
-                    double        sum =
-                        compute_filterbank_dot(fb_row, power_scratch.data(), k_begin, k_end, n_freq, disable_mel_simd);
-                    float result;
-                    if (whisper_mode) {
-                        if (sum < 1.0e-10) {
-                            sum = 1.0e-10;
-                        }
-                        result = static_cast<float>(std::log10(sum));
-                    } else {
-                        result = static_cast<float>(std::log(sum + static_cast<double>(kLogEps)));
-                    }
-                    log_mel[static_cast<size_t>(m) * n_frames + t] = result;
-                }
+                step.frame(t, scratch, log_mel.data() + t, static_cast<size_t>(n_frames));
             }
         };
         run_threaded(worker);

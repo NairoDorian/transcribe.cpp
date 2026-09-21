@@ -35,6 +35,7 @@
 #include "r2t2-package.h"
 #include "r2t2-text.h"
 #include "transcribe-debug.h"
+#include "transcribe-env.h"
 #include "transcribe-log.h"
 // The public surface this file implements: the ext struct, its kind, and the
 // contract the validation below enforces. Included rather than restated so a
@@ -87,6 +88,28 @@ inline constexpr int64_t k_unfixed_token_num = 5;
 // always applies — kept as a named constant so the branch below reads like the
 // reference it came from rather than being silently dropped.
 inline constexpr bool k_rollback_punctuation = false;
+
+// Speculation on the hold-back: the tokens a tick refuses to commit are the
+// tokens the next tick re-derives, so they are handed to the next decode pass
+// as its draft. Measured on this checkpoint that draft is reproduced almost
+// verbatim — ~4.5 of the 5 held-back tokens, at 80 and 320 ms, on English and
+// Chinese samples — which turns ~5.5 plain steps per tick into ~1.1 verify
+// passes over the same tokens. The family's acceptance rule is exact-greedy (a
+// draft is committed only where the verify pass's own argmax equals it), so no
+// token enters the transcript that plain stepping would not have produced; what
+// it does change is the graph shape the step loop runs (one pass over
+// k_unfixed_token_num + 1 columns instead of a sequence of single-column
+// steps), which is not bit-identical — the caveat documented at length on the
+// spec branch of run_decode_pass, and the reason for the kill switch below.
+//
+// TRANSCRIBE_R2T2_NO_DRAFT=1 disables it: the stream then re-derives the
+// hold-back by plain stepping, the pre-speculation behaviour. Keep the switch
+// (rather than making this a build-time choice) because it is also the A/B arm
+// for text parity: `TRANSCRIBE_R2T2_NO_DRAFT=1` versus unset is a byte-exact
+// comparison of the two paths on any sample.
+inline bool draft_enabled() {
+    return !transcribe::env::flag("TRANSCRIBE_R2T2_NO_DRAFT");
+}
 
 // ---------------------------------------------------------------------------
 // Text/token helpers
@@ -245,10 +268,11 @@ struct TickOutcome {
 // prefix as a continuation, then rebuilds raw_decoded_/text_/fixed_text.
 //
 // `params` is deliberately null: the only field run_decode_pass reads from it
-// is spec_k_drafts, and speculative decoding is an offline per-utterance
-// optimization with no meaning across a re-decoded boundary — the draft tokens
-// from one tick are worthless for the next, whose prompt has changed. Passing
-// null selects the family default (disabled).
+// is spec_k_drafts, and this path drafts from `draft_tail` instead — the
+// previous tick's own hold-back, which is a far better guess than the 1-gram
+// lookup because the tokens it aims at are ones the model produced a moment ago
+// (see the note above draft_enabled). The family default is what a null params
+// selects, and the seed overrides it in any case.
 transcribe_status decode_tick(QwenAsrSession * cc, QwenAsrModel * cm, bool final_flush, TickOutcome * out) {
     R2T2StreamState & st = cc->r2t2;
 
@@ -268,12 +292,19 @@ transcribe_status decode_tick(QwenAsrSession * cc, QwenAsrModel * cm, bool final
     }
 
     DecodePassResult        pass;
-    const transcribe_status decode_status =
-        run_decode_pass(cc, st.audio_accum.data(), static_cast<int>(st.audio_accum.size()),
-                        /*params=*/nullptr, suffix_ids.empty() ? nullptr : &suffix_ids, k_max_new_tokens, &pass);
+    const transcribe_status decode_status = run_decode_pass(
+        cc, st.audio_accum.data(), static_cast<int>(st.audio_accum.size()),
+        /*params=*/nullptr, suffix_ids.empty() ? nullptr : &suffix_ids, k_max_new_tokens, &pass,
+        draft_enabled() && !st.draft_tail.empty() ? &st.draft_tail : nullptr, &st.enc_cache, &st.mel_stream);
     if (decode_status != TRANSCRIBE_OK) {
         return decode_status;
     }
+
+    // TRANSCRIBE_R2T2_TRACE: one line per tick with the generated ids and the
+    // rollback tail. The tail is computed below for the next tick's seed; the
+    // log line is what makes the draft's acceptance measurable from outside
+    // (`tail[i]` versus `gen[i+1]`) rather than only inferable from timings.
+    const bool trace = transcribe::env::flag("TRANSCRIBE_R2T2_TRACE");
 
     std::string generated = r2t2::normalize_punct_by_context(pass.raw_text);
     generated             = r2t2::sanitize_utf8_lossy(generated);
@@ -335,6 +366,31 @@ transcribe_status decode_tick(QwenAsrSession * cc, QwenAsrModel * cm, bool final
     }
     fixed_text = r2t2::truncate_at_pipe(fixed_text);
 
+    // The next tick's speculation seed: the tokens held back just above, which
+    // are the ones the next tick's decode re-derives. Rebuilt from the token
+    // list the prefix was cut from, so it is the same window `k` describes and
+    // not a re-encoding that could split differently. Empty when nothing is
+    // held back (k == 0), which correctly disables drafting for a tick that
+    // committed its whole tail: there is then no window the next tick repeats.
+    const size_t tail_from = (k > 0 && static_cast<size_t>(k) < current_ids.size()) ?
+                                 current_ids.size() - static_cast<size_t>(k) :
+                                 current_ids.size();
+
+    if (trace) {
+        const auto join = [](const std::vector<int32_t> & v, size_t from) {
+            std::string s;
+            for (size_t i = from; i < v.size(); ++i) {
+                s += std::to_string(v[i]);
+                s += ' ';
+            }
+            return s;
+        };
+        log_msg(TRANSCRIBE_LOG_LEVEL_DEBUG, "r2t2 trace: tick=%lld fixed=%zu gen=[ %s] tail=[ %s]",
+                static_cast<long long>(st.chunk_id), fixed_text.size(), join(pass.gen_ids, 0).c_str(),
+                join(current_ids, tail_from).c_str());
+    }
+    st.draft_tail.assign(current_ids.begin() + static_cast<ptrdiff_t>(tail_from), current_ids.end());
+
     if (!r2t2::contains_asr_text_tag(st.raw_decoded) && st.force_language.empty()) {
         // Auto-detect and the model has not committed to a language yet:
         // there is no transcript, so nothing to display and nothing to commit.
@@ -342,6 +398,10 @@ transcribe_status decode_tick(QwenAsrSession * cc, QwenAsrModel * cm, bool final
         // which keeps build_stream_prefix returning empty for the ticks that
         // have not produced an envelope yet.
         st.text.clear();
+        // No commit means no commit boundary, so the window above is not one
+        // the next tick repeats: drop the seed rather than aim the next pass at
+        // a boundary that did not move.
+        st.draft_tail.clear();
         out->produced_text = false;
         out->fixed_text.clear();
         return TRANSCRIBE_OK;

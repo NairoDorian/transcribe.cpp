@@ -1340,6 +1340,37 @@ transcribe_apply_warnings(transcribe_mel_unit)
 add_test(NAME transcribe_mel_unit COMMAND transcribe_mel_unit)
 
 # -----------------------------------------------------------------------------
+# Qwen3-ASR mel framing + R2T2 encoder-cache mel bookkeeping (pure host)
+# -----------------------------------------------------------------------------
+#
+# pack_mel_chunks / mel_prefix_matches / copy_mel_prefix all take a
+# [n_mels, n_frames] buffer whose row stride IS the frame count, and the R2T2
+# encoder cache carries a prefix of that buffer across ticks. A wrong stride
+# there is invisible from the outside: the packed tensor keeps its shape, the
+# encoder runs, and the *counts* downstream are all computed from lengths, so
+# the only symptom is a wrong transcript. That happened — the streaming tail
+# was packed from a pointer offset with the tail's row stride instead of the
+# buffer's, and a 592-character transcript came out 285 characters long. The
+# test is therefore a direct unit test of the addressing, on the same
+# compile-the-TU-in pattern as the chunked-prefill mask test: under
+# TRANSCRIBE_ARCH_DL these helpers belong to the per-family module, not to the
+# core library, so linking alone would leave them unresolved.
+
+add_executable(transcribe_qwen3_asr_mel_pack_unit
+    qwen3_asr_mel_pack_unit.cpp
+    ${CMAKE_SOURCE_DIR}/src/arch/qwen3_asr/mel_pack.cpp)
+
+target_link_libraries(transcribe_qwen3_asr_mel_pack_unit PRIVATE transcribe ggml)
+
+target_include_directories(transcribe_qwen3_asr_mel_pack_unit PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/arch/qwen3_asr)
+
+transcribe_apply_warnings(transcribe_qwen3_asr_mel_pack_unit)
+
+add_test(NAME transcribe_qwen3_asr_mel_pack_unit COMMAND transcribe_qwen3_asr_mel_pack_unit)
+
+# -----------------------------------------------------------------------------
 # Tokenizer decode-only mode unit test
 # -----------------------------------------------------------------------------
 #

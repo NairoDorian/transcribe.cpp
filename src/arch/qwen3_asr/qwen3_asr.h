@@ -75,14 +75,116 @@ const char * bcp47_for_publisher_name(const std::string & name);
 // differently (offline strips the "language X<asr_text>" envelope once;
 // streaming re-parses the whole accumulated text every chunk).
 struct DecodePassResult {
-    std::string raw_text;
-    bool        truncated   = false;
-    int         n_generated = 0;
+    std::string          raw_text;
+    bool                 truncated   = false;
+    int                  n_generated = 0;
+    // The generated token ids, trailing EOS stripped — the same sequence
+    // `raw_text` was decoded from. Diagnostic (the streaming trace hook);
+    // offline ignores it.
+    std::vector<int32_t> gen_ids;
+};
+
+// ---------------------------------------------------------------------------
+// Encoder prefix cache (R2T2 streaming)
+// ---------------------------------------------------------------------------
+
+// Streaming re-runs the whole decode pass over the accumulated buffer every
+// tick, so its encoder cost grows with the stream: measured on R2T2, 115 ms of
+// a 265 ms tick at 54 s of audio and ~470 ms at 81 s. Encoder attention is
+// windowed (encoder.h), which makes the encoder output for one *complete*
+// window a function of that window's own mel frames only — per-chunk conv, a
+// positional table indexed inside the chunk, masked attention — so those rows
+// are final the moment the window fills, and only the trailing window (plus any
+// partial chunk) has to be encoded again. This struct is that carry-over.
+//
+// It is a cache, never an approximation, and the argument has two halves that
+// fail independently — which is worth spelling out, because the first version
+// of this cache got the second one wrong and shipped a silently truncated
+// transcript.
+//
+//   (a) The mel the rows were derived from. The front-end normalizes per
+//       utterance over the whole buffer (`clamp(global_max - 8)`, then
+//       `(x + 4) / 4`), so a new global maximum rewrites the level of every
+//       earlier frame. run_decode_pass memcmps the cached prefix against the
+//       frames this pass just produced and falls back to a full encode when
+//       they differ (mel_prefix_matches). Reused rows are therefore rows of
+//       this utterance's mel, not of an earlier one.
+//
+//   (b) *Where* those frames sit in the tail that gets encoded. On a hit the
+//       pass encodes only the tail, so the tail's frame offset has to reach
+//       the encoder intact: the mel buffer is [n_mels, n_frames] row-major
+//       with the frame count as its row stride, and the frames from offset f
+//       on are a column slice of it — not contiguous, and not a pointer
+//       offset. Getting this wrong keeps every shape and every count correct
+//       (they come from lengths, not from the layout) and feeds the encoder
+//       entirely plausible garbage, so nothing downstream can notice. The
+//       offset is a parameter of pack_mel_chunks for exactly this reason, and
+//       tests/qwen3_asr_mel_pack_unit.cpp pins it.
+//
+// With both halves holding, a hit can only remove work and the streaming
+// transcript is identical with the cache on and off; TRANSCRIBE_R2T2_NO_ENC_CACHE=1
+// is the A/B that shows it.
+//
+// Owned by R2T2StreamState and reused across ticks; `clear()` it when the
+// stream restarts. run_decode_pass(a) reads rows/mel/tokens/frames when they
+// describe the same mel and (b) rewrites all of them for the next tick.
+//
+// Alignment is a precondition, not a runtime check: `tokens` is always a whole
+// number of attention windows and `frames` the mel frames those windows cover,
+// so the tail starts on a chunk boundary too (a window is 8 whole chunks).
+// Everything downstream — chunk grid, positional table, window partition —
+// then reproduces the full pass's rows for those positions.
+struct EncoderPrefixCache {
+    // [d_enc, tokens] — the window-aligned prefix of the pass's enc_host.
+    std::vector<float> rows;
+    // [n_mels, frames] — the mel `rows` was computed from.
+    std::vector<float> mel;
+    int32_t            n_mels = 0;
+    int32_t            frames = 0;  // mel frames covered by `rows`
+    int32_t            tokens = 0;  // after-CNN tokens covered by `rows` (whole windows)
+
+    // What the last pass did, for the trace and the perf breakdown: how many
+    // of its tokens came from the cache and how many it encoded.
+    int32_t reused_tokens  = 0;
+    int32_t encoded_tokens = 0;
+
+    void clear() {
+        rows.clear();
+        mel.clear();
+        n_mels = frames = tokens = 0;
+        reused_tokens = encoded_tokens = 0;
+    }
 };
 
 // Run one full decode pass over `pcm`: mel -> audio encoder -> prefill ->
 // greedy step loop. `suffix_ids` (may be null) is appended after the assistant
 // header. `max_new_tokens` is the generation budget.
+//
+// `enc_cache` (may be null) is the streaming encoder prefix cache described
+// above. Offline callers pass null. A non-null cache is consulted and updated
+// in place; see EncoderPrefixCache for the exactness argument. The environment
+// variable TRANSCRIBE_R2T2_NO_ENC_CACHE=1 disables its use without changing the
+// call, for the A/B that shows both paths produce identical text.
+//
+// `draft_seed` (may be null) is an external speculation seed: a guess at the
+// tokens this pass will emit first, derived by the caller from the previous
+// pass (R2T2 streaming hands over the tokens its last tick deliberately held
+// back, which are what the next tick re-derives — see r2t2-stream.cpp). It is
+// used as the draft for the FIRST verify run only; every later run in the same
+// pass falls back to the 1-gram lookup, because a run only continues past a
+// mismatch, and past the seed there is no such guess left. Acceptance is the
+// same exact-greedy rule as the family's own drafting, so no token is committed
+// that plain stepping would not have produced; the numerics caveat on that loop
+// (no byte-equality with drafts disabled) applies here too. Ignored when empty,
+// and dropped (the pass degrades to plain stepping) when the KV window has no
+// room for the draft columns.
+//
+// `mel_stream`, when non-null and supported by the frontend, switches the mel
+// extraction to the incremental path: the pass recomputes only the frames this
+// tick added and reuses the rest from the caller's state. The result is
+// bit-identical to the batch extraction (tests/mel_unit.cpp is the gate), so it
+// changes cost, not values. Pass the same state object across a stream's ticks
+// and clear it when the stream restarts; leave null for a one-shot pass.
 //
 // Writes only session scratch (mel_buf, enc_host, t_* timers) — never result
 // state, and never frees the scheduler or KV cache. Defined in model.cpp and
@@ -94,7 +196,10 @@ transcribe_status run_decode_pass(transcribe_session *          session,
                                   const transcribe_run_params * params,
                                   const std::vector<int32_t> *  suffix_ids,
                                   int                           max_new_tokens,
-                                  DecodePassResult *            out);
+                                  DecodePassResult *            out,
+                                  const std::vector<int32_t> *  draft_seed = nullptr,
+                                  EncoderPrefixCache *          enc_cache  = nullptr,
+                                  transcribe::MelStreamState *  mel_stream = nullptr);
 
 // ---------------------------------------------------------------------------
 // Model / Context
@@ -144,10 +249,28 @@ struct R2T2StreamState {
     std::vector<float> buffer;
 
     // Every sample ever accepted, never trimmed and never padded: the model's
-    // whole input on every tick. The reference re-encodes this in full instead
-    // of keeping an encoder cache, which is what makes the cadence the only
-    // streaming knob and makes per-tick cost grow with the utterance.
+    // whole input on every tick. The reference re-encodes this in full; here
+    // `enc_cache` carries the finished windows over, so a tick only encodes
+    // what it added (see EncoderPrefixCache). The buffer itself still holds the
+    // whole stream, because the mel front-end's per-utterance normalization and
+    // the LM prompt's audio-token prefix are both defined over all of it.
     std::vector<float> audio_accum;
+
+    // Encoder rows whose windows are already final, and the mel they came
+    // from. A hit is bit-exact and a miss falls back to a full encode, so this
+    // changes per-tick cost only, never output; cleared with the rest of the
+    // stream state.
+    EncoderPrefixCache enc_cache;
+
+    // Mel front-end state: the raw log-mel of every frame this stream has
+    // already produced, so a tick re-runs the STFT + filterbank only over the
+    // frames it added. That cost is otherwise O(stream length) — the front-end
+    // is a pure function of (config, audio), so re-feeding the whole
+    // `audio_accum` re-derives every frame of the utterance on every tick.
+    // Values are unchanged (compute_incremental is bit-identical to the batch
+    // path), so this is a pure cost fix and is cleared with the rest of the
+    // stream state.
+    transcribe::MelStreamState mel_stream;
 
     // Transcription text accumulated so far, tag envelope included — the
     // reference's `raw_decoded`, and the prompt continuation for the next
@@ -176,6 +299,16 @@ struct R2T2StreamState {
     // the envelope itself. Precomputed at stream_begin because resolving it
     // per tick would re-encode the same string for no reason.
     std::vector<int32_t> prompt_seed_ids;
+
+    // Speculation seed for the NEXT tick: the token-space rollback tail of the
+    // last tick — exactly the tokens that tick refused to commit and the next
+    // one therefore re-derives. Measured on this checkpoint it is reproduced
+    // nearly verbatim (~4.5 of 5 tokens, jfk/zh-long, 80-320 ms), so running
+    // the greedy step loop as a verify pass over it costs one graph run where
+    // plain stepping costs ~5.5. Empty when there is no hold-back (k == 0) or
+    // before the first commit path. See decode_tick for how it is rebuilt and
+    // TRANSCRIBE_R2T2_NO_DRAFT for the switch that disables it.
+    std::vector<int32_t> draft_tail;
 
     // Decode ticks that reached the commit path. A tick that ends before the
     // language tag appears does NOT advance this (matching the reference), so

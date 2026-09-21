@@ -108,6 +108,30 @@ struct MelConfig {
     bool nemo_seq_len_ceil = false;
 };
 
+// Streaming state for MelFrontend::compute_incremental(). Opaque to
+// callers except for clear(): it holds the raw (pre-normalization)
+// log-mel of every frame the stream has produced, in a fixed-stride
+// [n_mels, capacity] layout, plus the bookkeeping that decides which
+// frames are final. One state belongs to one stream; clear() resets it,
+// and a config change is detected and restarts it.
+struct MelStreamState {
+    std::vector<float> raw;             // [n_mels, capacity], log10 max(power, 1e-10)
+    int                capacity   = 0;  // column stride of `raw`
+    int                n_mels     = 0;  // latched config identity
+    int                n_fft      = 0;
+    int                hop        = 0;
+    int                win        = 0;
+    int                stable     = 0;    // frames [0, stable) are final and counted
+    int                emitted    = 0;    // frames emitted by the previous call
+    double             stable_max = 0.0;  // max over the raw frames [0, stable)
+
+    void clear() {
+        std::vector<float>().swap(raw);
+        capacity = n_mels = n_fft = hop = win = stable = emitted = 0;
+        stable_max                                               = 0.0;
+    }
+};
+
 // Pure C++ log-mel extractor. Construct once, call compute() any
 // number of times. Thread-safety: const after construction; multiple
 // threads may call compute() concurrently.
@@ -156,6 +180,72 @@ class MelFrontend {
     // Frame count for a given audio length, before calling compute().
     // Matches NeMo: floor(n_samples / hop_length) + 1.
     int n_frames_for(size_t n_samples) const;
+
+    // How many of those frames are *final*: their STFT window lies entirely
+    // inside the audio, so extending the buffer cannot change them.
+    //
+    // compute() emits frames with a centered window: frame t is built from
+    // samples [t*hop - n_fft/2, t*hop + n_fft/2]. Whatever the buffer does not
+    // contain yet comes from the pad, and with pad_mode="reflect" the pad is
+    // the signal reflected at the *current* end — so the last frame or two of
+    // every buffer are provisional and move as soon as more samples arrive.
+    // (pad_mode="constant" pads with zeros, which never move, and "none"
+    // left-aligns the window so it never reads ahead; both make every frame
+    // final.) Streaming consumers that carry features across calls — the
+    // encoder prefix cache in arch/qwen3_asr, which reuses encoder rows across
+    // R2T2 ticks — must cut at this count, not at n_frames_for().
+    int final_frame_count(size_t n_samples) const;
+
+    // ------------------------------------------------------------------
+    // Incremental (streaming) extraction
+    // ------------------------------------------------------------------
+    // compute() is a pure function of (config, audio), so a streaming
+    // caller that appends audio and re-calls it re-derives the whole
+    // utterance every time. The frame loop is the dominant cost of that
+    // (STFT + filterbank per frame), and in an R2T2 tick it is the
+    // difference between a few tens of microseconds and tens of
+    // milliseconds once the utterance is past ~30 s: measured on this
+    // machine, 0.6 ms at 1 s of audio but 26 ms at 35 s, growing without
+    // bound. compute_incremental() keeps the frames it already computed
+    // and pays only for what changed.
+    //
+    // It is not an approximation. Every frame is an independent function
+    // of a bounded input span (frame t reads padded[t*hop, t*hop+n_fft)),
+    // so a frame that is *final* in the sense of final_frame_count() has
+    // a value no longer buffer can change, and is computed exactly once.
+    // The frames that are not final -- at most two, the ones whose
+    // centered window still runs off the end -- are recomputed on every
+    // call, exactly as compute() would. The only cross-frame coupling is
+    // the clamp level: per_utterance takes it from the maximum over the
+    // emitted frames, which is tracked as a running maximum (a rise
+    // re-derives the level of every frame, again exactly as compute()
+    // would), and "global" takes it from a constant. The emitted frames
+    // and the arithmetic are the same expressions as compute()'s.
+    // tests/mel_unit.cpp holds the equality gate: over a growing buffer,
+    // every call must be bit-identical to compute() over the same prefix.
+    //
+    // Supported configs are the ones whose normalization is per-frame plus a
+    // scalar level: normalize "per_utterance", "global" or "none", any
+    // padding mode except "none", and a non-pow2 n_fft (the fused per-frame
+    // path). supports_incremental() reports it; when false the caller must
+    // fall back to compute(), whose contract is unchanged, and
+    // compute_incremental() returns TRANSCRIBE_ERR_NOT_IMPLEMENTED rather
+    // than quietly doing the slow thing.
+    bool supports_incremental() const;
+
+    // Append `n_samples` of pcm (the whole buffer so far, not the delta)
+    // and emit the normalized mel of its emitted frames. The result is
+    // identical to compute(pcm, n_samples, ..., out_frames = 0).
+    //
+    // `state` is the caller's, so a stream resets by clearing it and no
+    // two streams share an allocation.
+    transcribe_status compute_incremental(MelStreamState &     state,
+                                          const float *        pcm,
+                                          size_t               n_samples,
+                                          std::vector<float> & out_mel,
+                                          int &                out_n_mels,
+                                          int &                out_n_frames,
+                                          int                  n_threads = 0) const;
 
     // Read-only accessors for unit tests. Not part of the runtime
     // API; the goal is to validate the precomputed buffers in

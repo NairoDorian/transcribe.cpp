@@ -58,3 +58,14 @@ with anything else. Each arm loads through the bindings of the checkout that
 owns its library by default (generated bindings are ABI specific, and a foreign
 library fails at import on the first symbol it does not export); `--arm-bindings`
 overrides that when a library lives outside its checkout.
+
+Features gated at run time rather than build time are compared with
+`--arm-env NAME=KEY=VALUE`, which sets an environment variable for one arm only
+so the two arms need not be rebuilt; the gate each arm ran under is recorded in
+the JSON. A gate compared this way proves nothing unless it actually fired — if
+it found no work to do the arms ran identical code and any difference is noise.
+Confirm the gate's own log line appears in the enabled arm and not in the
+disabled one first (`TRANSCRIBE_GRAPH_OPTIMIZER` reports itself only when it
+changed the graph), and use `--reps` of at least 3 for a decision: with two
+repetitions the spread is the difference of two samples and the noise floor it
+implies is far too small.

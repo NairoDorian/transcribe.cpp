@@ -32,3 +32,29 @@ idle machine. `--baseline <summary.json>` checks warm averages and transcript
 parity, with a default 15% timing budget. This short-file smoke does not replace
 WER or long-stream testing. Upstream native stage timers retain upstream's
 definitions; wall time is authoritative across instrumentation differences.
+
+`scripts/bench/report.py --summary <dir>/summary.json` renders any suite summary
+as `report.md` and `report.csv`, including the per-chunk stage columns. It reads
+only the summary, so it renders this branch's and the fork's output alike, and
+the app replay summaries too (the app runner writes the same field names). This
+file is byte identical in this branch, in the fork and in `Handy_benchmarks`, so
+the two sides cannot drift into separate reporting implementations.
+
+```powershell
+uv run --no-project scripts/bench/compare.py `
+  --wav samples/jfk.wav --model <installed.gguf> --backend cpu `
+  --arm upstream=build/bench-native/install/bin/transcribe.dll `
+  --arm fork=../transcribe-fork/build/bench-native/install/bin/transcribe.dll
+```
+
+`compare.py` is the paired A/B runner and is the only thing that may be cited
+for a claim about one tree versus another. `suite.py` runs one library's cases
+back to back, so drift lands entirely inside whichever ran second: Nemotron Q6
+CPU batch read 1090.3 ms here against 1208.4 ms in the fork, an apparent 10.8%
+regression, while the same pair interleaved read 937.2 against 809.3 — the fork
+13.6% faster, with this branch's own number moving 18% between the two runs.
+Use `--baseline` to track this branch over time and `compare.py` to compare it
+with anything else. Each arm loads through the bindings of the checkout that
+owns its library by default (generated bindings are ABI specific, and a foreign
+library fails at import on the first symbol it does not export); `--arm-bindings`
+overrides that when a library lives outside its checkout.

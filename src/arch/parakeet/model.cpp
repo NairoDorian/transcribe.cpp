@@ -1961,8 +1961,9 @@ transcribe_status emit_streaming_chunk(ParakeetSession * pc,
                                        const float *     mt_spk,
                                        const float *     mt_bg,
                                        int               mt_mask_len) {
-    const auto & hp       = pm->hparams;
-    const int    n_layers = static_cast<int>(pm->weights.blocks.size());
+    const int64_t t_chunk_start = ggml_time_us();
+    const auto &  hp            = pm->hparams;
+    const int     n_layers      = static_cast<int>(pm->weights.blocks.size());
 
     ggml_type resolved_kv = GGML_TYPE_COUNT;
     if (pc->kv_type == TRANSCRIBE_KV_TYPE_F32) {
@@ -2033,13 +2034,16 @@ transcribe_status emit_streaming_chunk(ParakeetSession * pc,
     cache_io.pos_proj_len = pc->stream_caches.pos_proj_len;
 
     const bool   mt_supervised = (mt_spk != nullptr && mt_bg != nullptr);
+    const int64_t t_graph_build_start = ggml_time_us();
     EncoderBuild eb = build_encoder_graph_streaming(pc->compute_ctx, pm->weights, hp, n_mel_chunk_frames,
                                                     drop_extra_pre_encoded, cache_io, resolved_kv, pm->backend.c_str(),
                                                     /*spk_supervision=*/mt_supervised);
     if (eb.out == nullptr || eb.graph == nullptr) {
         return TRANSCRIBE_ERR_GGUF;
     }
+    const int64_t t_graph_build_us = ggml_time_us() - t_graph_build_start;
 
+    const int64_t t_sched_start = ggml_time_us();
     if (pc->sched == nullptr) {
         pc->sched = ggml_backend_sched_new(pm->plan.scheduler_list.data(), nullptr,
                                            static_cast<int>(pm->plan.scheduler_list.size()),
@@ -2054,6 +2058,7 @@ transcribe_status emit_streaming_chunk(ParakeetSession * pc,
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet stream: alloc_graph failed");
         return TRANSCRIBE_ERR_BACKEND;
     }
+    const int64_t t_sched_us = ggml_time_us() - t_sched_start;
 
     // Upload mel chunk. Row-major [n_mels, n_mel_chunk_frames] is
     // byte-identical to ggml ne=[n_mel_chunk_frames, n_mels, 1, 1].
@@ -2122,17 +2127,21 @@ transcribe_status emit_streaming_chunk(ParakeetSession * pc,
     }
 
     // Thread count (same recipe as offline run()).
-    transcribe::configure_sched_n_threads(pc->sched, pc->n_threads);
+    const int compute_threads = transcribe::configure_sched_n_threads(pc->sched, pc->n_threads);
 
+    const int64_t t_compute_start = ggml_time_us();
     if (const ggml_status gs = ggml_backend_sched_graph_compute(pc->sched, eb.graph); gs != GGML_STATUS_SUCCESS) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet stream: graph_compute failed (%d)", static_cast<int>(gs));
         return TRANSCRIBE_ERR_GGUF;
     }
+    const int64_t t_compute_us = ggml_time_us() - t_compute_start;
 
     // Read encoder output back to host.
     const int d_enc = static_cast<int>(eb.out->ne[0]);
     pc->enc_host.resize(static_cast<size_t>(d_enc) * static_cast<size_t>(T_q_new));
+    const int64_t t_readback_start = ggml_time_us();
     ggml_backend_tensor_get(eb.out, pc->enc_host.data(), 0, pc->enc_host.size() * sizeof(float));
+    const int64_t t_readback_us = ggml_time_us() - t_readback_start;
 
     // Dump enc_out + cache_out, BEFORE the cache rotation so the
     // cache_out tensors are still the freshly-computed ones.
@@ -2162,6 +2171,7 @@ transcribe_status emit_streaming_chunk(ParakeetSession * pc,
     // last_k/last_v (channel_out is null); the recompute path rotates
     // last_channel. The time (conv) cache rotates in both. An unallocated
     // cache_out here is a builder bug.
+    const int64_t t_cache_rot_start = ggml_time_us();
     const bool kv_mode = !cache_io.k_out.empty();
     for (int i = 0; i < n_layers; ++i) {
         ggml_tensor * ch      = cache_io.channel_out[i];
@@ -2187,6 +2197,7 @@ transcribe_status emit_streaming_chunk(ParakeetSession * pc,
         ggml_backend_tensor_copy(tm, pc->stream_caches.last_time[i]);
     }
     pc->stream_caches.channel_len = std::min(T_cache, pc->stream_caches.channel_len + T_q_new);
+    const int64_t t_cache_rot_us = ggml_time_us() - t_cache_rot_start;
 
     // Refill the rel-pos projection memo on geometry change. Must come
     // after the cache rotation: ensure_pos_proj_cache resets the
@@ -2214,12 +2225,37 @@ transcribe_status emit_streaming_chunk(ParakeetSession * pc,
     pc->stream_caches.chunk_step += 1;
 
     // Run streaming RNN-T decoder on the new encoder frames.
+    const int64_t t_decoder_start = ggml_time_us();
+    // Encoder-side stage accounting: everything from the start of the chunk up
+    // to (but excluding) the decoder. Upstream folded the whole emit loop into
+    // t_encode_us from the caller, which absorbed the decoder, cache rotation
+    // and scheduler allocation and left t_decode_us at zero.
+    pc->t_encode_us += t_decoder_start - t_chunk_start;
     if (const transcribe_status st = decode_rnnt_greedy_streaming(
             pm->host_decoder, pc->enc_host.data(), T_q_new, d_enc, pc->stream_dec_state.lstm_state,
             pc->stream_dec_state.prev_token_id, static_cast<int>(pc->stream_dec_state.frame_offset), pc->n_threads,
             pc->raw_tokens);
         st != TRANSCRIBE_OK) {
         return st;
+    }
+    const int64_t t_decoder_us = ggml_time_us() - t_decoder_start;
+    pc->t_decode_us += t_decoder_us;
+
+    // Profiling: emit per-chunk streaming breakdown.
+    {
+        const int64_t t_total_us = ggml_time_us() - t_chunk_start;
+        const int64_t t_other_us =
+            t_total_us - t_graph_build_us - t_sched_us - t_compute_us - t_readback_us - t_cache_rot_us - t_decoder_us;
+        log_msg(TRANSCRIBE_LOG_LEVEL_DEBUG,
+                "parakeet stream chunk %d: total=%.1f ms  "
+                "graph_build=%.1f ms  sched_alloc=%.1f ms  "
+                "graph_compute=%.1f ms  readback=%.1f ms  "
+                "cache_rot=%.1f ms  decoder=%.1f ms  "
+                "other=%.1f ms (backend=%s, threads=%d, T_q=%lld, T_cache=%lld, kv_mode=%d, n_layers=%d)",
+                step_num, t_total_us / 1000.0, t_graph_build_us / 1000.0, t_sched_us / 1000.0, t_compute_us / 1000.0,
+                t_readback_us / 1000.0, t_cache_rot_us / 1000.0, t_decoder_us / 1000.0, t_other_us / 1000.0,
+                pm->backend.c_str(), compute_threads, (long long) T_q_new, (long long) T_cache, kv_mode ? 1 : 0,
+                n_layers);
     }
 
     pc->stream_dec_state.frame_offset += T_q_new;
@@ -3119,12 +3155,13 @@ transcribe_status stream_feed(transcribe_session *       session,
         pc->stream_caches.is_first_chunk = false;
         (void) pre_encode_cache_size;
 
-        const int64_t t_enc_start = ggml_time_us();
+        // Stage accounting now lives inside emit_streaming_chunk, which
+        // separates encoder work from the RNN-T decoder. Measuring the whole
+        // call here would fold the decoder back into t_encode_us.
         if (const transcribe_status st = emit_streaming_chunk(pc, pm, chunk.data(), mel_fed, drop_extra, chunk_advance);
             st != TRANSCRIBE_OK) {
             return st;
         }
-        pc->t_encode_us += ggml_time_us() - t_enc_start;
     }
 
     // Rebuild the partial transcript from committed tokens.
@@ -3234,8 +3271,12 @@ transcribe_status stream_finalize(transcribe_session * session, transcribe_strea
     if (!pc->stream_pcm_buffer.empty()) {
         int                     mel_n_mels   = 0;
         int                     mel_n_frames = 0;
+        // Finalization mel is part of the stream's mel cost; upstream omitted
+        // it, so a stream's mel_ms never covered the tail recompute.
+        const int64_t           t_mel_start  = ggml_time_us();
         const transcribe_status mst = pm->mel->compute(pc->stream_pcm_buffer.data(), pc->stream_pcm_buffer.size(),
                                                        pc->mel_buf, mel_n_mels, mel_n_frames, pc->n_threads);
+        pc->t_mel_us += ggml_time_us() - t_mel_start;
         if (mst != TRANSCRIBE_OK && mst != TRANSCRIBE_ERR_INVALID_ARG) {
             return mst;
         }

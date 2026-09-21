@@ -39,6 +39,15 @@ PROFILES = {
     "parakeet": ("models--handy-computer--parakeet-tdt-0.6b-v3-gguf", ["*Q4_K_M.gguf", "*Q8_0.gguf"]),
 }
 
+# Streaming feed sizes per profile, in milliseconds of PCM per feed; 0 means
+# batch only. Coverage is governed by the model's declared capability, not by
+# preference: the runtime derives caps.supports_streaming from encoder
+# attention geometry (src/arch/parakeet/model.cpp) and gates stream_begin on it
+# (src/transcribe.cpp), so an offline checkpoint such as parakeet-tdt-0.6b-v3
+# has no streaming path to measure at all — asking for one fails rather than
+# producing a number. Add a profile here only when its GGUF streams.
+STREAM_MODES = {"nemotron": [0, 16]}
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--library", required=True, type=Path)
@@ -74,7 +83,7 @@ def main():
         if not selected:
             report["missing"].append(name)
         for filename, model in selected.items():
-            modes = [0, 16] if name == "nemotron" else [0]
+            modes = STREAM_MODES.get(name, [0])
             for backend in ("cpu", "cuda"):
                 for chunk in modes:
                     case = f"{model.stem}.{backend}.{'stream' if chunk else 'batch'}"
@@ -99,6 +108,10 @@ def main():
                             raise ValueError("measured runs produced different transcripts")
                         row = dict(case=case, warm_mean_ms=data["warm_mean_ms"],
                                    warm_mean_rtf=data["warm_mean_rtf"], timings=data["warm_mean_timings"],
+                                   # Absent when the case ran through an upstream ABI whose
+                                   # pipeline.py predates per-stage capture; the report
+                                   # renders the column blank rather than failing.
+                                   stage_metrics=data.get("stage_metrics"),
                                    build_id=data["build_id"], backend=data["backend"],
                                    model_bytes=data["model_bytes"], audio_ms=data["audio_ms"],
                                    language=data["language"], threads=data["threads"],
@@ -124,6 +137,13 @@ def main():
                         report["failures"].append(dict(case=case, error=str(error)))
                     (args.output/"summary.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
     (args.output/"summary.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
+    # Human-readable forms of the same data. A reporter failure must not hide
+    # the measurements, so the summary above is already durable.
+    try:
+        subprocess.run(["uv", "run", "--no-project", str(Path(__file__).with_name("report.py")),
+                        "--summary", str(args.output/"summary.json")], check=True)
+    except (subprocess.SubprocessError, OSError) as error:
+        print(f"report.py failed: {error}", file=sys.stderr)
     return 1 if report["failures"] or not report["cases"] else 0
 
 if __name__ == "__main__":

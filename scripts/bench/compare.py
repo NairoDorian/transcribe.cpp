@@ -1,343 +1,191 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.11"
-# dependencies = []
-# ///
-"""
-compare.py - compare bench reports and show a timing delta table.
+"""Paired, interleaved A/B of two native libraries on one case.
 
-Takes two explicit sets of report files: baseline(s) and candidate(s).
-Each set is merged by (variant, backend, quant, sample) key; if the
-same cell appears in multiple files within a set, the last one wins.
-The merged baseline is diffed against the merged candidate.
+suite.py answers "how fast is this tree?"; this answers "is arm B slower than
+arm A, beyond noise?". Those need different designs. A suite runs one arm's
+cases back to back, so machine drift (thermal, allocator state, a background
+build) lands entirely inside the arm that happened to run second. Here the arms
+alternate within each repetition and the starting arm rotates, so drift is
+shared between them.
+
+Each arm loads through the Python bindings of the checkout that owns its
+library. The bindings are generated against that checkout's ABI, so a foreign
+library fails inside the generated module at import time; that is a hard error,
+never something to silently time.
+
+The verdict is deliberately conservative. A difference is only called a
+regression when it exceeds the larger arm's own within-arm spread, which is the
+noise floor this case actually exhibits rather than a guess. Anything smaller is
+reported as within-noise and must not be used to justify a change.
 
 Usage:
-    uv run scripts/bench/compare.py \\
-        --baseline reports/perf/apple-m4-max/pre-refactor_parakeet-tdt-0.6b-v3_metal.json \\
-        --candidate reports/perf/apple-m4-max/post-refactor_parakeet-tdt-0.6b-v3_metal.json
-
-    # Multiple files per side (e.g. shell glob):
-    uv run scripts/bench/compare.py \\
-        --baseline reports/perf/apple-m4-max/pre-refactor_*.json \\
-        --candidate reports/perf/apple-m4-max/post-refactor_*.json
-
-    # Regression gate with threshold:
-    uv run scripts/bench/compare.py --threshold 5.0 \\
-        --baseline reports/perf/apple-m4-max/baseline_*.json \\
-        --candidate reports/perf/apple-m4-max/candidate_*.json
-
-Output:
-
-    baseline: pre-refactor (abc1234)  vs  post-refactor (def5678)
-
-    variant                backend  quant    sample   wall_ms(A)  wall_ms(B)   delta%  status
-    parakeet-tdt-0.6b-v3   metal    f16      jfk         120.3       115.1      -4.3%  ok
-    parakeet-tdt-0.6b-v3   metal    q8_0     jfk         105.2       108.7      +3.3%  ok
-    Qwen3-ASR-0.6B         metal    q8_0     dots        340.1       289.4     -14.9%  ok
-
-Options:
-    --threshold PCT     fail (exit 1) if any cell regresses by more than PCT%
-                        (default: disabled). Only wall_ms regressions count.
-    --fail-on-missing   fail (exit 1) if any cell is in baseline but not in
-                        candidate, or vice versa.
-    --key FIELD         timing field to compare (default: wall_ms)
-    --quiet             only print regressions and new/gone cells
+    uv run --no-project scripts/bench/compare.py \
+        --wav samples/jfk.wav --model <installed.gguf> --backend cpu \
+        --arm ref=../transcribe_benchmarks/build/bench-native/install/bin/transcribe.dll \
+        --arm fork=build/bench-native/install/bin/transcribe.dll
 """
-
 from __future__ import annotations
 
 import argparse
 import json
+import statistics
+import subprocess
 import sys
-from dataclasses import dataclass
+import tempfile
 from pathlib import Path
 
 
-@dataclass(slots=True)
-class RunKey:
-    variant: str
-    backend: str
-    quant: str
-    sample: str
+def tree_bindings(library):
+    """Bindings of the checkout that owns `library`, or None when not found.
 
-    def __hash__(self) -> int:
-        return hash((self.variant, self.backend, self.quant, self.sample))
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, RunKey):
-            return NotImplemented
-        return (self.variant == other.variant and self.backend == other.backend
-                and self.quant == other.quant and self.sample == other.sample)
-
-
-@dataclass(slots=True)
-class RunValue:
-    wall_ms: float
-    encode_ms: float
-    decode_ms: float
-    total_ms: float
-    mel_ms: float
-    rtf: float
-
-
-def parse_quant_from_path(model_path: str) -> str:
-    """Extract quant from a model path like 'parakeet-tdt-0.6b-v2-Q4_K_M.gguf'."""
-    name = Path(model_path).name
-    if not name.endswith(".gguf"):
-        return "unknown"
-    stem = name[: -len(".gguf")]
-    if "-" not in stem:
-        return "unknown"
-    return stem.rsplit("-", 1)[1].lower()
-
-
-def extract_mean(summary: dict, field: str) -> float:
-    """Get the mean value from a summary stat block."""
-    block = summary.get(field)
-    if isinstance(block, dict):
-        return float(block.get("mean", 0.0))
-    return 0.0
-
-
-def sample_stem(sample_path: str) -> str:
-    """Extract sample stem from path."""
-    return Path(sample_path).stem
-
-
-def load_report(path: Path) -> tuple[str, str, dict[RunKey, RunValue]]:
-    """Load a bench report (driver-v1 aggregate or raw bench-v1/v2).
-
-    Returns (label, git_sha, {RunKey: RunValue}).
+    A library under `<tree>/build/.../transcribe.dll` belongs to `<tree>`, and
+    `<tree>/bindings/python/src` is generated for its ABI. Loading another
+    tree's library through them fails on the first symbol it does not export.
     """
-    data = json.loads(path.read_text())
-    schema = data.get("schema", "")
-
-    runs: dict[RunKey, RunValue] = {}
-
-    if schema == "transcribe-bench-driver-v1":
-        label = data.get("name") or path.stem
-        git_sha = data.get("git_sha", "unknown")
-        # New reports store `variant` (e.g. "Qwen3-ASR-0.6B"); legacy
-        # reports stored `family` (e.g. "parakeet"). Accept either so
-        # compare works across the schema change.
-        variant = data.get("variant") or data.get("family") or "unknown"
-        backend = data.get("backend", "unknown")
-
-        for r in data.get("runs", []):
-            summary = r.get("summary", {})
-            quant = parse_quant_from_path(r.get("model_path", ""))
-            sample = sample_stem(r.get("sample_path", ""))
-            rtf = r.get("rtf_wall_mean") or r.get("rtf_mean") or 0.0
-            key = RunKey(variant=variant, backend=backend, quant=quant,
-                         sample=sample)
-            runs[key] = RunValue(
-                wall_ms=extract_mean(summary, "wall_ms"),
-                encode_ms=extract_mean(summary, "encode_ms"),
-                decode_ms=extract_mean(summary, "decode_ms"),
-                total_ms=extract_mean(summary, "total_ms"),
-                mel_ms=extract_mean(summary, "mel_ms"),
-                rtf=float(rtf),
-            )
-
-    elif schema in ("transcribe-bench-v1", "transcribe-bench-v2"):
-        label = path.stem
-        git_sha = "unknown"
-        summary = data.get("summary", {})
-        backend = data.get("backend", "unknown")
-        quant = parse_quant_from_path(data.get("model_path", ""))
-        sample = sample_stem(data.get("sample_path", ""))
-        # Raw bench cells don't carry a variant field; the model path's
-        # parent dir is the canonical variant slug (e.g. "Qwen3-ASR-0.6B").
-        variant = Path(data.get("model_path", "")).parent.name or "unknown"
-        rtf = data.get("rtf_wall_mean") or data.get("rtf_mean") or 0.0
-        key = RunKey(variant=variant, backend=backend, quant=quant,
-                     sample=sample)
-        runs[key] = RunValue(
-            wall_ms=extract_mean(summary, "wall_ms"),
-            encode_ms=extract_mean(summary, "encode_ms"),
-            decode_ms=extract_mean(summary, "decode_ms"),
-            total_ms=extract_mean(summary, "total_ms"),
-            mel_ms=extract_mean(summary, "mel_ms"),
-            rtf=float(rtf),
-        )
-
-    else:
-        print(f"error: {path}: unknown schema {schema!r}", file=sys.stderr)
-        sys.exit(2)
-
-    return label, git_sha, runs
+    for parent in library.parents:
+        candidate = parent / "bindings" / "python" / "src"
+        if (candidate / "transcribe_cpp" / "__init__.py").is_file():
+            return candidate
+    return None
 
 
-def merge_reports(
-    paths: list[Path],
-) -> tuple[str, str, dict[RunKey, RunValue]]:
-    """Load and merge multiple reports into one (label, sha, runs) triple.
+def run_arm(name, library, bindings, args, workdir):
+    """One pipeline.py invocation: 1 warm-up + 2 measured runs, mean returned.
 
-    Last-writer-wins on duplicate keys. Labels and shas are joined
-    with '+' if they differ across files.
+    The child's output is kept rather than discarded: when an arm cannot load,
+    the reason is in there, and a swallowed traceback is indistinguishable from
+    an unexplained crash.
     """
-    labels: list[str] = []
-    shas: list[str] = []
-    merged: dict[RunKey, RunValue] = {}
+    serial = run_arm.serial
+    run_arm.serial += 1
+    output = workdir / f"{name}.{serial}.json"
+    log = workdir / f"{name}.{serial}.log"
+    cmd = ["uv", "run", "--no-project", str(Path(__file__).with_name("pipeline.py")),
+           "--model", str(args.model), "--wav", str(args.wav),
+           "--library", str(library), "--backend", args.backend,
+           "--language", args.language, "--threads", str(args.threads),
+           "--output", str(output)]
+    if args.stream_chunk_ms:
+        cmd += ["--stream-chunk-ms", str(args.stream_chunk_ms)]
+    if args.att_right is not None:
+        cmd += ["--att-right", str(args.att_right)]
+    cmd += ["--bindings", str(bindings)]
+    with log.open("w", encoding="utf-8") as handle:
+        code = subprocess.run(cmd, stdout=handle, stderr=handle).returncode
+    if code:
+        tail = "\n".join(log.read_text(encoding="utf-8", errors="replace").splitlines()[-12:])
+        raise SystemExit(f"arm {name} failed (exit {code}); last lines of {log}:\n{tail}")
+    report = json.loads(output.read_text(encoding="utf-8"))
+    return report["warm_mean_ms"], report["runs"][-1]["text"]
 
-    for p in paths:
-        label, sha, runs = load_report(p)
-        if label not in labels:
-            labels.append(label)
-        if sha not in shas:
-            shas.append(sha)
-        merged.update(runs)
 
-    return "+".join(labels), "+".join(shas), merged
+run_arm.serial = 0
 
 
-def get_field(rv: RunValue, field: str) -> float:
-    return getattr(rv, field, 0.0)
+def median_and_spread(samples):
+    ordered = sorted(samples)
+    return statistics.median(ordered), ordered[-1] - ordered[0]
 
 
-def main() -> int:
-    p = argparse.ArgumentParser(
-        description="Compare bench reports and show timing deltas.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    p.add_argument("--baseline", nargs="+", type=Path, required=True,
-                   help="Baseline bench report JSON file(s)")
-    p.add_argument("--candidate", nargs="+", type=Path, required=True,
-                   help="Candidate bench report JSON file(s)")
-    p.add_argument("--threshold", type=float, default=None,
-                   help="Fail if any cell regresses by more than this %% "
-                        "(e.g. 5.0 for 5%%)")
-    p.add_argument("--fail-on-missing", action="store_true",
-                   help="Fail if any cell is present on one side but not "
-                        "the other (new or gone)")
-    p.add_argument("--key", type=str, default="wall_ms",
-                   choices=["wall_ms", "total_ms", "encode_ms", "decode_ms",
-                            "mel_ms"],
-                   help="Timing field to compare (default: wall_ms)")
-    p.add_argument("--quiet", action="store_true",
-                   help="Only print regressions and new/gone cells")
-    args = p.parse_args()
+def main():
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--model", required=True, type=Path)
+    parser.add_argument("--wav", required=True, type=Path)
+    parser.add_argument("--arm", required=True, action="append", metavar="NAME=LIBRARY",
+                        help="repeatable; the first arm is the baseline")
+    parser.add_argument("--arm-bindings", action="append", metavar="NAME=PATH",
+                        help="override the auto-detected bindings for one arm")
+    parser.add_argument("--reps", type=int, default=3)
+    parser.add_argument("--backend", default="cpu")
+    parser.add_argument("--threads", type=int, default=0)
+    parser.add_argument("--language", default="auto")
+    parser.add_argument("--stream-chunk-ms", type=int, default=0)
+    parser.add_argument("--att-right", type=int)
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args()
 
-    # Validate paths exist.
-    for side_name, paths in [("baseline", args.baseline),
-                              ("candidate", args.candidate)]:
-        for rp in paths:
-            if not rp.exists():
-                print(f"error: {side_name} file does not exist: {rp}",
-                      file=sys.stderr)
-                return 2
+    overrides = {}
+    for spec in args.arm_bindings or []:
+        name, _, path = spec.partition("=")
+        if not name or not path:
+            parser.error(f"--arm-bindings must be NAME=PATH, got {spec!r}")
+        overrides[name] = Path(path).resolve()
+    arms = []
+    for spec in args.arm:
+        name, _, library = spec.partition("=")
+        if not name or not library:
+            parser.error(f"--arm must be NAME=LIBRARY, got {spec!r}")
+        path = Path(library)
+        if not path.is_file():
+            parser.error(f"library not found: {path}")
+        bindings = overrides.get(name) or tree_bindings(path.resolve())
+        if bindings is None:
+            parser.error(f"no bindings found for arm {name}; "
+                         f"pass --arm-bindings {name}=<checkout>/bindings/python/src")
+        arms.append((name, path.resolve(), bindings))
+    if args.reps < 2:
+        parser.error("--reps must be at least 2; with one repetition there is no noise estimate")
 
-    # Merge each side.
-    base_label, base_sha, base_runs = merge_reports(args.baseline)
-    cand_label, cand_sha, cand_runs = merge_reports(args.candidate)
+    samples = {name: [] for name, _, _ in arms}
+    texts = {name: set() for name, _, _ in arms}
+    with tempfile.TemporaryDirectory() as tmp:
+        workdir = Path(tmp)
+        for rep in range(args.reps):
+            # Rotate the starting arm so no arm is always measured first.
+            for offset in range(len(arms)):
+                name, library, bindings = arms[(rep + offset) % len(arms)]
+                value, text = run_arm(name, library, bindings, args, workdir)
+                samples[name].append(value)
+                texts[name].add(text)
+                print(f"rep {rep + 1}/{args.reps} {name}: {value:.1f} ms", file=sys.stderr, flush=True)
 
-    print(f"\nbaseline: {base_label} ({base_sha})"
-          f"  vs  {cand_label} ({cand_sha})")
-    print(f"comparing: {args.key}\n")
+    stats = {name: median_and_spread(values) for name, values in samples.items()}
+    baseline_name = arms[0][0]
+    baseline_median, baseline_spread = stats[baseline_name]
+    result = {"case": str(args.model.name), "backend": args.backend, "reps": args.reps,
+              "policy": "interleaved arms, rotating start; per arm 1 warm-up + 2 measured runs",
+              "arms": {name: {"median_ms": stats[name][0], "spread_ms": stats[name][1],
+                              "samples_ms": samples[name],
+                              "transcripts": len(texts[name])} for name, _, _ in arms}}
 
-    field = args.key
+    print(f"\ncase: {args.model.name}  backend={args.backend}  reps={args.reps}")
+    print(f"{'arm':<12}{'median ms':>12}{'spread ms':>12}{'vs base':>10}{'transcripts':>13}")
+    for name, _, _ in arms:
+        median, spread = stats[name]
+        ratio = median / baseline_median
+        result["arms"][name]["ratio_to_baseline"] = ratio
+        print(f"{name:<12}{median:>12.1f}{spread:>12.1f}{ratio:>10.3f}{len(texts[name]):>13}")
 
-    # Collect all keys from both sides.
-    all_keys = sorted(
-        base_runs.keys() | cand_runs.keys(),
-        key=lambda k: (k.variant, k.backend, k.quant, k.sample),
-    )
+    parity = {name: len(texts[name]) for name, _, _ in arms}
+    result["transcript_parity"] = parity
+    differing = [name for name, count in parity.items() if count > 1]
+    if differing:
+        result["transcript_mismatch"] = differing
+        print(f"\nWARNING: {', '.join(differing)} produced more than one transcript; "
+              "timings for that arm are not comparable")
+    elif len({next(iter(texts[name])) for name, _, _ in arms}) > 1:
+        result["arms_disagree"] = True
+        print("\nNOTE: arms produced different transcripts; the timings are NOT a "
+              "like-for-like comparison. Inspect the text before reading anything into these numbers.")
 
-    header = ("variant", "backend", "quant", "sample",
-              f"{field}(A)", f"{field}(B)", "delta%", "status")
-    rows: list[tuple[str, ...]] = []
-    regressions: list[tuple[RunKey, float]] = []
-    missing_cells: list[tuple[RunKey, str]] = []  # (key, "new" | "gone")
-
-    for key in all_keys:
-        bv = base_runs.get(key)
-        cv = cand_runs.get(key)
-
-        if bv is None:
-            rows.append((key.variant, key.backend, key.quant, key.sample,
-                         "-", f"{get_field(cv, field):.1f}", "new", "new"))
-            missing_cells.append((key, "new"))
-            continue
-        if cv is None:
-            rows.append((key.variant, key.backend, key.quant, key.sample,
-                         f"{get_field(bv, field):.1f}", "-", "gone", "gone"))
-            missing_cells.append((key, "gone"))
-            continue
-
-        a = get_field(bv, field)
-        b = get_field(cv, field)
-        if a > 0:
-            delta_pct = ((b - a) / a) * 100.0
+    print()
+    for name, _, _ in arms[1:]:
+        median, spread = stats[name]
+        ratio = median / baseline_median
+        noise = max(spread, baseline_spread) / baseline_median
+        if ratio > 1 + noise:
+            verdict = f"SLOWER than {baseline_name} beyond noise ({noise * 100:.1f}%)"
+        elif ratio < 1 - noise:
+            verdict = f"faster than {baseline_name} beyond noise ({noise * 100:.1f}%)"
         else:
-            delta_pct = 0.0
+            verdict = f"within noise ({noise * 100:.1f}%)"
+        result["arms"][name]["verdict"] = verdict
+        print(f"{name} vs {baseline_name}: {ratio:.3f}  -> {verdict}")
 
-        # Positive delta = regression (slower), negative = improvement.
-        status = "ok"
-        if args.threshold is not None and delta_pct > args.threshold:
-            status = "REGRESSED"
-            regressions.append((key, delta_pct))
-
-        delta_str = f"{delta_pct:+.1f}%"
-        rows.append((key.variant, key.backend, key.quant, key.sample,
-                     f"{a:.1f}", f"{b:.1f}", delta_str, status))
-
-    if not rows:
-        print("(no matching cells)")
-        return 0
-
-    # Print table.
-    widths = [max(len(header[j]),
-                  max((len(row[j]) for row in rows), default=0))
-              for j in range(len(header))]
-
-    def fmt_row(row: tuple[str, ...]) -> str:
-        parts = [row[j].ljust(widths[j]) if j < 4
-                 else row[j].rjust(widths[j])
-                 for j in range(len(row))]
-        return "  " + "   ".join(parts)
-
-    if not args.quiet:
-        print(fmt_row(header))
-        print("  " + "-" * (sum(widths) + 3 * (len(widths) - 1)))
-
-    for row in rows:
-        is_notable = row[7] in ("REGRESSED", "new", "gone")
-        if args.quiet and not is_notable:
-            continue
-        print(fmt_row(row))
-
-    # Summary.
-    n_cells = sum(1 for k in all_keys
-                  if k in base_runs and k in cand_runs)
-    exit_code = 0
-
-    if regressions:
-        print(f"\n{len(regressions)} regression(s) exceed "
-              f"threshold {args.threshold:.1f}%:")
-        for key, pct in regressions:
-            print(f"  {key.variant}/{key.backend}/{key.quant}/{key.sample}"
-                  f": {pct:+.1f}%")
-        exit_code = 1
-
-    if missing_cells:
-        new_count = sum(1 for _, kind in missing_cells if kind == "new")
-        gone_count = sum(1 for _, kind in missing_cells if kind == "gone")
-        parts = []
-        if new_count:
-            parts.append(f"{new_count} new")
-        if gone_count:
-            parts.append(f"{gone_count} gone")
-        print(f"\n{', '.join(parts)} cell(s) between baseline and candidate")
-        if args.fail_on_missing:
-            exit_code = 1
-
-    if exit_code == 0:
-        detail = ""
-        if args.threshold is not None:
-            detail += f" (threshold {args.threshold:.1f}%)"
-        print(f"\n{n_cells} cell(s) compared, no regressions{detail}")
-
-    return exit_code
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    return 0
 
 
 if __name__ == "__main__":

@@ -435,8 +435,21 @@ bool has_decodable_audio(const QwenAsrModel * cm, const std::vector<float> & aud
     return cm->mel->n_frames_for(audio.size()) >= 2;
 }
 
-// Advance the stream by consuming whole chunks out of st.buffer. Shared by feed
+// Advance the stream by consuming the buffered audio. Shared by feed
 // (non-final) and finalize (final, and drains a partial trailing chunk).
+//
+// One tick takes every whole chunk that is buffered, not one chunk per tick.
+// A tick re-encodes and re-prefills the whole accumulated utterance, so its
+// cost is fixed by how much audio it covers and barely moves with how many
+// chunks it advances; running a tick per buffered chunk therefore pays that
+// cost once per chunk to derive text that the tick over the last of them
+// supersedes outright (each tick re-decodes from the same held-back stable
+// prefix, so an intermediate one is a strictly weaker version of the next).
+// Taking the backlog in one tick is the same text for a fraction of the work,
+// and it is what lets a caller whose cadence the machine cannot sustain fall
+// behind by a bounded lag — one tick's worth — instead of by a lag that grows
+// with the utterance, which is what "the stream is slow" looks like from the
+// outside: text arrives far behind the speaker and stops late after they do.
 transcribe_status drain_chunks(QwenAsrSession * cc, bool final_flush, transcribe_stream_update * update) {
     auto *            cm      = static_cast<QwenAsrModel *>(cc->model);
     R2T2StreamState & st      = cc->r2t2;
@@ -444,16 +457,15 @@ transcribe_status drain_chunks(QwenAsrSession * cc, bool final_flush, transcribe
     bool              changed = false;
     transcribe_status status  = TRANSCRIBE_OK;
 
-    while (true) {
-        const bool whole_chunk = st.buffer.size() >= chunk;
-        // On a final flush a partial trailing chunk is taken as-is: the
-        // utterance has ended, so the remaining samples are all there is.
-        if (!whole_chunk && !(final_flush && !st.buffer.empty())) {
+    while (!st.buffer.empty()) {
+        const size_t whole = (st.buffer.size() / chunk) * chunk;
+        // A non-final tick needs a whole chunk before it can advance at all; a
+        // final flush takes whatever is left, partial chunk included, because
+        // the utterance has ended and the remaining samples are all there is.
+        if (whole == 0 && !final_flush) {
             break;
         }
-        // On a non-final tick the buffer is known to hold at least one whole
-        // chunk; on a final flush it may hold less.
-        const size_t take = whole_chunk ? chunk : st.buffer.size();
+        const size_t take = final_flush ? st.buffer.size() : whole;
 
         st.audio_accum.insert(st.audio_accum.end(), st.buffer.begin(),
                               st.buffer.begin() + static_cast<ptrdiff_t>(take));
@@ -495,9 +507,8 @@ transcribe_status drain_chunks(QwenAsrSession * cc, bool final_flush, transcribe
                 st.text.empty() ? 0u : static_cast<size_t>(100 * st.committed_bytes / st.text.size()),
                 static_cast<long long>(tick_us), final_flush ? " final" : "");
 
-        // One tick per drain on a final flush (there is no next tick to make
-        // progress with) and only as many whole chunks as are buffered
-        // otherwise, so the loop's own condition ends it; nothing to break on.
+        // The loop needs no break of its own: it ends when the buffer holds
+        // less than a whole chunk (non-final) or is empty (final flush).
     }
 
     if (update != nullptr) {

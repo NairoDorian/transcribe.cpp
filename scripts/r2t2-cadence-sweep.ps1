@@ -22,6 +22,12 @@ param(
     [string]   $Wav        = "samples\jfk.wav",
     [string]   $Backend    = "cuda",
     [int[]]    $Cadences   = @(80, 160, 320, 640, 1280, 2000),
+    # How much audio each feed call carries: 0 = one chunk (a caller that keeps
+    # up, and the case the cadence curve is about), > 0 = that many ms, i.e. a
+    # real-time client whose producer ran ahead of the decoder and which hands
+    # the backlog over in one call. Same transcript at every setting is the
+    # gate; the wall time is the measurement.
+    [int[]]    $FeedMs     = @(0),
     [int]      $Runs       = 3,
     [string]   $Exe        = "build\maxx-cuda-graphs\bin\transcribe-cli.exe",
     [string]   $Reference  = ""
@@ -39,13 +45,15 @@ $noise = 'CUDA Graph|graph_warmup|ggml_cuda_init|Device 0|load_backend|dynamic a
 
 $results = @()
 foreach ($ms in $Cadences) {
+  foreach ($feedMs in $FeedMs) {
+    $feedArg = if ($feedMs -gt 0) { @("--stream-feed-ms", "$feedMs") } else { @() }
     # NOT `$runs`: PowerShell variable names are case-insensitive, so that
     # would alias the [int]$Runs parameter and fail on array assignment.
     $armRuns = @()
     for ($i = 1; $i -le $Runs; $i++) {
-        $log = Join-Path $env:TEMP "r2t2-sweep-$ms-$i.log"
+        $log = Join-Path $env:TEMP "r2t2-sweep-$ms-$feedMs-$i.log"
         $sw  = [System.Diagnostics.Stopwatch]::StartNew()
-        & $Exe -m $Model $Wav --backend $Backend --stream-chunk-ms $ms --quiet > $log 2>&1
+        & $Exe -m $Model $Wav --backend $Backend --stream-chunk-ms $ms @feedArg --quiet > $log 2>&1
         $code = $LASTEXITCODE
         $sw.Stop()
         $lines = Get-Content $log | Where-Object { $_ -notmatch $noise }
@@ -59,7 +67,9 @@ foreach ($ms in $Cadences) {
         # cost. Parsing it here would make every cadence look identical.
         $wallLine = ($lines | Where-Object { $_ -match 'stream-wall:' } | Select-Object -First 1)
         $wallMs   = if ($wallLine -and $wallLine -match 'stream-wall:\s+([0-9.]+) ms') { [double]$Matches[1] } else { 0 }
-        $wallX    = if ($wallLine -and $wallLine -match '\(([0-9.]+)x realtime\)') { [double]$Matches[1] } else { 0 }
+        # The audio duration the CLI measured, so the realtime column is right
+        # for whatever $Wav was passed rather than assuming the 11 s default.
+        $audioS   = if ($wallLine -and $wallLine -match 'for ([0-9.]+) s audio') { [double]$Matches[1] } else { 0 }
         $feedLine = ($lines | Where-Object { $_ -match 'stream-feeds:' } | Select-Object -First 1)
         $feedMax  = if ($feedLine -and $feedLine -match 'max=([0-9.]+) ms') { [double]$Matches[1] } else { 0 }
         $headLine = ($lines | Where-Object { $_ -match 'stream-headroom:' } | Select-Object -First 1)
@@ -74,7 +84,7 @@ foreach ($ms in $Cadences) {
 
         $armRuns += [pscustomobject]@{
             Run = $i; Exit = $code; Text = $text; Lang = $lang
-            WallMs = $wallMs; WallX = $wallX; FeedMaxMs = $feedMax
+            WallMs = $wallMs; AudioS = $audioS; FeedMaxMs = $feedMax
             Headroom = $headroom; Feeds = $feeds
             MeanTickUs = $meanTickUs; LastTickUs = $lastTickUs
             Violation = $violation; Finalize = $finalize
@@ -92,10 +102,10 @@ foreach ($ms in $Cadences) {
     $meanWall = [math]::Round((($warm | Measure-Object WallMs -Average).Average), 1)
     $results += [pscustomobject]@{
         CadenceMs  = $ms
+        FeedMs     = $feedMs
         WarmWallMs = $meanWall
-        # Against the same 11 s reference audio; derived from the mean wall so
-        # the two columns can never disagree.
-        WarmX      = if ($meanWall -gt 0) { [math]::Round(11000.0 / $meanWall, 1) } else { 0 }
+        # Realtime factor of the warm mean, in the units the same run reported.
+        WarmX      = if ($meanWall -gt 0) { [math]::Round(($armRuns[0].AudioS * 1000.0) / $meanWall, 1) } else { 0 }
         Feeds      = $armRuns[0].Feeds
         FeedMaxMs  = [math]::Round((($warm | Measure-Object FeedMaxMs -Average).Average), 1)
         Headroom   = [math]::Round($armRuns[0].Headroom, 2)
@@ -107,16 +117,25 @@ foreach ($ms in $Cadences) {
         MatchesRef = $matchesRef
         RefText    = $text0
     }
+  }
 }
 
 ""
 "=== R2T2 cadence sweep ($Backend, $Runs runs/arm, first discarded as cold) ==="
-$results | Format-Table CadenceMs, WarmWallMs, WarmX, Feeds, FeedMaxMs, Headroom, MeanTickUs, LastTickUs, Lang, AllRunsOk, StableText, MatchesRef -AutoSize
+$results | Format-Table CadenceMs, FeedMs, WarmWallMs, WarmX, Feeds, FeedMaxMs, Headroom, MeanTickUs, LastTickUs, Lang, AllRunsOk, StableText, MatchesRef -AutoSize
 ""
 "reference text: $refText"
 ""
 "reading the table:"
-"  Headroom   = slowest single feed / cadence. <= 1.0 means the model keeps"
+"  FeedMs     = audio handed to each feed call. 0 = one chunk, so the decoder"
+"               is never behind; > 0 = a backlog per feed, which the library"
+"               folds into one tick, and which is what a real-time client does"
+"               when its producer ran ahead."
+"  Feeds      = feed calls, hence decoded ticks. At a backlog cadence that is"
+"               audio/FeedMs, not audio/CadenceMs: the effective cadence is the"
+"               one the machine can sustain, and what the caller asked for is"
+"               the floor rather than the rate."
+"  Headroom   = slowest single feed / audio per feed. <= 1.0 means the model keeps"
 "               up with real time at that chunk size; > 1.0 means it cannot"
 "               sustain live audio there and will fall behind."
 "  LastTickUs vs MeanTickUs = how far per-tick cost has grown by the end of"

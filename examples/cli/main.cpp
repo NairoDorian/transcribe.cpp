@@ -266,6 +266,15 @@ struct cli_args {
     // the loaded model to advertise supports_streaming. Set by
     // --stream-chunk-ms N.
     int stream_chunk_ms      = 0;
+    // Streaming demo: how much audio one transcribe_stream_feed call carries.
+    // 0 = one chunk per feed (the default), which is the back-to-back case: the
+    // library never holds a backlog, so every feed decodes exactly one chunk.
+    // > chunk_ms models a real-time client whose producer ran ahead — the app
+    // feeding 20 ms frames from the audio callback while a tick costs more than
+    // the cadence — where a feed hands over the accumulated backlog at once and
+    // the library folds it into a single tick. Set by --stream-feed-ms N.
+    // Ignored when stream_chunk_ms == 0.
+    int stream_feed_ms       = 0;
     // Parakeet streaming: pick a right-context (lookahead) setting
     // from the model's training menu. -1 = model default (max
     // accuracy / max latency); 0/1/6/13 select the published
@@ -338,6 +347,10 @@ void print_usage(const char * argv0) {
                  "  --stream-chunk-ms N   single-file: drive the streaming API by feeding\n"
                  "                        N-ms PCM slices; requires model to advertise\n"
                  "                        supports_streaming\n"
+                 "  --stream-feed-ms N    single-file streaming: hand N ms of audio to each\n"
+                 "                        feed call instead of one chunk, i.e. what a\n"
+                 "                        real-time client does when its producer ran ahead\n"
+                 "                        of the decoder; default = one chunk per feed\n"
                  "  --stream-att-right R  (parakeet streaming) pick the right-context\n"
                  "                        setting from the model's training menu;\n"
                  "                        nemotron-speech-streaming-en-0.6b accepts\n"
@@ -633,6 +646,16 @@ bool parse_args(int argc, char ** argv, cli_args & out) {
                 std::fprintf(stderr, "error: --stream-chunk-ms must be > 0\n");
                 return false;
             }
+        } else if (a == "--stream-feed-ms") {
+            const char * v = take_value(a.c_str());
+            if (!v) {
+                return false;
+            }
+            out.stream_feed_ms = std::atoi(v);
+            if (out.stream_feed_ms <= 0) {
+                std::fprintf(stderr, "error: --stream-feed-ms must be > 0\n");
+                return false;
+            }
         } else if (a == "--stream-att-right") {
             const char * v = take_value(a.c_str());
             if (!v) {
@@ -703,6 +726,10 @@ bool parse_args(int argc, char ** argv, cli_args & out) {
     }
     if (out.stream_chunk_ms > 0 && out.repeat > 1) {
         std::fprintf(stderr, "error: --stream-chunk-ms cannot be combined with --repeat\n");
+        return false;
+    }
+    if (out.stream_feed_ms > 0 && out.stream_chunk_ms <= 0) {
+        std::fprintf(stderr, "error: --stream-feed-ms requires --stream-chunk-ms\n");
         return false;
     }
     return true;
@@ -1295,10 +1322,15 @@ int main(int argc, char ** argv) {
                     }
                     run_st = transcribe_stream_begin(ctx, &rp, &sp);
                     if (run_st == TRANSCRIBE_OK) {
-                        const int chunk_samples = std::max(1, args.stream_chunk_ms * 16000 / 1000);
-                        size_t    pos           = 0;
+                        const int    chunk_samples = std::max(1, args.stream_chunk_ms * 16000 / 1000);
+                        // A feed carries at least one chunk: below that the
+                        // library has nothing whole to decode and the extra
+                        // calls would only re-split the same audio.
+                        const int    feed_ms       = std::max(args.stream_chunk_ms, args.stream_feed_ms);
+                        const size_t feed_samples  = static_cast<size_t>(feed_ms) * 16000 / 1000;
+                        size_t       pos           = 0;
                         while (pos < pcm.size()) {
-                            const size_t take = std::min<size_t>(static_cast<size_t>(chunk_samples), pcm.size() - pos);
+                            const size_t                    take = std::min<size_t>(feed_samples, pcm.size() - pos);
                             struct transcribe_stream_update upd;
                             transcribe_stream_update_init(&upd);
                             run_st = transcribe_stream_feed(ctx, pcm.data() + pos, static_cast<int>(take), &upd);
@@ -1546,6 +1578,10 @@ int main(int argc, char ** argv) {
 
             const int chunk_samples = std::max(1, args.stream_chunk_ms * 16000 / 1000);
             std::printf("stream: chunk=%d ms (%d samples)\n", args.stream_chunk_ms, chunk_samples);
+            if (args.stream_feed_ms > 0) {
+                std::printf("stream: feed=%d ms (%d samples)\n", args.stream_feed_ms,
+                            args.stream_feed_ms * 16000 / 1000);
+            }
 
             struct transcribe_stream_params sp;
             transcribe_stream_params_init(&sp);
@@ -1611,8 +1647,17 @@ int main(int argc, char ** argv) {
             if (run_st != TRANSCRIBE_OK) {
                 std::fprintf(stderr, "stream_begin: %s\n", transcribe_status_string(run_st));
             } else {
-                size_t      pos    = 0;
-                int         feed_n = 0;
+                size_t       pos          = 0;
+                int          feed_n       = 0;
+                // How much audio one feed carries. With no --stream-feed-ms
+                // this is one chunk, which is what a caller that keeps up looks
+                // like (and what the cadence sweeps measure). A larger value is
+                // a producer that ran ahead of the decoder, so each feed hands
+                // over a backlog the library can fold into one tick; it is the
+                // only way this harness can show the difference coalescing makes,
+                // because a back-to-back caller never builds a backlog.
+                const int    feed_ms      = std::max(args.stream_chunk_ms, args.stream_feed_ms);
+                const size_t feed_samples = static_cast<size_t>(feed_ms) * 16000 / 1000;
                 // Append-only witness. The stream contract says bytes exposed
                 // through committed_text are never rewritten for the life of
                 // the stream, and this is the only place in the tree that can
@@ -1621,10 +1666,10 @@ int main(int argc, char ** argv) {
                 // show up here as a stall, and one that rewrote committed text
                 // would show up as a mismatch. Reset by begin/reset, so the
                 // check is per-stream.
-                std::string committed_witness;
-                bool        committed_violation = false;
+                std::string  committed_witness;
+                bool         committed_violation = false;
                 while (pos < pcm.size()) {
-                    const size_t take = std::min<size_t>(static_cast<size_t>(chunk_samples), pcm.size() - pos);
+                    const size_t                    take = std::min<size_t>(feed_samples, pcm.size() - pos);
                     struct transcribe_stream_update upd;
                     transcribe_stream_update_init(&upd);
                     const auto t_feed = std::chrono::steady_clock::now();
@@ -1719,8 +1764,17 @@ int main(int argc, char ** argv) {
                     // Headroom against the cadence itself: <= 1.0 means the
                     // model keeps up with real time at this chunk size, which
                     // is the condition for the cadence to be usable live.
-                    std::printf("  stream-headroom: slowest feed is %.2fx the %d ms cadence\n",
-                                feed_ms_max / (double) args.stream_chunk_ms, args.stream_chunk_ms);
+                    //
+                    // With --stream-feed-ms the ratio is against the audio a
+                    // feed actually carries, not the cadence: a feed that hands
+                    // over 640 ms may cost more than 80 ms and still keep up,
+                    // because the tick it triggers covers eight chunks' worth of
+                    // audio. Dividing by the cadence there would report a stall
+                    // where there is none.
+                    const int per_feed_ms = std::max(args.stream_chunk_ms, args.stream_feed_ms);
+                    std::printf("  stream-headroom: slowest feed is %.2fx the %d ms %s\n",
+                                feed_ms_max / (double) per_feed_ms, per_feed_ms,
+                                args.stream_feed_ms > 0 ? "of audio per feed" : "cadence");
                 }
                 if (committed_violation) {
                     std::fprintf(stderr,

@@ -181,49 +181,9 @@ void evict_backend_graph_cache(ggml_backend_t backend, struct ggml_cgraph * grap
     }
 }
 
-static std::mutex                  g_active_backends_mutex;
-static std::vector<ggml_backend_t> g_active_backends;
-
-void register_active_backend(ggml_backend_t backend) {
-    if (backend == nullptr) {
-        return;
-    }
-    std::lock_guard<std::mutex> lock(g_active_backends_mutex);
-    if (std::find(g_active_backends.begin(), g_active_backends.end(), backend) == g_active_backends.end()) {
-        g_active_backends.push_back(backend);
-    }
-}
-
-void unregister_active_backend(ggml_backend_t backend) noexcept {
-    if (backend == nullptr) {
-        return;
-    }
-    try {
-        std::lock_guard<std::mutex> lock(g_active_backends_mutex);
-        auto                        it = std::find(g_active_backends.begin(), g_active_backends.end(), backend);
-        if (it != g_active_backends.end()) {
-            g_active_backends.erase(it);
-        }
-    } catch (...) {
-    }
-}
-
-std::vector<ggml_backend_t> get_other_active_backends(ggml_backend_t current) {
-    std::vector<ggml_backend_t> others;
-    std::lock_guard<std::mutex> lock(g_active_backends_mutex);
-    others.reserve(g_active_backends.size());
-    for (ggml_backend_t b : g_active_backends) {
-        if (b != nullptr && b != current) {
-            others.push_back(b);
-        }
-    }
-    return others;
-}
-
-ggml_backend_buffer_t alloc_ctx_tensors_with_reclaim(ggml_backend_t                      backend,
-                                                     ggml_context *                      ctx,
-                                                     const std::vector<ggml_backend_t> & reclaim_from,
-                                                     struct ggml_cgraph *                graph) {
+ggml_backend_buffer_t alloc_ctx_tensors_with_reclaim(ggml_backend_t       backend,
+                                                     ggml_context *       ctx,
+                                                     struct ggml_cgraph * graph) {
     if (backend == nullptr || ctx == nullptr) {
         return nullptr;
     }
@@ -236,27 +196,17 @@ ggml_backend_buffer_t alloc_ctx_tensors_with_reclaim(ggml_backend_t             
         return nullptr;
     }
 
-    // First failure: reclaim memory on the current backend first. If trimming
-    // this backend's own CUDA pools satisfies the allocation, we avoid touching
-    // any concurrently running sibling models in multi-STT mode.
+    // The caller owns this backend. A registry snapshot of sibling backends
+    // neither keeps them alive nor proves they are idle: trimming one can race
+    // inference or teardown. Reclaim only our own idle storage, once.
+    const int64_t started = ggml_time_us();
     trim_backend_pools(backend);
     evict_backend_graph_cache(backend, graph);
     buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
-    if (buffer != nullptr) {
-        return buffer;
-    }
-
-    std::vector<ggml_backend_t> others = reclaim_from;
-    if (others.empty()) {
-        others = get_other_active_backends(backend);
-    }
-    for (ggml_backend_t other : others) {
-        if (other == backend) {
-            continue;  // already done above
-        }
-        trim_backend_pools(other);
-    }
-    return ggml_backend_alloc_ctx_tensors(ctx, backend);
+    log_msg(TRANSCRIBE_LOG_LEVEL_WARN,
+            "backend allocation retry: backend=%s own_pool_reclaim_attempted=1 recovered=%d elapsed_ms=%.3f",
+            ggml_backend_name(backend), buffer != nullptr, (ggml_time_us() - started) / 1000.0);
+    return buffer;
 }
 
 bool is_cpu_backend(ggml_backend_t backend) {
@@ -351,7 +301,6 @@ void safe_backend_free(ggml_backend_t backend) noexcept {
     if (backend == nullptr) {
         return;
     }
-    unregister_active_backend(backend);
     cleanup_cpu_backend_threadpool(backend);
     contained_free("ggml_backend_free", [&] { ggml_backend_free(backend); });
 }

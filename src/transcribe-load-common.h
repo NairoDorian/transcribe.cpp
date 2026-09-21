@@ -35,8 +35,6 @@ struct gguf_context;
 namespace transcribe::load_common {
 
 using transcribe::alloc_ctx_tensors_with_reclaim;
-using transcribe::register_active_backend;
-using transcribe::unregister_active_backend;
 
 // True when `dev` is a Metal device with no simdgroup matrix multiply (below
 // MTLGPUFamilyApple7), which silently produces garbage transcripts (Handy

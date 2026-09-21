@@ -295,7 +295,8 @@ transcribe_status decode_tick(QwenAsrSession * cc, QwenAsrModel * cm, bool final
     const transcribe_status decode_status = run_decode_pass(
         cc, st.audio_accum.data(), static_cast<int>(st.audio_accum.size()),
         /*params=*/nullptr, suffix_ids.empty() ? nullptr : &suffix_ids, k_max_new_tokens, &pass,
-        draft_enabled() && !st.draft_tail.empty() ? &st.draft_tail : nullptr, &st.enc_cache, &st.mel_stream);
+        draft_enabled() && !st.draft_tail.empty() ? &st.draft_tail : nullptr, &st.enc_cache, &st.mel_stream,
+        /*kv_reuse=*/true);
     if (decode_status != TRANSCRIBE_OK) {
         return decode_status;
     }

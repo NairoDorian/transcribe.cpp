@@ -52,27 +52,45 @@ struct DecoderDumps {
 };
 
 struct PrefillBuild {
-    ggml_tensor * input_ids_in = nullptr;  // [T_prompt] i32 (for dec.token_emb dump)
+    ggml_tensor * input_ids_in = nullptr;  // [T_graph] i32 (for dec.token_emb dump)
     ggml_tensor * enc_out_in   = nullptr;  // [enc_output_dim, T_enc] f32
-    ggml_tensor * positions_in = nullptr;  // [T_prompt] i32 for RoPE
-    ggml_tensor * mask_in      = nullptr;  // [T_prompt, T_prompt] f16 (causal)
+    ggml_tensor * positions_in = nullptr;  // [T_graph] i32 for RoPE
+    ggml_tensor * mask_in      = nullptr;  // [T_prompt, T_graph] f16 (causal)
     ggml_tensor * out          = nullptr;  // [vocab_size] — last-position logits
     DecoderDumps  dumps{};
     ggml_cgraph * graph = nullptr;
 
-    int T_prompt   = 0;
-    int T_enc      = 0;
+    int T_prompt   = 0;  // total prompt positions the decoder context holds
+    int T_enc      = 0;  // # encoder rows in this graph's audio block
     int prefix_len = 0;  // # prompt tokens before the audio block
     int suffix_len = 0;  // # prompt tokens after the audio block
+    // Prompt positions already in the KV cache and NOT carried by this graph
+    // (the prefill's n_past), and the token count it does carry:
+    //   T_graph = T_prompt - n_past.
+    // n_past == 0 is the single-shot prefill: T_graph == T_prompt and every
+    // tensor is shaped exactly as before.
+    int n_past     = 0;
+    int T_graph    = 0;
 };
 
 // Build a prefill graph: token-embed the full prompt, concat
 // [prefix_emb | encoder_output | suffix_emb], run the Qwen3 blocks (writing
-// K/V into kv_cache at [0, T_prompt)), final RMSNorm + tied head, output
+// K/V into kv_cache at [n_past, T_prompt)), final RMSNorm + tied head, output
 // last-position logits. Assumes a single contiguous audio block at
 // [prefix_len, prefix_len + T_enc). Callers set kv_cache.n / .head = T_prompt
 // after compute. kv_batch_slot / kv_n_batch route this utterance's KV into a
 // batched cache slab; defaults (0, 1) reproduce the single-shot layout.
+//
+// `n_past` is how many of the prompt's leading positions the KV cache already
+// holds (see causal_lm::BlockOpts::kv_write_off). The graph then carries only
+// the remaining `T_graph = T_prompt - n_past` tokens — the caller passes them
+// in input_ids_in / positions_in, with positions running n_past..T_prompt-1,
+// and builds mask_in as the [T_prompt, T_graph] trapezoid
+// (fill_prefill_chunk_mask with n_past). The composition arguments describe
+// this graph's own token axis, so the invariant becomes
+//   prefix_len + T_enc + suffix_len == T_graph
+// (with n_past > 0 the reused prefix is gone and prefix_len is normally 0).
+// Default 0 reproduces the single-shot prefill exactly.
 PrefillBuild build_prefill_graph(ggml_context *                   ctx,
                                  const QwenAsrWeights &           weights,
                                  const QwenAsrHParams &           hp,
@@ -84,7 +102,8 @@ PrefillBuild build_prefill_graph(ggml_context *                   ctx,
                                  bool                             use_flash,
                                  bool                             slice_last,
                                  int                              kv_batch_slot = 0,
-                                 int                              kv_n_batch    = 1);
+                                 int                              kv_n_batch    = 1,
+                                 int                              n_past        = 0);
 
 // ---------- Step graph (one token) ----------
 

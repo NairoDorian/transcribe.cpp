@@ -627,7 +627,8 @@ transcribe_status run_decode_pass(transcribe_session *          session,
                                   DecodePassResult *            out,
                                   const std::vector<int32_t> *  draft_seed,
                                   EncoderPrefixCache *          enc_cache,
-                                  transcribe::MelStreamState *  mel_stream) {
+                                  transcribe::MelStreamState *  mel_stream,
+                                  bool                          kv_reuse) {
     if (session == nullptr || pcm == nullptr || n_samples <= 0 || out == nullptr) {
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
@@ -1020,6 +1021,64 @@ transcribe_status run_decode_pass(transcribe_session *          session,
     if (want_n_ctx > ceiling) {
         want_n_ctx = ceiling;
     }
+
+    // ------------------------------------------------------------------
+    // Cross-tick KV continuation (R2T2 streaming).
+    //
+    // `cached_tokens` (above) is the whole-window-aligned prefix of encoder
+    // rows the *previous* pass had — and on a hit this pass proves those rows
+    // are bit-identical to the ones it just produced (mel prefix memcmp, rows
+    // copied verbatim). Their token ids, embeddings and therefore their
+    // attention keys/values are therefore the same ones the previous pass
+    // wrote into the KV cache at the same positions, and so is everything
+    // before them: within a stream the text prefix is fixed, and K/V of
+    // position j is a function of positions [0, j] alone. Those positions do
+    // not have to be re-prefilled at all.
+    //
+    // What is NOT reused: the suffix (the accumulated transcript, which shifts
+    // right as the audio block grows) and the audio rows newer than the cache.
+    // So a tick prefills its own delta instead of the whole utterance.
+    //
+    // Every clause fails closed. `kv_realloc` matters because the reuse lives
+    // in the session's KV cache: a cache about to be grown is about to lose its
+    // rows, and kv_cache.n — the previous pass's high-water mark, always at
+    // least its T_prompt — is what proves the rest are still there (a fresh or
+    // cleared cache has n == 0, so this covers those too). The exactness
+    // argument is a *mathematical* one (causality), not bit-equality: a
+    // differently-shaped graph can accumulate the same sums in a different
+    // order, so the reused rows can differ from a from-scratch prefill in the
+    // last bits. That makes this the one cache here whose output is not
+    // byte-identical by construction, which is why it has its own kill switch
+    // and its own A/B (TRANSCRIBE_R2T2_NO_KV_REUSE=1 must leave the transcript
+    // alone).
+    //
+    // The reused rows are always rows the previous *prefill* wrote, never rows
+    // the step loop did: those start at the previous T_prompt, which is strictly
+    // above the boundary here, because kv_reuse_len <= prefix_len + T_enc - 1.
+    // That matters — the step loop's rows were computed one token at a time
+    // against a mask of its own shape, and its drafting can also leave rejected
+    // rows behind.
+    // ------------------------------------------------------------------
+    const bool kv_realloc   = (cc->kv_cache.ctx == nullptr || cc->kv_cache.n_ctx < want_n_ctx);
+    int        kv_reuse_len = 0;
+    // cached_tokens is re-read, not just cache_hit: the hit is latched before
+    // the window-alignment fallback above can zero it, and a latched-with-zero
+    // hit would leave only the text prefix to reuse, which is a real (if tiny)
+    // saving but not what "the encoder cache carried the audio over" means.
+    // dumps_on is on the list because a continuation carries only the prompt's
+    // tail: the dump tensors would be shaped and named for a whole prefill
+    // while holding a slice of one, which is worse than no dump at all.
+    if (kv_reuse && !transcribe::env::flag("TRANSCRIBE_R2T2_NO_KV_REUSE") && cache_hit && cached_tokens > 0 &&
+        !kv_realloc && !transcribe::debug::enabled()) {
+        // At least one audio row has to remain: the graph's audio block is an
+        // input tensor and a zero-row block is not a shape it can carry. That
+        // also keeps the boundary strictly inside the prompt.
+        kv_reuse_len = prefix_len + std::min<int32_t>(cached_tokens, T_enc - 1);
+        if (cc->kv_cache.n < kv_reuse_len) {
+            kv_reuse_len = 0;
+        }
+    }
+
     if (cc->kv_cache.ctx != nullptr && cc->kv_cache.n_ctx < want_n_ctx) {
         cc->kv_cache.free();
     }
@@ -1038,8 +1097,12 @@ transcribe_status run_decode_pass(transcribe_session *          session,
                                 cm->hparams.dec_n_layers);
             return TRANSCRIBE_ERR_OOM;
         }
-    } else {
-        // Clear stale positions for a fresh prefill.
+    } else if (kv_reuse_len == 0) {
+        // Clear stale positions for a fresh prefill. Skipped when the pass is
+        // extending the cache: the rows [0, kv_reuse_len) are the whole point,
+        // and everything past them is overwritten by the prefill's own writes
+        // (the mask never lets a query see past `head`, so rows the step loop
+        // left beyond the prompt cannot leak in).
         if (cc->kv_cache.buffer != nullptr) {
             ggml_backend_buffer_clear(cc->kv_cache.buffer, 0);
         }
@@ -1063,12 +1126,42 @@ transcribe_status run_decode_pass(transcribe_session *          session,
     // Prefill graph. slice_last false: last block's FFN + final norm run on
     // every position (needed for dump parity). true: slice to just the final
     // position before the last FFN (llama.cpp's inp_out_ids trick, ~25 ms).
+    //
+    // Geometry of the tail with a KV continuation: drop the audio rows the
+    // cache already holds (whole rows, so the graph's audio input stays one
+    // contiguous [d_enc, T_enc_tail] slab) and keep the entire suffix, whose
+    // absolute positions move with the audio block and which is therefore never
+    // reusable. With kv_reuse_len == 0 these collapse to the original
+    // prefix_len / T_enc / T_prompt.
     const bool   dumps_on   = transcribe::debug::enabled();
     const bool   slice_last = !dumps_on;
-    PrefillBuild pb = build_prefill_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache, T_prompt, T_enc,
-                                          prefix_len, suffix_len,
-                                          /*use_flash=*/cc->decoder_use_flash, slice_last);
+    // Rows the cache already holds. kv_reuse_len counts the text prefix first,
+    // so the audio rows it covers are the difference — and only when it is
+    // set at all: with reuse off (kv_reuse_len == 0) nothing is skipped, and
+    // `kv_reuse_len - prefix_len` would be negative and lengthen the tail past
+    // the encoder output.
+    const int    audio_skip = kv_reuse_len > 0 ? (kv_reuse_len - prefix_len) : 0;
+    const int    T_enc_tail = T_enc - audio_skip;
+    // The graph carries the prompt minus what the cache holds — the same
+    // quantity build_prefill_graph derives internally as T_prompt - n_past, and
+    // it has to be that, not `T_enc_tail + suffix_len`: on a tick that does not
+    // reuse, the audio tail is the whole audio block and the two agree, but the
+    // graph's token axis is what the uploads below must fill, and a short
+    // upload leaves the rest of input_ids as whatever the buffer held — which
+    // get_rows then reads as a token id.
+    const int    T_graph    = T_prompt - kv_reuse_len;
+    PrefillBuild pb = build_prefill_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache, T_prompt, T_enc_tail,
+                                          kv_reuse_len > 0 ? 0 : prefix_len, suffix_len,
+                                          /*use_flash=*/cc->decoder_use_flash, slice_last, /*kv_batch_slot=*/0,
+                                          /*kv_n_batch=*/1, /*n_past=*/kv_reuse_len);
     if (pb.graph == nullptr || pb.out == nullptr) {
+        cleanup_gpu();
+        return TRANSCRIBE_ERR_GGUF;
+    }
+    if (pb.T_graph != T_graph) {
+        transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
+                            "qwen3_asr run: prefill geometry %d != %d (T_prompt=%d, n_past=%d)", pb.T_graph, T_graph,
+                            T_prompt, kv_reuse_len);
         cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
@@ -1085,29 +1178,31 @@ transcribe_status run_decode_pass(transcribe_session *          session,
         return TRANSCRIBE_ERR_OOM;
     }
 
-    // Upload prefill inputs.
-    ggml_backend_tensor_set(pb.input_ids_in, prompt_ids.data(), 0, prompt_ids.size() * sizeof(int32_t));
-    ggml_backend_tensor_set(pb.enc_out_in, cc->enc_host.data(), 0, cc->enc_host.size() * sizeof(float));
+    // Upload prefill inputs. The graph's token axis is its own tail
+    // (input_ids_in / positions_in are T_graph wide), while the mask spans the
+    // whole decoder context so its queries can see the reused keys.
+    ggml_backend_tensor_set(pb.input_ids_in, prompt_ids.data() + (T_prompt - T_graph), 0,
+                            static_cast<size_t>(T_graph) * sizeof(int32_t));
+    ggml_backend_tensor_set(pb.enc_out_in, cc->enc_host.data() + static_cast<size_t>(audio_skip) * d_enc, 0,
+                            static_cast<size_t>(T_enc_tail) * d_enc * sizeof(float));
 
     {
-        std::vector<int32_t> positions(T_prompt);
-        for (int i = 0; i < T_prompt; ++i) {
-            positions[i] = i;
+        // Absolute positions: the tail continues the prompt, so RoPE sees the
+        // same angles a full prefill would have produced.
+        std::vector<int32_t> positions(T_graph);
+        for (int i = 0; i < T_graph; ++i) {
+            positions[i] = kv_reuse_len + i;
         }
         ggml_backend_tensor_set(pb.positions_in, positions.data(), 0, positions.size() * sizeof(int32_t));
     }
 
     {
-        // Causal mask in F16 (matches pb.mask_in): row r col c is 0 if c <= r,
-        // else -inf, row-major. F16 upload avoids a per-layer ggml_cast.
-        const ggml_fp16_t        mask_zero    = ggml_fp32_to_fp16(0.0f);
-        const ggml_fp16_t        mask_neg_inf = ggml_fp32_to_fp16(-INFINITY);
-        std::vector<ggml_fp16_t> mask(static_cast<size_t>(T_prompt) * T_prompt, mask_neg_inf);
-        for (int r = 0; r < T_prompt; ++r) {
-            for (int c = 0; c <= r; ++c) {
-                mask[static_cast<size_t>(r) * T_prompt + c] = mask_zero;
-            }
-        }
+        // Causal mask in F16 (matches pb.mask_in): row q of the graph's token
+        // axis keeps columns [0, n_past + q], -inf past that. With n_past == 0
+        // that is the plain causal triangle it has always been; with n_past > 0
+        // it is the trapezoid that lets the tail attend the reused prefix.
+        std::vector<ggml_fp16_t> mask(static_cast<size_t>(T_prompt) * T_graph);
+        causal_lm::fill_prefill_chunk_mask(mask.data(), T_prompt, T_graph, kv_reuse_len);
         ggml_backend_tensor_set(pb.mask_in, mask.data(), 0, mask.size() * sizeof(ggml_fp16_t));
     }
 
@@ -1515,7 +1610,7 @@ transcribe_status run_decode_pass(transcribe_session *          session,
                 "  enc_d2h          %8.2f ms  (%d floats)\n"
                 "  enc_cache        %8d     tokens reused, %d encoded\n"
                 "  prefill_build    %8.2f ms  (kv_init + prompt + graph + sched + uploads)\n"
-                "  prefill_compute  %8.2f ms  (T_prompt=%d)\n"
+                "  prefill_compute  %8.2f ms  (T_prompt=%d, %d from the KV cache, %d prefilled)\n"
                 "  prefill_logits   %8.2f ms  (readback + argmax, vocab=%d)\n"
                 "  step_loop        %8.2f ms  (%d steps, %.2f ms/step)\n"
                 "    ctx_reset    %8.2f ms  (%.3f ms/step)\n"
@@ -1528,9 +1623,10 @@ transcribe_status run_decode_pass(transcribe_session *          session,
                 "  sum              %8.2f ms",
                 cc->t_mel_us * ms, t_enc_build_us * ms, cc->t_encode_us * ms, t_enc_d2h_us * ms,
                 static_cast<int>(cc->enc_host.size()), cached_tokens, T_enc - cached_tokens, t_prefill_build_us * ms,
-                t_prefill_compute_us * ms, T_prompt, t_prefill_logits_us * ms, vocab, t_step_loop_us * ms, n_steps,
-                per_step_ms, t_step_ctx_us * ms, (n_steps > 0) ? (t_step_ctx_us * ms / n_steps) : 0.0,
-                t_step_build_us * ms, (n_steps > 0) ? (t_step_build_us * ms / n_steps) : 0.0, t_step_alloc_us * ms,
+                t_prefill_compute_us * ms, T_prompt, kv_reuse_len, T_graph, t_prefill_logits_us * ms, vocab,
+                t_step_loop_us * ms, n_steps, per_step_ms, t_step_ctx_us * ms,
+                (n_steps > 0) ? (t_step_ctx_us * ms / n_steps) : 0.0, t_step_build_us * ms,
+                (n_steps > 0) ? (t_step_build_us * ms / n_steps) : 0.0, t_step_alloc_us * ms,
                 (n_steps > 0) ? (t_step_alloc_us * ms / n_steps) : 0.0, t_step_set_us * ms,
                 (n_steps > 0) ? (t_step_set_us * ms / n_steps) : 0.0, t_step_comp_us * ms,
                 (n_steps > 0) ? (t_step_comp_us * ms / n_steps) : 0.0, t_step_get_us * ms,

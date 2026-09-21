@@ -70,22 +70,32 @@ PrefillBuild build_prefill_graph(ggml_context *                   ctx,
                                  bool                             use_flash,
                                  bool                             slice_last,
                                  int                              kv_batch_slot,
-                                 int                              kv_n_batch) {
+                                 int                              kv_n_batch,
+                                 int                              n_past) {
     PrefillBuild pb{};
     pb.T_prompt   = T_prompt;
     pb.T_enc      = T_enc;
     pb.prefix_len = prefix_len;
     pb.suffix_len = suffix_len;
+    pb.n_past     = n_past;
+    pb.T_graph    = T_prompt - n_past;
 
     if (ctx == nullptr || T_prompt <= 0 || T_enc <= 0) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr decoder: invalid arg (T_prompt=%d, T_enc=%d)", T_prompt, T_enc);
         return pb;
     }
-    if (prefix_len < 0 || suffix_len < 0 || prefix_len + T_enc + suffix_len != T_prompt) {
+    if (n_past < 0 || n_past >= T_prompt) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr decoder: n_past=%d out of range (T_prompt=%d)", n_past,
+                T_prompt);
+        return pb;
+    }
+    // With n_past > 0 the graph carries only the prompt's tail, so the
+    // composition must account for exactly that many tokens.
+    if (prefix_len < 0 || suffix_len < 0 || prefix_len + T_enc + suffix_len != pb.T_graph) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                 "qwen3_asr decoder: prefix_len(%d) + T_enc(%d) + "
-                "suffix_len(%d) != T_prompt(%d)",
-                prefix_len, T_enc, suffix_len, T_prompt);
+                "suffix_len(%d) != T_graph(%d) [T_prompt=%d, n_past=%d]",
+                prefix_len, T_enc, suffix_len, pb.T_graph, T_prompt, n_past);
         return pb;
     }
     if (kv_cache.self_k == nullptr || kv_cache.self_v == nullptr) {
@@ -108,8 +118,12 @@ PrefillBuild build_prefill_graph(ggml_context *                   ctx,
     const auto  block_params = to_block_params(hp);
     const float rms_eps      = hp.dec_rms_norm_eps;
 
-    // Graph inputs.
-    pb.input_ids_in = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, T_prompt);
+    // Graph inputs. The token axis is T_graph — the tail of the prompt this
+    // pass actually carries; the leading n_past positions are already in the
+    // KV cache and appear here only as the extra key columns the mask and the
+    // attention views cover.
+    const int T_graph = pb.T_graph;
+    pb.input_ids_in   = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, T_graph);
     named(pb.input_ids_in, "dec.input_ids");
     ggml_set_input(pb.input_ids_in);
 
@@ -117,13 +131,16 @@ PrefillBuild build_prefill_graph(ggml_context *                   ctx,
     named(pb.enc_out_in, "dec.enc_out");
     ggml_set_input(pb.enc_out_in);
 
-    pb.positions_in = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, T_prompt);
+    pb.positions_in = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, T_graph);
     named(pb.positions_in, "dec.positions");
     ggml_set_input(pb.positions_in);
 
     // F16 mask matches flash_attn_ext's requirement and avoids
     // 28 redundant per-layer ggml_cast dispatches (host upload as F16).
-    pb.mask_in = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, T_prompt, T_prompt);
+    // [kv positions, query rows]: ne0 spans the whole decoder context (the
+    // reused prefix included), ne1 only this pass's tokens — the trapezoid
+    // fill_prefill_chunk_mask builds. Both equal T_prompt when n_past == 0.
+    pb.mask_in = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, T_prompt, T_graph);
     named(pb.mask_in, "dec.attn_mask");
     ggml_set_input(pb.mask_in);
 
@@ -176,9 +193,10 @@ PrefillBuild build_prefill_graph(ggml_context *                   ctx,
         opts.slice_last_before_ffn = slice_last && (il == n_layer - 1);
         opts.kv_batch_slot         = kv_batch_slot;
         opts.kv_n_batch            = kv_n_batch;
+        opts.kv_write_off          = n_past;
 
         x = causal_lm::block_prefill(ctx, gf, x, to_block_view(weights.dec_blocks[il]), block_params, kv_cache, il,
-                                     T_prompt, pb.mask_in, pb.positions_in, opts);
+                                     T_graph, pb.mask_in, pb.positions_in, opts);
 
         if (il == 0) {
             named(x, "dec.block.0.out");
@@ -200,13 +218,15 @@ PrefillBuild build_prefill_graph(ggml_context *                   ctx,
     transcribe::debug::mark_tensor_for_dump(x);
 
     // Slice the last position. If slice_last already trimmed x to
-    // [hidden, 1] on the final block, this is a pass-through view.
+    // [hidden, 1] on the final block, this is a pass-through view. The row is
+    // the last of THIS graph's token axis, which is the prompt's last position
+    // whether or not the earlier ones came from the cache.
     ggml_tensor * last_x;
     if (slice_last) {
         last_x = x;
     } else {
         last_x = ggml_view_2d(ctx, x, hidden, 1, ggml_element_size(x) * hidden,
-                              ggml_element_size(x) * hidden * static_cast<size_t>(T_prompt - 1));
+                              ggml_element_size(x) * hidden * static_cast<size_t>(T_graph - 1));
         last_x = ggml_cont(ctx, last_x);
     }
 

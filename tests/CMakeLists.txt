@@ -213,6 +213,27 @@ transcribe_apply_warnings(transcribe_prefill_chunk_mask_unit)
 add_test(NAME transcribe_prefill_chunk_mask_unit COMMAND transcribe_prefill_chunk_mask_unit)
 
 # -----------------------------------------------------------------------------
+# KV-cache extension (n_past > 0) parity: a block that extends a cache must
+# reproduce the rows a single-shot prefill of the whole sequence would.
+#
+# Same reason as the mask test above for compiling causal_lm in rather than
+# linking it under TRANSCRIBE_ARCH_DL. Runs on the CPU backend, both KV types,
+# so both attention branches take the n_kv_read change.
+
+add_executable(transcribe_causal_lm_kv_extension_unit
+    causal_lm_kv_extension_unit.cpp
+    ${CMAKE_SOURCE_DIR}/src/causal_lm/causal_lm.cpp)
+
+target_link_libraries(transcribe_causal_lm_kv_extension_unit PRIVATE transcribe ggml)
+
+target_include_directories(transcribe_causal_lm_kv_extension_unit PRIVATE
+    ${CMAKE_SOURCE_DIR}/src)
+
+transcribe_apply_warnings(transcribe_causal_lm_kv_extension_unit)
+
+add_test(NAME transcribe_causal_lm_kv_extension_unit COMMAND transcribe_causal_lm_kv_extension_unit)
+
+# -----------------------------------------------------------------------------
 # Long-audio chunk planning and timestamp rebasing unit test
 # -----------------------------------------------------------------------------
 

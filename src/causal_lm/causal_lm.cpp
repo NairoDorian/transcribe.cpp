@@ -276,28 +276,42 @@ ggml_tensor * block_prefill(ggml_context *      ctx,
     // KV write: K, V have ne=[D, Hkv, T_seq, 1], same layout as the cache
     // (position-major within each layer), so a 1D cpy handles it. Slab
     // (layer, batch-slot) base offset in elements; defaults (kv_batch_slot=0,
-    // kv_n_batch=1) collapse to layer_idx*n_ctx*kv_dim.
+    // kv_n_batch=1, kv_write_off=0) collapse to layer_idx*n_ctx*kv_dim.
     const size_t slab =
         static_cast<size_t>(opts.kv_batch_slot) + static_cast<size_t>(opts.kv_n_batch) * static_cast<size_t>(layer_idx);
     const size_t slab_off = slab * n_ctx * kv_dim;
+
+    // n_past: rows [0, n_past) are already in the cache and this block extends
+    // it. Guarded here rather than assumed, because the failure mode is a
+    // silent write past the end of the slab (into the next layer's rows).
+    int n_past = opts.kv_write_off;
+    if (n_past < 0 || n_past + T_seq > n_ctx) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "causal_lm block_prefill: kv_write_off=%d out of range (T_seq=%d n_ctx=%d)",
+                n_past, static_cast<int>(T_seq), n_ctx);
+        n_past = std::max(0, n_ctx - static_cast<int>(T_seq));
+    }
+    const size_t pos_off = slab_off + static_cast<size_t>(n_past) * kv_dim;
     {
         const size_t n_elem = static_cast<size_t>(T_seq) * kv_dim;
 
-        ggml_tensor * k_dst = ggml_view_1d(ctx, kv_cache.self_k, n_elem, k_elem * slab_off);
-        ggml_tensor * v_dst = ggml_view_1d(ctx, kv_cache.self_v, n_elem, v_elem * slab_off);
+        ggml_tensor * k_dst = ggml_view_1d(ctx, kv_cache.self_k, n_elem, k_elem * pos_off);
+        ggml_tensor * v_dst = ggml_view_1d(ctx, kv_cache.self_v, n_elem, v_elem * pos_off);
 
         ggml_build_forward_expand(gf, ggml_cpy(ctx, K, k_dst));
         ggml_build_forward_expand(gf, ggml_cpy(ctx, V, v_dst));
     }
 
     // Read K, V back from the cache for attention as strided
-    // [D, T_seq, Hkv] views (no permute + cont needed). mul_mat and
-    // flash_attn_ext both accept strided inputs.
-    ggml_tensor * K_att = ggml_view_3d(ctx, kv_cache.self_k, head_dim, T_seq, n_kv_heads,
-                                       /*nb1=*/k_elem * kv_dim,
-                                       /*nb2=*/k_elem * head_dim, k_elem * slab_off);
-    ggml_tensor * V_att = ggml_view_3d(ctx, kv_cache.self_v, head_dim, T_seq, n_kv_heads, v_elem * kv_dim,
-                                       v_elem * head_dim, v_elem * slab_off);
+    // [D, n_kv_read, Hkv] views (no permute + cont needed). mul_mat and
+    // flash_attn_ext both accept strided inputs. n_kv_read covers the reused
+    // prefix plus this block's own rows, so the queries attend over exactly
+    // the positions the mask allows.
+    const int64_t n_kv_read = static_cast<int64_t>(n_past) + T_seq;
+    ggml_tensor * K_att     = ggml_view_3d(ctx, kv_cache.self_k, head_dim, n_kv_read, n_kv_heads,
+                                           /*nb1=*/k_elem * kv_dim,
+                                           /*nb2=*/k_elem * head_dim, k_elem * slab_off);
+    ggml_tensor * V_att     = ggml_view_3d(ctx, kv_cache.self_v, head_dim, n_kv_read, n_kv_heads, v_elem * kv_dim,
+                                           v_elem * head_dim, v_elem * slab_off);
 
     // Permute Q for attention: [D, H, T_seq, 1] → [D, T_seq, H, 1].
     ggml_tensor * Q_att = ggml_cont(ctx, ggml_permute(ctx, Q, 0, 2, 1, 3));
@@ -317,14 +331,14 @@ ggml_tensor * block_prefill(ggml_context *      ctx,
         // reference's explicit repeat_kv.
         ggml_tensor * K_att_c        = ggml_cont(ctx, K_att);
         ggml_tensor * V_att_c        = ggml_cont(ctx, V_att);
-        ggml_tensor * K_4d           = ggml_reshape_4d(ctx, K_att_c, head_dim, T_seq, 1, n_kv_heads);
-        ggml_tensor * V_4d           = ggml_reshape_4d(ctx, V_att_c, head_dim, T_seq, 1, n_kv_heads);
-        ggml_tensor * K_rep_template = ggml_new_tensor_4d(ctx, K_att->type, head_dim, T_seq, n_groups, n_kv_heads);
-        ggml_tensor * V_rep_template = ggml_new_tensor_4d(ctx, V_att->type, head_dim, T_seq, n_groups, n_kv_heads);
+        ggml_tensor * K_4d           = ggml_reshape_4d(ctx, K_att_c, head_dim, n_kv_read, 1, n_kv_heads);
+        ggml_tensor * V_4d           = ggml_reshape_4d(ctx, V_att_c, head_dim, n_kv_read, 1, n_kv_heads);
+        ggml_tensor * K_rep_template = ggml_new_tensor_4d(ctx, K_att->type, head_dim, n_kv_read, n_groups, n_kv_heads);
+        ggml_tensor * V_rep_template = ggml_new_tensor_4d(ctx, V_att->type, head_dim, n_kv_read, n_groups, n_kv_heads);
         ggml_tensor * K_rep          = ggml_repeat(ctx, K_4d, K_rep_template);
         ggml_tensor * V_rep          = ggml_repeat(ctx, V_4d, V_rep_template);
-        ggml_tensor * K_full         = ggml_reshape_3d(ctx, K_rep, head_dim, T_seq, n_heads);
-        ggml_tensor * V_full         = ggml_reshape_3d(ctx, V_rep, head_dim, T_seq, n_heads);
+        ggml_tensor * K_full         = ggml_reshape_3d(ctx, K_rep, head_dim, n_kv_read, n_heads);
+        ggml_tensor * V_full         = ggml_reshape_3d(ctx, V_rep, head_dim, n_kv_read, n_heads);
 
         ggml_tensor * kq      = ggml_mul_mat(ctx, K_full, Q_att);
         ggml_tensor * kq_soft = ggml_soft_max_ext(ctx, kq, mask, scale_attn, /*max_bias=*/0.0f);

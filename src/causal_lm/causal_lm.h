@@ -117,6 +117,20 @@ struct BlockOpts {
     // Defaults (0, 1) reproduce the single-shot offset.
     int kv_batch_slot = 0;
     int kv_n_batch    = 1;
+
+    // First KV position this block writes and attends from — the prefill's
+    // n_past. 0 (the default) is the single-shot prefill: write rows
+    // [0, T_seq), attend over [0, T_seq), mask [T_seq, T_seq]. With n_past = P
+    // the block *extends* a cache that already holds positions [0, P): it
+    // writes rows [P, P + T_seq), attends over [0, P + T_seq), and expects
+    // `mask` shaped [P + T_seq, T_seq] (fill_prefill_chunk_mask builds
+    // exactly that). Every row is then computed from the same inputs it would
+    // have been computed from in a full prefill — K/V of position j is a
+    // function of positions [0, j] only — so the rows [0, P) already in the
+    // cache are unchanged by the extension. Not bit-identical to a full
+    // prefill, though: a differently-shaped graph can accumulate the same sum
+    // in a different order. Callers that need byte-equality keep n_past = 0.
+    int kv_write_off = 0;
 };
 
 // Block forward (prefill, T_seq > 1). Runs one block on `x`

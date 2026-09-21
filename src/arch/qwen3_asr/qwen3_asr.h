@@ -186,10 +186,27 @@ struct EncoderPrefixCache {
 // changes cost, not values. Pass the same state object across a stream's ticks
 // and clear it when the stream restarts; leave null for a one-shot pass.
 //
-// Writes only session scratch (mel_buf, enc_host, t_* timers) — never result
-// state, and never frees the scheduler or KV cache. Defined in model.cpp and
-// declared here so the streaming path reuses the offline implementation
-// instead of duplicating it.
+// `kv_reuse` (streaming only; false elsewhere) lets the pass extend the
+// session's KV cache instead of re-prefilling the prompt from scratch. It has
+// nothing to do with the two caches above: they remove work that provably
+// reproduces the same values, while this removes the *recomputation* of values
+// that are already in the cache — the audio rows the previous pass proved
+// bit-identical (see EncoderPrefixCache) are the same tokens and so the same
+// keys/values, and causality means the rows before them are unchanged too. A
+// pass that reuses prefills only its own delta (the newer audio plus the whole
+// suffix, which shifts position every tick and is never reusable). Both of the
+// other caches must be on for it to have anything to reuse, and every
+// precondition fails closed to a full prefill — including a KV cache that was
+// reallocated or cleared since the previous pass. Cost, not values, *except*
+// that a differently-shaped graph can accumulate the same sums in a different
+// order, so this one is not byte-identical by construction; it is the only path
+// here with its own kill switch, TRANSCRIBE_R2T2_NO_KV_REUSE=1, and the one
+// whose A/B (identical transcript at every cadence) is the whole argument.
+//
+// Writes only session scratch (mel_buf, enc_host, t_* timers) plus the KV cache
+// it is asked to extend — never result state, and never frees the scheduler or
+// KV cache. Defined in model.cpp and declared here so the streaming path reuses
+// the offline implementation instead of duplicating it.
 transcribe_status run_decode_pass(transcribe_session *          session,
                                   const float *                 pcm,
                                   int                           n_samples,
@@ -199,7 +216,8 @@ transcribe_status run_decode_pass(transcribe_session *          session,
                                   DecodePassResult *            out,
                                   const std::vector<int32_t> *  draft_seed = nullptr,
                                   EncoderPrefixCache *          enc_cache  = nullptr,
-                                  transcribe::MelStreamState *  mel_stream = nullptr);
+                                  transcribe::MelStreamState *  mel_stream = nullptr,
+                                  bool                          kv_reuse   = false);
 
 // ---------------------------------------------------------------------------
 // Model / Context

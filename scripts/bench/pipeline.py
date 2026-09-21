@@ -12,10 +12,90 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import statistics
 import sys
+import threading
 import time
 import wave
+
+
+# --- per-stage streaming metrics ---------------------------------------------
+#
+# The native library emits one line per streaming chunk from
+# emit_streaming_chunk (src/arch/parakeet/model.cpp):
+#
+#   parakeet stream chunk 7: total=12.3 ms  graph_build=0.4 ms  sched_alloc=0.1 ms
+#   graph_compute=9.8 ms  readback=0.2 ms  cache_rot=1.1 ms  decoder=0.5 ms
+#   other=0.2 ms (backend=CUDA0, threads=6, T_q=17, T_cache=70, kv_mode=1, n_layers=24)
+#
+# transcribe::log_msg applies no level filter (src/transcribe-log.h): the line
+# is delivered to whatever sink is installed, so tapping the sink in-process
+# recovers the full pipeline breakdown without a native rebuild. The tap also
+# forwards every line to stderr, so the raw case log keeps the original
+# evidence. Both trees share this harness verbatim, which is what makes the
+# per-stage numbers directly comparable between fork and upstream.
+STAGES = ("total", "graph_build", "sched_alloc", "graph_compute", "readback", "cache_rot", "decoder", "other")
+_STAGE_LINE = re.compile(
+    r"^parakeet stream chunk (?P<chunk>\d+): "
+    r"total=(?P<total>[\d.]+) ms\s+graph_build=(?P<graph_build>[\d.]+) ms\s+"
+    r"sched_alloc=(?P<sched_alloc>[\d.]+) ms\s+graph_compute=(?P<graph_compute>[\d.]+) ms\s+"
+    r"readback=(?P<readback>[\d.]+) ms\s+cache_rot=(?P<cache_rot>[\d.]+) ms\s+"
+    r"decoder=(?P<decoder>[\d.]+) ms\s+other=(?P<other>[\d.]+) ms\s+"
+    r"\(backend=(?P<backend>[^,]+), threads=(?P<threads>\d+), T_q=(?P<T_q>-?\d+), "
+    r"T_cache=(?P<T_cache>-?\d+), kv_mode=(?P<kv_mode>\d+), n_layers=(?P<n_layers>\d+)\)")
+
+
+class StageCapture:
+    """Thread-safe log sink that segments per-chunk stage records by run.
+
+    The callback contract allows invocation from ggml worker threads, so the
+    record list is guarded by a lock. Rows are attributed to the run that is
+    currently executing, which is what lets the "discard run 1, mean of runs
+    2-3" policy be applied to stage metrics as well as wall time.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._run = 0
+        self.rows = {}
+        self.geometry = None
+
+    def begin_run(self, index):
+        with self._lock:
+            self._run = index
+            self.rows.setdefault(index, [])
+
+    def __call__(self, level, message):
+        print(message, file=sys.stderr, flush=True)
+        match = _STAGE_LINE.match(message)
+        if match is None:
+            return
+        values = match.groupdict()
+        row = {stage: float(values[stage]) for stage in STAGES}
+        with self._lock:
+            self.rows.setdefault(self._run, []).append(row)
+            self.geometry = {"backend": values["backend"].strip(), "threads": int(values["threads"]),
+                             "T_q": int(values["T_q"]), "T_cache": int(values["T_cache"]),
+                             "kv_mode": int(values["kv_mode"]), "n_layers": int(values["n_layers"])}
+
+
+def _percentile(values, quantile):
+    ordered = sorted(values)
+    return ordered[min(len(ordered) - 1, int((len(ordered) - 1) * quantile))]
+
+
+def stage_summary(rows):
+    """Aggregate parsed chunk rows into per-stage mean/p50/p95/max/sum."""
+    if not rows:
+        return None
+    return {"chunks": len(rows),
+            "stages_ms": {stage: {"mean": statistics.mean(row[stage] for row in rows),
+                                  "p50": _percentile([row[stage] for row in rows], 0.50),
+                                  "p95": _percentile([row[stage] for row in rows], 0.95),
+                                  "max": max(row[stage] for row in rows),
+                                  "sum": sum(row[stage] for row in rows)}
+                          for stage in STAGES}}
 
 
 def main():
@@ -38,6 +118,11 @@ def main():
     sys.path.insert(0, str(args.bindings or Path(__file__).resolve().parents[2] / "bindings/python/src"))
     import transcribe_cpp as tc
 
+    # Install before the model is created: the native contract requires the
+    # log sink to be set once at startup, before threads or models exist.
+    capture = StageCapture()
+    tc.set_log_callback(capture)
+
     start = time.perf_counter()
     with wave.open(str(args.wav), "rb") as wav:
         if (wav.getnchannels(), wav.getframerate(), wav.getsampwidth()) != (1, 16000, 2):
@@ -54,9 +139,13 @@ def main():
                   architecture_modules={path.name: hashlib.sha256(path.read_bytes()).hexdigest()
                                         for path in sorted(args.library.parent.glob("*transcribe-arch-*"))
                                         if path.suffix in (".dll", ".so", ".dylib")},
+                  # The native identity string opens with a newline: it is built
+                  # as a blank-line-prefixed banner. Strip it here so a stored
+                  # identity never begins with whitespace, which would break the
+                  # alignment of any report that prints it next to a label.
                   build_id=(tc._lib.transcribe_build_id().decode()
                             if hasattr(tc._lib, "transcribe_build_id")
-                            else "upstream commit " + tc._lib.transcribe_version_commit().decode()),
+                            else "upstream commit " + tc._lib.transcribe_version_commit().decode()).strip(),
                   model=str(args.model.resolve()), model_bytes=args.model.stat().st_size,
                   wav=str(args.wav.resolve()), wav_sha256=hashlib.sha256(args.wav.read_bytes()).hexdigest(),
                   audio_ms=len(pcm) / 16,
@@ -71,6 +160,7 @@ def main():
                       backend=model.backend, variant=model.variant)
         with model.session(n_threads=args.threads) as session:
             for index in range(3):
+                capture.begin_run(index)
                 start = time.perf_counter()
                 row = dict(run=index + 1, excluded_warmup=index == 0)
                 if args.stream_chunk_ms:
@@ -104,6 +194,18 @@ def main():
     report["warm_mean_rtf"] = report["warm_mean_ms"] / report["audio_ms"]
     report["warm_mean_timings"] = {key: statistics.mean(r["timings"][key] for r in warm)
                                    for key in warm[0]["timings"] if key != "load_ms"}
+    # Stage metrics follow the same policy as wall time: run 1 is warm-up, the
+    # reported figures aggregate runs 2 and 3 only.
+    stage_rows = [row for index in (1, 2) for row in capture.rows.get(index, [])]
+    summary = stage_summary(stage_rows)
+    if summary:
+        summary["source"] = "in-process tap on the native log sink (emit_streaming_chunk)"
+        summary["geometry"] = capture.geometry
+        summary["chunks_per_run"] = {f"run{index + 1}": len(capture.rows.get(index, [])) for index in range(3)}
+        report["stage_metrics"] = summary
+    elif capture.rows:
+        report["stage_metrics"] = {"chunks": 0,
+                                   "note": "no per-chunk stage lines were emitted by this configuration"}
     output = json.dumps(report, indent=2)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

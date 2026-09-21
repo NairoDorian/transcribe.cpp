@@ -12,10 +12,34 @@ $installRoot = Join-Path $buildRoot 'install'
 
 # CPU and CUDA come from this checkout's own GGML. Never borrow a backend DLL
 # from another GGML version. All outputs stay under this checkout's build/.
-if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
+#
+# cl.exe merely being on PATH does not mean the toolchain is usable: a bare
+# PATH entry, or a shell inherited without the developer environment, leaves
+# INCLUDE/LIB unset and the build then dies with C1083 on <stdbool.h>. Only
+# skip the dev shell when the SDK/CRT headers are genuinely visible.
+$toolchainReady = [bool](Get-Command cl.exe -ErrorAction SilentlyContinue) -and
+                  [bool]($env:INCLUDE -split ';' | Where-Object { $_ -match 'Windows Kits|MSVC' })
+if (-not $toolchainReady) {
+    # vswhere is the documented locator, but some layouts (VS 18 preview/dev)
+    # ship without it, so fall back to the standard install roots. DevShell.dll
+    # under Common7/Tools is the only thing this actually needs.
+    $vsRoot = $null
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
-    $vsRoot = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-    if (-not $vsRoot) { throw 'An x64 Visual Studio C++ toolchain is required' }
+    if (Test-Path $vswhere) {
+        $vsRoot = (& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1)
+    }
+    if (-not $vsRoot) {
+        foreach ($base in @("${env:ProgramFiles}\Microsoft Visual Studio", "${env:ProgramFiles(x86)}\Microsoft Visual Studio")) {
+            if (-not (Test-Path $base)) { continue }
+            $found = Get-ChildItem -Path $base -Directory |
+                ForEach-Object { Get-ChildItem -Path $_.FullName -Directory } |
+                Where-Object { Test-Path (Join-Path $_.FullName 'Common7/Tools/Microsoft.VisualStudio.DevShell.dll') } |
+                Sort-Object FullName -Descending | Select-Object -First 1
+            if ($found) { $vsRoot = $found.FullName; break }
+        }
+    }
+    if (-not $vsRoot) { throw 'An x64 Visual Studio C++ toolchain is required (checked vswhere and the standard install roots)' }
+    $vsRoot = $vsRoot.Trim()
     Import-Module (Join-Path $vsRoot 'Common7/Tools/Microsoft.VisualStudio.DevShell.dll')
     Enter-VsDevShell -VsInstallPath $vsRoot -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64' | Out-Null
 }

@@ -192,7 +192,16 @@ add_test(NAME transcribe_batch_mask_unit COMMAND transcribe_batch_mask_unit)
 # Chunked-prefill causal mask geometry (pure host, no model)
 
 add_executable(transcribe_prefill_chunk_mask_unit
-    prefill_chunk_mask_unit.cpp)
+    prefill_chunk_mask_unit.cpp
+    # Compiled in rather than linked: under TRANSCRIBE_ARCH_DL this shared
+    # helper belongs to the per-family modules, not to the core transcribe
+    # library (see the "Per-family source definitions" note in
+    # src/CMakeLists.txt), so the core lib does not carry its symbols and the
+    # link would fail with two unresolved externals. Only the static build
+    # hides that, by concatenating every enabled family's list. Adding the TU
+    # directly works in both layouts and keeps the test a pure host-side unit
+    # test of the mask/context arithmetic.
+    ${CMAKE_SOURCE_DIR}/src/causal_lm/causal_lm.cpp)
 
 target_link_libraries(transcribe_prefill_chunk_mask_unit PRIVATE transcribe ggml)
 

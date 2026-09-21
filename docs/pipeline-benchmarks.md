@@ -77,6 +77,29 @@ Always keep the arms on the same WAV, weights, language, backend and build
 profile. A reported `spread` far larger than its neighbours means the machine
 was not idle; discard that run.
 
+Some optimizations here are gated at run time rather than build time, so they
+can be compared without rebuilding between arms. `--arm-env NAME=KEY=VALUE`
+sets an environment variable for one arm only, and the gate each arm ran under
+is recorded in the JSON:
+
+```powershell
+uv run --no-project scripts/bench/compare.py `
+  --wav samples/jfk.wav --model <installed.gguf> --backend cuda `
+  --arm off=build/bench-native/install/bin/transcribe.dll `
+  --arm on=build/bench-native/install/bin/transcribe.dll `
+  --arm-env on=TRANSCRIBE_GRAPH_OPTIMIZER=1
+```
+
+A gate compared this way proves nothing unless it actually fired: if the pass
+finds nothing to remove it is a literal no-op, and the two arms ran identical
+work, so any difference between them is noise. Confirm the gate's own log line
+is present in the `on` arm — and absent from `off` — before reading the
+verdict. `TRANSCRIBE_GRAPH_OPTIMIZER` reports itself only when it changed
+something (`graph optimizer: nodes=N->M`), so its silence is the signal that
+the case is not a valid test of it. Use `--reps` at least 3 for a decision;
+with two repetitions the spread is the difference of two samples and the
+resulting noise floor is far too small.
+
 JSON includes the exact library/build identity, model size, WAV SHA256,
 language, threads, backend, model load, WAV conversion, wall time, native
 mel/encoder/decoder stages, all three transcripts, and streaming begin/feed/

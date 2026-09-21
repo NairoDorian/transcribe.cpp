@@ -212,7 +212,7 @@ def _load_json_from_hf(repo: str, revision: str | None, filename: str) -> dict |
         path = hf_hub_download(repo, filename, revision=revision)
     except HfHubHTTPError:
         return None
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 

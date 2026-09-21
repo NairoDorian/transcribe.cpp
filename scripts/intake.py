@@ -58,7 +58,7 @@ def load_json(repo: str, revision: str, filename: str) -> dict | None:
         path = hf_hub_download(repo, filename, revision=revision)
     except HfHubHTTPError:
         return None
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -445,7 +445,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     intake = build_intake(args.repo, args.family, args.variant)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(intake, indent=2) + "\n")
+    out.write_text(json.dumps(intake, indent=2) + "\n", encoding="utf-8")
     print(f"Wrote draft intake: {out}")
     if intake["intake_gaps"]:
         print("Gaps requiring review:")

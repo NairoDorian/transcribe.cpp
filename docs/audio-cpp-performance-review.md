@@ -1,5 +1,40 @@
 # GGML and audio.cpp performance review
 
+## Follow-up: streaming PR 582, allocation ownership, and R2T2
+
+Reviewed again on 2026-09-20. [PR 582](https://github.com/0xShug0/audio.cpp/pull/582)
+is closed. Its Nemotron change wires an already incremental encoder/decoder
+into the streaming session instead of buffering until finalize. Our Parakeet
+family already dispatches cache-aware Nemotron chunks during feed, so this is
+not a missing implementation to transplant. Its Granite graph-cache work
+targets Granite 5 TurboCTC, not the installed Granite Speech 4.1 audio-LLM.
+The transferable lessons are bounded shape caches, avoiding repeated context
+encoding, and measuring final-tail latency separately from throughput.
+
+Revisiting [4d383be](https://github.com/0xShug0/audio.cpp/commit/4d383be1bff107e823ffc19120dcb6c78d493c0f)
+exposed a concurrency defect in our allocation recovery: a raw-pointer snapshot
+of registered sibling backends was used to trim their pools. The registry mutex
+protected only the vector, not backend lifetime or concurrent pool use. Our own
+hook explicitly requires an idle backend. Recovery now trims only the caller's
+backend and retries once, with recovery outcome and elapsed time logged. Removed
+the global registry and its load/unload bookkeeping. This may report OOM where
+the previous code unsafely reclaimed a sibling's memory; coordinated unloading
+belongs to the application, which owns model lifetimes. It is a concurrency
+fix, not a measured throughput gain. Release CLI build passed after this change.
+
+[a7b58a6](https://github.com/0xShug0/audio.cpp/commit/a7b58a6d3d6ae4143c485266b1c6c09898ad8c72)
+adds Confucius4-R2T2 and capacity-bucketed graph reuse. The encoder must mask
+padded frames on every reuse, the decoder must clear KV between prompts, and
+bucket growth/shrink need parity checks. None of these conditions is met by
+simply rounding input shapes in the existing Qwen engine. The new model intake,
+verified download identity, and full 80–2000 ms control contract are tracked in
+[the family document](porting/families/confucius4_r2t2.md). Context/hotwords are
+deferred by user choice. Runtime and application model support remain pending;
+the research packet must not be confused with a working catalogue entry.
+
+CUDA graph replay, the audio-inspired graph optimizer, and the CUDA scheduling
+optimizer remain opt-in. No new performance numbers are claimed in this follow-up.
+
 Reviewed 2026-09-19. Read-only audio.cpp snapshot:
 `a7b58a6d3d6ae4143c485266b1c6c09898ad8c72` (677 commits reachable from main).
 The history was searched for performance, CUDA, memory, graph/cache, threading,

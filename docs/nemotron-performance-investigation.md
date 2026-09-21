@@ -76,6 +76,13 @@ app's `docs/STT_BENCHMARKS.md`. Gates check mean calculation, transcript
 stability, backend/configuration compatibility and a configurable regression
 budget (15% default). Failed/noisy earlier reports are retained.
 
+`scripts/bench/report.py` renders any summary as Markdown and CSV, including
+the per-chunk stage columns. `scripts/bench/compare.py` is the paired A/B tool
+described under "Comparing two libraries" below. All four files are byte
+identical in this tree and in `../transcribe_benchmarks`; the app runner emits
+the same field names (`warm_mean_timings`, `stage_metrics`, and `bound_backend`
+alongside `backend`) so one reporter renders native and app summaries alike.
+
 Live app metrics additionally cover stream queue waits, feed/finalize maxima,
 capture consumer/frontend/VAD routing, flush, dropped samples and VAD errors.
 Headless replay bypasses microphone arrival, VAD, denoise, UI, clipboard and
@@ -172,3 +179,146 @@ Keep both off by default. CUDA graphs reduced Granite CUDA time from 401.0 to 31
 - `verified-upstream` plus `verified-upstream-nemotron`: fresh upstream native comparison. The first Nemotron attempt rejected `en`; the corrected runner supplies no explicit hint and all eight Nemotron cases passed.
 - `graphs-*` and `qwen-threads-*`: retained optimization experiments, with no slow runs silently discarded.
 - Final local native install: `build/diagnostics/install`; rebuilt app: `../Handy_V2/src-tauri/target/debug/zer0.exe`.
+
+## Per-stage pipeline instrumentation (2026-09-21)
+
+Wall clock alone cannot say *which* stage regressed, and on this fixture the
+answer was surprising enough to be worth recording. `pipeline.py` taps the
+library's own log callback in-process and captures three timers the native
+result already computed — `mel_ms`, `encode_ms`, `decode_ms` — plus, for
+streaming, the per-chunk record emitted by `emit_streaming_chunk`
+(`src/arch/parakeet/model.cpp`):
+
+```
+parakeet stream chunk 7: total=12.3 ms  graph_build=0.4 ms  sched_alloc=0.5 ms
+  graph_compute=9.1 ms  readback=0.0 ms  cache_rot=1.1 ms  decoder=0.9 ms  other=0.3 ms
+  (backend=CUDA0, threads=6, T_q=17, T_cache=70, kv_mode=1, n_layers=24)
+```
+
+The eight stages are disjoint and sum to `total`. `report.py` reduces them to
+mean and p95 per case across the scored runs. Nothing here needed a new ABI:
+the app runner scrapes the same lines out of its replay log, so the app and
+native sides produce the same columns without the library having to grow an
+interface for a benchmark's benefit.
+
+The instrumentation is arithmetic-checkable, which is how it was validated on a
+foreign tree. For one upstream CUDA streaming case, `encode_ms + decode_ms` =
+613.3 ms exactly equals the mean of the summed per-chunk totals
+(1226.5 / 2). That identity cannot hold by accident, and it is precisely the
+identity the pre-instrumentation upstream code *broke* by folding decoder time
+into `t_encode_us` — so the split is not merely present, it is correct.
+
+Its first finding explains the fork's largest win. For Q6 CUDA streaming:
+
+| Stage | Upstream | Fork |
+|---|---:|---:|
+| mel | 918.4 | 33.2 |
+| encode | 422.9 | 418.8 |
+| decode | 190.4 | 163.3 |
+| total | 1585.5 | 632.8 |
+
+Mel is 918 ms upstream against a 33 ms fork mel — and upstream's own *batch* mel
+on the same model is 23–31 ms. The upstream streaming path therefore pays a
+30–40× mel penalty over its own batch path; almost the entire 2.5× streaming
+gap is mel, not the encoder. The candidate cause is the per-chunk host-side
+conversion and graph rebuild, which the affinity and pool-parking fixes
+incidentally removed. This is the kind of attribution a wall-clock suite cannot
+produce, and it is why the stage counters exist.
+
+## Comparing two libraries
+
+`scripts/bench/compare.py` answers "is arm B slower than arm A, beyond noise?",
+which is a different question from "how fast is this tree?". A suite runs one
+arm's cases back to back, so drift lands entirely inside whichever arm happened
+to run second. It alternates the arms within each repetition with a rotating
+start, and calls a difference real only when it exceeds the larger arm's own
+within-arm spread — the case's measured noise floor, not a fixed guess. Each
+arm loads through the bindings of the checkout that owns its library, because
+the generated bindings are ABI-specific: a foreign library fails at import time
+on the first symbol it does not export, and that is a hard error rather than
+something to silently time.
+
+It was built because the suite's verdicts did not survive it. Nemotron Q6 CPU
+batch read 1090.3 ms (upstream) against 1208.4 ms (fork) in a suite — an
+apparent 10.8% regression. Interleaved, the same pair read 937.2 against 809.3:
+the fork 13.6% *faster*. The same library moved 1090 → 937 ms (18%) between the
+two runs. The remaining suite-flagged CPU regressions were re-tested the same
+way; results are in the next section.
+
+The practical rule: `suite.py --baseline` tracks one tree over time, and
+`compare.py` is the only thing that may be cited for a cross-arm claim. A win
+below the noise floor is reverted and said to be reverted, not kept for
+plausibility.
+
+## Fresh upstream-vs-fork matrix (2026-09-21)
+
+Both trees were built from source with identical configuration—Ninja, MSVC
+14.51.36231, CUDA 13.4 targeting sm_89, `BUILD_SHARED_LIBS=ON`,
+`TRANSCRIBE_ARCH_DL=ON`, `GGML_NATIVE=OFF`, `GGML_AVX2=ON`. `GGML_NATIVE=OFF`
+with `GGML_AVX2=ON` is deliberate: the reference must build the same way
+regardless of which host compiles it, and under the Visual Studio generator
+`/arch:AVX2` is spelled `<EnableEnhancedInstructionSet>AdvancedVectorExtensions2`,
+so grepping a `.vcxproj` for `/arch:` proves nothing about the actual ISA.
+
+The upstream arm is `../transcribe_benchmarks` at upstream
+`be7a8b35e9ba2df20298bd26e32d53407c3bcbcd`; the fork arm is this tree. Fourteen
+cases, three resident runs each, run 1 excluded. Ratio is fork / upstream, so
+below 1.0 is the fork faster.
+
+| Case | Upstream | Fork | Ratio |
+|---|---:|---:|---:|
+| Granite Q4 CPU batch | — | 4597.6 | 1.080* |
+| Qwen3 1.7B CPU batch | — | 4630.7 | 1.080* |
+| Nemotron Q6 CPU batch | — | 1208.4 | 1.108* |
+| Nemotron Q6 CPU stream | — | 1828.3 | 0.753 |
+| Nemotron Q8 CPU stream | — | 1708.8 | 0.570 |
+| Nemotron Q6 CUDA batch | — | 196.0 | 0.765 |
+| Nemotron Q8 CUDA batch | — | 200.8 | 0.695 |
+| Nemotron Q6 CUDA stream | 1585.5 | 632.8 | 0.399 |
+| Nemotron Q8 CUDA stream | — | 631.4 | 0.401 |
+| Granite Q4 CUDA batch | — | 417.4 | 0.964 |
+| Parakeet Q4 CPU batch | — | 1004.9 | 0.982 |
+| Parakeet Q4 CUDA batch | — | 160.6 | 0.899 |
+
+The starred ratios are the ones that did not hold up; they are the suite's
+numbers and are superseded by the interleaved re-test below. Upstream absolutes
+are omitted where the fork's own suite report is the source, because quoting
+the partner's number from a different run is exactly the mistake this section
+documents.
+
+### The three flagged CPU regressions were drift
+
+The suite flagged Granite Q4, Qwen3 1.7B and Nemotron Q6 CPU batch as 8.0%,
+8.0% and 10.8% slower. Re-measured with `compare.py` — arms alternating within
+each repetition, rotating start, three repetitions each:
+
+| Case | Upstream | Fork | Ratio | Verdict |
+|---|---:|---:|---:|---|
+| Nemotron Q6 CPU batch | 937.2 | 809.3 | 0.864 | fork 13.6% faster |
+| Granite Q4 CPU batch | 4840.6 | 4078.4 | 0.843 | fork 15.7% faster |
+| Qwen3 1.7B CPU batch | 4488.7 | 4371.6 | 0.974 | within noise (8.3%) |
+| Nemotron Q6 CUDA stream | 1483.0 | 578.4 | 0.390 | fork 2.5× faster |
+
+All three dissolve. Nemotron Q6 CPU batch moved from an apparent 10.8%
+regression to a 13.6% win; upstream's own measurement for it moved 1090.3 →
+937.2 ms (13.9%) between the two runs, which is the size of the effect being
+claimed. Granite reverses outright. Qwen lands inside the noise floor, which is
+a legitimate "no change", not a measured win, and nothing may be claimed from
+it.
+
+The last row is the control, and it is what makes the others trustworthy: it
+is the largest effect in the suite (2.5×) and it reproduces under interleaving
+at 0.390 against the suite's 0.399. So the suite is not worthless — it does
+resolve large effects. What it cannot do is resolve effects near its own drift,
+and on this machine the drift is 14–18%, which is the same order as the very
+CPU deltas being reported. Interleaving is what separates them.
+
+### Known non-regression
+
+Granite Q4 CUDA batch and Qwen3 1.7B CUDA batch produced different transcripts
+in one direction only: the difference is punctuation. Upstream emits "for you
+ask what" where the fork emits "for you. Ask what" — one token, same words,
+from the graph optimizer perturbing numerics on the most quantization-sensitive
+case. The words are identical, so this is not a content regression, and it is
+recorded rather than smoothed over because a transcript gate will keep flagging
+it until someone checks the text rather than the hash.

@@ -28,6 +28,55 @@ Its language default is `auto`; pass `--language en` for an English constraint.
 The subset uses `auto` for monolingual Nemotron (upstream rejects explicit
 language hints there) and `en` for the other profiles.
 
+## Rendering a summary
+
+```powershell
+uv run --no-project scripts/bench/report.py --summary build/bench/current/summary.json
+```
+
+Writes `report.md` and `report.csv` beside the summary. The Markdown table is
+for pasting into a discussion; the CSV is for diffing two runs column by column.
+The per-chunk stage columns come from the streaming chunk records and are blank
+for batch cases, which have no per-chunk pipeline to break down.
+
+## Comparing two libraries
+
+A suite measures one library, so it cannot answer "is this tree slower than
+that one?". Use the paired runner for that, which alternates the arms within
+each repetition and rotates which arm starts:
+
+```powershell
+uv run --no-project scripts/bench/compare.py `
+  --wav samples/jfk.wav --model <installed.gguf> --backend cpu `
+  --arm ref=../transcribe_benchmarks/build/bench-native/install/bin/transcribe.dll `
+  --arm fork=build/bench-native/install/bin/transcribe.dll
+# Repeatable --arm; the first is the baseline. --reps (min 2), --stream-chunk-ms,
+# --att-right, --threads, --language, --backend, --output.
+```
+
+This is not a convenience wrapper around the suite; it exists because a suite's
+cross-arm verdicts are not trustworthy. A suite runs one arm's cases back to
+back, so machine drift lands entirely inside whichever arm ran second. Measured
+on this fixture: Nemotron Q6 CPU batch read 1090.3 ms (reference) against
+1208.4 ms (fork) in a suite — an apparent 10.8% regression — while the same
+pair interleaved read 937.2 against 809.3, the fork 13.6% faster. The same
+library moved 1090 → 937 ms (18%) between the two runs. Use `suite.py
+--baseline` to track one tree over time and `compare.py` for any claim about
+one tree against another.
+
+`compare.py` loads each arm through `--bindings`, defaulting to the bindings of
+the checkout that owns that library, because generated bindings are ABI
+specific: a foreign library fails at import time on the first symbol it does
+not export. That is a hard error, never something to silently time; the arm's
+log is printed when it fails. The verdict is conservative by construction — a
+difference counts only when it exceeds the larger arm's own within-arm spread,
+the noise floor that case actually exhibits rather than a fixed guess. Anything
+smaller is reported as within-noise and must not justify a change.
+
+Always keep the arms on the same WAV, weights, language, backend and build
+profile. A reported `spread` far larger than its neighbours means the machine
+was not idle; discard that run.
+
 JSON includes the exact library/build identity, model size, WAV SHA256,
 language, threads, backend, model load, WAV conversion, wall time, native
 mel/encoder/decoder stages, all three transcripts, and streaming begin/feed/

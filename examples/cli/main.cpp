@@ -950,6 +950,23 @@ int main(int argc, char ** argv) {
         transcribe_log_set(log_cb, nullptr);
     }
 
+    // Register the compute backends before the first model load, as
+    // transcribe.h requires of the host ("call once, before the first model
+    // load"). In a dynamic-backend build nothing is compiled in: the device
+    // registry stays empty until a module directory is scanned, and every
+    // family then fails at its own init_backends with "failed to initialize
+    // CPU backend" — a message that names the symptom and hides the cause.
+    // --list-devices has always made this call; the transcription paths did
+    // not, so a dynamic-backend CLI could never load any model. In a
+    // non-dynamic build this is a no-op returning TRANSCRIBE_OK.
+    if (const transcribe_status backend_st = transcribe_init_backends_default(); backend_st != TRANSCRIBE_OK) {
+        std::fprintf(stderr,
+                     "error: no compute backend available: "
+                     "transcribe_init_backends_default() returned %s\n",
+                     transcribe_status_string(backend_st));
+        return EXIT_FAILURE;
+    }
+
     if (!args.multi_models.empty()) {
         return multi_main(args);
     }

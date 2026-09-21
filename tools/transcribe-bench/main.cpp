@@ -311,6 +311,18 @@ int main(int argc, char ** argv) {
     }
     const bool quiet = args.quiet;
 
+    // Register the compute backends before the first model load (see the
+    // ordering requirement in transcribe.h). Required in a dynamic-backend
+    // build, whose device registry is empty until a module directory is
+    // scanned; a no-op returning TRANSCRIBE_OK when backends are compiled in.
+    if (const transcribe_status backend_st = transcribe_init_backends_default(); backend_st != TRANSCRIBE_OK) {
+        std::fprintf(stderr,
+                     "error: no compute backend available: "
+                     "transcribe_init_backends_default() returned %s\n",
+                     transcribe_status_string(backend_st));
+        return EXIT_FAILURE;
+    }
+
     if (!quiet) {
         std::fprintf(stderr, "loading sample %s\n", args.sample_path.c_str());
     }

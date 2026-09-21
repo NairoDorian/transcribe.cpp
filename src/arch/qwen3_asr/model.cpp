@@ -7,6 +7,7 @@
 #include "ggml.h"
 #include "gguf.h"
 #include "qwen3_asr.h"
+#include "r2t2-package.h"
 #include "transcribe-arch.h"
 #include "transcribe-batch-util.h"
 #include "transcribe-debug.h"
@@ -126,6 +127,26 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
     m->caps.n_languages = 0;
     m->caps.languages   = nullptr;
 
+    // Confucius4-R2T2 arrives as a sibling-runtime package: encoder, decoder and
+    // tokenizer are this family's graph, but the hparams, the capability flags
+    // and the entire vocabulary live in JSON sidecars embedded in the GGUF
+    // rather than in KVs this family reads. Adapt before the first metadata read
+    // below, because synthesising exactly those KVs is what the adapter does —
+    // and before read_languages_kv, which needs the general.languages it adds.
+    // (The core already rewrote general.architecture, or we would not have been
+    // dispatched here at all; see resolve_foreign_packaging in
+    // transcribe-loader.cpp.)
+    //
+    // The variant is assigned here rather than taken from loader.variant(),
+    // which was snapshotted in Loader::open() before this ran and so reports the
+    // family default for a package that carries no stt.variant KV at all.
+    if (is_r2t2_package(loader.gguf())) {
+        if (const transcribe_status st = prepare_r2t2_metadata(loader.gguf()); st != TRANSCRIBE_OK) {
+            return st;
+        }
+        m->variant = k_r2t2_variant;
+    }
+
     if (const transcribe_status st = read_capability_kv(loader.gguf(), m->caps); st != TRANSCRIBE_OK) {
         return st;
     }
@@ -228,11 +249,31 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
         return TRANSCRIBE_ERR_GGUF;
     }
 
-    if (const transcribe_status st = build_qwen3_asr_weights(m->ctx_meta, m->hparams, m->weights);
-        st != TRANSCRIBE_OK) {
-        gguf_free(gguf_data);
-        return st;
+    // gguf_init_from_file gave ctx_meta the dtypes the file declares. For the
+    // R2T2 package those include BF16 on every unquantized weight, which this
+    // family's F32 graph cannot take (see plan_r2t2_dtypes). Rebuild the
+    // catalog with those planned as F32 so that streaming performs the
+    // conversion; every other package is unaffected and keeps this context.
+    if (is_r2t2_package(loader.gguf())) {
+        ggml_context * normalized = nullptr;
+        const transcribe_status st = plan_r2t2_dtypes(m->ctx_meta, &normalized);
+        if (st != TRANSCRIBE_OK) {
+            gguf_free(gguf_data);
+            return st;
+        }
+        // Nothing has been allocated against ctx_meta yet — it is metadata
+        // only at this point — so discarding it costs a few hundred KB.
+        ggml_free(m->ctx_meta);
+        m->ctx_meta = normalized;
     }
+
+    // Ordering in this block is load-bearing. stream_tensor_data() below
+    // resolves every tensor in ctx_meta against the GGUF's own tensor table
+    // *by name*, so it has to run while ctx_meta still carries the names as
+    // written in the file. Only once the bytes are in place do we translate
+    // those names into this family's contract, which is what the weight catalog
+    // then binds against. Hence: open -> plan -> allocate -> stream -> rename ->
+    // catalog. Renaming any earlier would make every streaming lookup miss.
 
     // Backend plan.
     const transcribe_backend_request backend_req = (params != nullptr) ? params->backend : TRANSCRIBE_BACKEND_AUTO;
@@ -261,6 +302,26 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
         return st;
     }
     gguf_free(gguf_data);
+
+    // Translate the file's tensor names into this family's contract. For a
+    // foreign package (Confucius4-R2T2) the file carries the sibling runtime's
+    // names and this matters; for every GGUF we publish ourselves the mapping is
+    // the identity and this is a no-op. Safe to do after streaming because
+    // ggml_set_name only rewrites the tensor's name field, not its data or its
+    // placement in the buffer.
+    if (is_r2t2_package(loader.gguf())) {
+        (void) rename_r2t2_tensors(m->ctx_meta);
+    }
+
+    // Bind the catalog last, now that tensor names are the ones the GET_*
+    // helpers look for. A malformed file therefore pays one weights allocation
+    // before its missing tensor is reported; that is the price of having a
+    // single ordering rather than two variants of this catalog build (before
+    // and after allocation) which would drift apart.
+    if (const transcribe_status st = build_qwen3_asr_weights(m->ctx_meta, m->hparams, m->weights);
+        st != TRANSCRIBE_OK) {
+        return st;
+    }
 
     // Pack gate+up into a separate session + backend buffer so the FFN
     // can run a single mul_mat instead of two. ctx_meta is sized

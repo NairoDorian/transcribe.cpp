@@ -1,0 +1,164 @@
+{
+  "schema_version": "transcribe-intake-v1",
+  "family": "confucius4_r2t2",
+  "hf_repo": "netease-youdao/Confucius4-R2T2",
+  "hf_revision": "185ce639118ad1362d049ca0d8ed04b6ec5cd6c9",
+  "sources": {
+    "config": {
+      "kind": "hf_file",
+      "path": "config.json",
+      "status": "found"
+    },
+    "preprocessor": {
+      "kind": "hf_file",
+      "path": "preprocessor_config.json",
+      "status": "found"
+    },
+    "tokenizer_config": {
+      "kind": "hf_file",
+      "path": "tokenizer_config.json",
+      "status": "found"
+    },
+    "tokenizer_json": {
+      "kind": "hf_file",
+      "path": "tokenizer.json",
+      "status": "found"
+    },
+    "generation_config": {
+      "kind": "hf_file",
+      "path": "generation_config.json",
+      "status": "found"
+    },
+    "safetensors_metadata": {
+      "kind": "hf_api",
+      "path": "HfApi.get_safetensors_metadata",
+      "status": "found",
+      "detail": "header-only floating dtype distribution; no tensor payloads downloaded"
+    },
+    "publisher_code": {
+      "kind": "reference_code",
+      "path": "https://github.com/netease-youdao/Confucius4-R2T2/blob/80c22e6140bcb9166fb9906798894fc8b18c8309/r2t2/r2t2_asr.py",
+      "status": "found"
+    }
+  },
+  "variants": [
+    {
+      "name": "confucius4-r2t2-1.7b",
+      "memory_gb": null,
+      "files": []
+    }
+  ],
+  "config": {
+    "architecture_candidates": [
+      "audio-llm"
+    ],
+    "key_fields": {
+      "architectures": [
+        "Qwen3ASRForConditionalGeneration"
+      ],
+      "model_type": "qwen3_asr"
+    }
+  },
+  "dtype": {
+    "expected": "bfloat16",
+    "source": "weights_header",
+    "evidence": "safetensors header BF16=707; BF16 selected as dominant floating dtype",
+    "details": {
+      "config_declared": null,
+      "header_distribution": {
+        "BF16": 707
+      }
+    }
+  },
+  "frontend": {
+    "sample_rate": 16000,
+    "n_mels": 128,
+    "hop_length": 160,
+    "fft_size": 400,
+    "window": "hann_periodic",
+    "normalization": "per_utterance",
+    "preemphasis": 0.0,
+    "dither": 0.0,
+    "center": true,
+    "padding_mode": "reflect",
+    "mel_filterbank_norm": "slaney"
+  },
+  "tokenizer": {
+    "type": "bpe",
+    "vocab_size": 151705,
+    "special_tokens": {
+      "pad": 151643
+    },
+    "has_language_tokens": true,
+    "vocab_sha256": "36c3749fd3c87e2402f612459b45ae4e6ce5488a3ecde47a8a3ea3ed3d5dda5a"
+  },
+  "capabilities": {
+    "languages": [
+      "zh",
+      "en",
+      "yue",
+      "ar",
+      "de",
+      "fr",
+      "es",
+      "pt",
+      "id",
+      "it",
+      "ko",
+      "ru",
+      "th",
+      "vi",
+      "ja",
+      "tr",
+      "hi",
+      "ms",
+      "nl",
+      "sv",
+      "da",
+      "fi",
+      "pl",
+      "cs",
+      "fil",
+      "fa",
+      "el",
+      "hu",
+      "mk",
+      "ro"
+    ],
+    "language_detection": true,
+    "translation": false,
+    "timestamps": [],
+    "streaming": true,
+    "speaker_diarization": false
+  },
+  "upstream_benchmarks": [
+    {
+      "dataset": "LibriSpeech test-clean",
+      "language": "en",
+      "metric": "wer",
+      "score": null,
+      "source": "https://huggingface.co/netease-youdao/Confucius4-R2T2",
+      "notes": "Selected acceptance dataset. Oracle baseline must be measured; do not substitute publisher streaming scores."
+    }
+  ],
+  "reference_framework": "author_repo_confucius4_r2t2",
+  "reference_rationale": "Publisher R2T2 state machine at 80c22e6140bcb9166fb9906798894fc8b18c8309 is authoritative for stable prefixes and finalization; ordinary Qwen transcription does not implement this contract. audio.cpp a7b58a6 is a secondary implementation reference, not the numerical oracle.",
+  "architecture_pattern": "audio-llm",
+  "known_risks": [
+    "Published audio.cpp GGUF embeds JSON resources and original tensor names, whereas transcribe requires stt.* metadata and mapped tensor names; direct catalogue alias is incompatible.",
+    "LSP requires rollback in token space, UTF-8 safe stable prefixes, punctuation/repetition repair, pipe truncation, and authoritative final text.",
+    "Publisher streaming implementation requires vLLM; Windows native reference execution cannot use this backend directly. WSL Ubuntu exists but has no uv reference environment yet.",
+    "Pinned publisher config uses thinker_config, compatible with the existing Qwen hparam layout. The sibling implementation additionally accepts a flattened layout; do not assume artifacts use identical packaging. Verify tied output weights.",
+    "Streaming re-encodes accumulated audio; graph capacity bucketing needs valid-prefix masks and numerical validation, especially when buckets grow or shrink.",
+    "Reference dtype is BF16. Published F16 and Q8 GGUF are secondary artifacts, not BF16 oracle replacements.",
+    "Only Q8_0 or higher precision is supported by the sibling implementation; no lower-bit catalogue variants are authorized by evidence.",
+    "Context and hotwords deferred by user on 2026-09-20.",
+    "Audio.cpp uses 30-second offline windows; confirm publisher context/reset behavior before adopting limits for streaming."
+  ],
+  "intake_gaps": [
+    {
+      "field": "reference_framework",
+      "reason": "Streaming oracle environment and measured outputs are not available yet; reference port must be validated before exposing the model in the app."
+    }
+  ]
+}

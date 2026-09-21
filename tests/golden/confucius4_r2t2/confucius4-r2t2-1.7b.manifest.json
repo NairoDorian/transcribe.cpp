@@ -1,0 +1,12 @@
+{
+  "schema": "transcribe-golden-manifest-v1",
+  "family": "confucius4_r2t2",
+  "variant": "confucius4-r2t2-1.7b",
+  "source_model": {
+    "hf_repo": "netease-youdao/Confucius4-R2T2",
+    "hf_revision": "185ce639118ad1362d049ca0d8ed04b6ec5cd6c9"
+  },
+  "expected_dtype": "bfloat16",
+  "dtype_source": "weights_header",
+  "_skeleton": true
+}

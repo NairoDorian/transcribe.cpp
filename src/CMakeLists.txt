@@ -165,6 +165,19 @@ set(_srcs_qwen3_asr
     arch/qwen3_asr/encoder.cpp
     arch/qwen3_asr/decoder.cpp
     causal_lm/causal_lm.cpp
+    # Confucius4-R2T2 is a repackaging of this same encoder/decoder graph, so it
+    # ships inside this family rather than as its own plugin: the extra work is
+    # package adaptation and text post-processing, not a new network. The
+    # adapter rewrites the sibling's `audiocpp.*` metadata and tensor names into
+    # the `stt.qwen3_asr.*` / `stt.frontend.*` keys this family's weights loader
+    # already reads, so nothing here reaches the runtime until a loader path
+    # calls it.
+    arch/qwen3_asr/r2t2-package.cpp
+    arch/qwen3_asr/r2t2-text.cpp
+    # cJSON parses the JSON sidecars the sibling's GGUF embeds (config.json,
+    # tokenizer.json). Same vendoring posture as whisper's miniz above: one C
+    # file pulled into the family that needs it, not a new dependency.
+    third_party/cJSON/cJSON.c
 )
 
 set(_srcs_moss

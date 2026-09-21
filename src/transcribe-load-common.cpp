@@ -456,6 +456,11 @@ transcribe_status stream_tensor_data(const std::string &  path,
 
     const size_t         data_offset = gguf_get_data_offset(gguf_data);
     std::vector<uint8_t> staging;
+    // Scratch for the dtype-converting path below. Declared out here so a
+    // long tensor list reuses one allocation instead of one per tensor.
+    std::vector<uint8_t> converted;
+    std::vector<float>   staging_f32;
+    size_t               n_converted = 0;
 
     for (ggml_tensor * t = ggml_get_first_tensor(ctx_meta); t != nullptr; t = ggml_get_next_tensor(ctx_meta, t)) {
         const int64_t idx = gguf_find_tensor(gguf_data, t->name);
@@ -463,8 +468,15 @@ transcribe_status stream_tensor_data(const std::string &  path,
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "%s: tensor \"%s\" not in gguf data", error_tag, t->name);
             return TRANSCRIBE_ERR_GGUF;
         }
-        const size_t toffset = gguf_get_tensor_offset(gguf_data, idx);
-        const size_t nbytes  = ggml_nbytes(t);
+        const size_t    toffset  = gguf_get_tensor_offset(gguf_data, idx);
+        const ggml_type src_type = gguf_get_tensor_type(gguf_data, idx);
+        const size_t    nbytes   = ggml_nbytes(t);
+        // When the file's dtype and the planned dtype agree — every tensor of
+        // every GGUF this project publishes — the read is exactly as long as
+        // the destination and this is byte-for-byte the upload it always was.
+        // Only a dtype change reads the file's own (differently sized) span.
+        const bool   convert   = (src_type != t->type);
+        const size_t src_bytes = convert ? gguf_get_tensor_size(gguf_data, idx) : nbytes;
 
         const std::streamoff abs_offset =
             static_cast<std::streamoff>(data_offset) + static_cast<std::streamoff>(toffset);
@@ -474,21 +486,91 @@ transcribe_status stream_tensor_data(const std::string &  path,
             return TRANSCRIBE_ERR_GGUF;
         }
 
-        if (staging.size() < nbytes) {
-            staging.resize(nbytes);
+        if (staging.size() < src_bytes) {
+            staging.resize(src_bytes);
         }
-        fin.read(reinterpret_cast<char *>(staging.data()), static_cast<std::streamsize>(nbytes));
+        fin.read(reinterpret_cast<char *>(staging.data()), static_cast<std::streamsize>(src_bytes));
         if (!fin) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "%s: short read for tensor \"%s\" (%zu bytes)", error_tag, t->name,
-                    nbytes);
+                    src_bytes);
             return TRANSCRIBE_ERR_GGUF;
+        }
+
+        // When the dtypes differ, convert through f32 using the ggml type
+        // traits — no per-type code, the same mechanism for every pair. The
+        // case this exists for: a package that stores a weight in BF16 while
+        // the family's graph needs F32. Widening the loader's type allowlists
+        // cannot substitute for it, because ggml's elementwise ops accept a
+        // low-precision src0 against an f32 src1 but never the reverse, and
+        // the family's `ggml_mul(y, gamma)` / `ggml_add(x, bias)` put the f32
+        // activation in src0.
+        const uint8_t * upload       = staging.data();
+        size_t          upload_bytes = nbytes;
+        if (convert) {
+            const ggml_type_traits * src_traits = ggml_get_type_traits(src_type);
+            const ggml_type_traits * dst_traits = ggml_get_type_traits(t->type);
+            const int64_t            n_elem     = ggml_nelements(t);
+            // Only plain (non-quantized) float formats convert here: their
+            // type_size is an element size, so the expected byte count is
+            // unambiguous and to_float/from_float_ref operate on whole
+            // elements. A quantized source would need block-aware handling
+            // this path does not do.
+            const size_t src_expect = static_cast<size_t>(n_elem) * ggml_type_size(src_type);
+            // F32 carries no traits of its own — it is the pivot both
+            // directions convert through, so the identity needs none and
+            // ggml leaves both members unset. Requiring them here would
+            // reject every conversion whose target is F32, so F32 is
+            // accepted on either end and handled explicitly below.
+            const bool src_ok = (src_type == GGML_TYPE_F32) ||
+                                (src_traits != nullptr && src_traits->to_float != nullptr && !src_traits->is_quantized);
+            const bool dst_ok =
+                (t->type == GGML_TYPE_F32) ||
+                (dst_traits != nullptr && dst_traits->from_float_ref != nullptr && !dst_traits->is_quantized);
+            if (!src_ok || !dst_ok || src_bytes != src_expect) {
+                log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
+                        "%s: tensor \"%s\" is stored as %s but planned as %s, and no "
+                        "float conversion is available between them",
+                        error_tag, t->name, ggml_type_name(src_type), ggml_type_name(t->type));
+                return TRANSCRIBE_ERR_GGUF;
+            }
+
+            // file dtype -> f32 -> planned dtype, either leg an identity.
+            const float * f32_src = nullptr;
+            if (src_type == GGML_TYPE_F32) {
+                f32_src = reinterpret_cast<const float *>(staging.data());
+            } else {
+                if (staging_f32.size() < static_cast<size_t>(n_elem)) {
+                    staging_f32.resize(static_cast<size_t>(n_elem));
+                }
+                src_traits->to_float(staging.data(), staging_f32.data(), n_elem);
+                f32_src = staging_f32.data();
+            }
+
+            if (converted.size() < nbytes) {
+                converted.resize(nbytes);
+            }
+            if (t->type == GGML_TYPE_F32) {
+                std::memcpy(converted.data(), f32_src, nbytes);
+            } else {
+                dst_traits->from_float_ref(f32_src, converted.data(), n_elem);
+            }
+
+            upload = converted.data();
+            ++n_converted;
         }
 
         // ggml_backend_tensor_set is the right call regardless of
         // backend: on host buffers (CPU + Metal unified memory on
         // Apple Silicon) it's a memcpy; on discrete GPUs it does
         // the upload.
-        ggml_backend_tensor_set(t, staging.data(), 0, nbytes);
+        ggml_backend_tensor_set(t, upload, 0, upload_bytes);
+    }
+
+    if (n_converted > 0) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_INFO,
+                "%s: converted %zu tensor(s) from the file's stored dtype to the planned "
+                "dtype while streaming",
+                error_tag, n_converted);
     }
 
     return TRANSCRIBE_OK;

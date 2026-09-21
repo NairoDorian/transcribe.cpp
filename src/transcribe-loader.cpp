@@ -11,6 +11,9 @@
 #include "transcribe-meta.h"
 #include "transcribe-path.h"
 
+#include <cstring>
+#include <string>
+
 namespace transcribe {
 
 Loader::~Loader() {
@@ -25,6 +28,70 @@ gguf_context * Loader::release_gguf() {
     gguf_              = nullptr;
     return out;
 }
+
+// Resolution of foreign GGUF packaging onto a family this repo implements.
+//
+// A GGUF produced by a sibling runtime can declare that runtime's own
+// architecture string and name the equivalent transcribe family in a sidecar
+// key instead. Resolving that has to happen here, in the core, and before
+// dispatch, for a structural reason: `general.architecture` is the *only*
+// thing that selects a family, and under TRANSCRIBE_ARCH_DL the family's
+// plugin is not loaded until after that selection — so the plugin cannot be
+// asked what it would accept. The check therefore has to precede the read at
+// the top of open().
+//
+// The table is deliberately explicit rather than a naming convention. Each row
+// is a claim that this repository has verified a specific sibling packaging
+// maps onto a specific family; that claim belongs written down once, here,
+// rather than inferred from a string at runtime.
+//
+// Scope: this rewrites the architecture KV only. Adapting the remainder of a
+// package — injecting metadata the family's hparam reader expects, renaming
+// tensors — is family knowledge and stays in the family's own load(), which
+// has the gguf_context and the ggml_context to do it properly.
+namespace {
+struct ForeignPackaging {
+    const char * packaging;  // value of general.architecture
+    const char * family_key; // sidecar KV naming the family
+    const char * family_id;  // value of that KV this repo implements
+    const char * arch;       // transcribe family to dispatch to
+};
+
+constexpr ForeignPackaging kForeignPackaging[] = {
+    // Confucius4-R2T2, packaged by audio.cpp: same encoder/decoder graph as
+    // qwen3_asr (see docs/porting/families/confucius4_r2t2.md). The family
+    // adapts its own metadata and tensor names in load(); all this does is
+    // make the file dispatchable.
+    { "audiocpp", "audiocpp.model_spec.family", "confucius4_r2t2", "qwen3_asr" },
+};
+
+bool resolve_foreign_packaging(gguf_context * g) {
+    const int64_t arch_key = gguf_find_key(g, "general.architecture");
+    if (arch_key < 0 || gguf_get_kv_type(g, arch_key) != GGUF_TYPE_STRING) {
+        return false;
+    }
+    const char * declared = gguf_get_val_str(g, arch_key);
+
+    for (const ForeignPackaging & row : kForeignPackaging) {
+        if (std::strcmp(declared, row.packaging) != 0) {
+            continue;
+        }
+        const int64_t fam_key = gguf_find_key(g, row.family_key);
+        if (fam_key < 0 || gguf_get_kv_type(g, fam_key) != GGUF_TYPE_STRING) {
+            continue;
+        }
+        // Copied before the write below: gguf_set_val_str() removes the key it
+        // replaces, which frees the storage this pointer refers to.
+        const std::string family_id = gguf_get_val_str(g, fam_key);
+        if (family_id != row.family_id) {
+            continue;
+        }
+        gguf_set_val_str(g, "general.architecture", row.arch);
+        return true;
+    }
+    return false;
+}
+}  // namespace
 
 transcribe_status Loader::open(const char * path) {
     if (path == nullptr) {
@@ -56,6 +123,11 @@ transcribe_status Loader::open(const char * path) {
         // single public status.
         return TRANSCRIBE_ERR_GGUF;
     }
+
+    // Rewrite a sibling-runtime architecture string onto the family this repo
+    // implements, so everything below (and the dispatch that follows) sees an
+    // ordinary transcribe GGUF. No-op for every file we produce ourselves.
+    resolve_foreign_packaging(gguf_);
 
     // general.architecture is required. Without it the dispatch layer
     // has nothing to look up in the registry. Both Absent and BadType

@@ -1163,6 +1163,7 @@ enum class StreamStablePrefixImpl {
     GenericTextAgreement,
     FamilyTokenAgreement,
     FamilyNativeCommit,
+    FamilyRawByteCommit,
 };
 
 static StreamStablePrefixImpl stream_stable_prefix_impl_for_arch(const transcribe::Arch * arch) {
@@ -1181,6 +1182,13 @@ static StreamStablePrefixImpl stream_stable_prefix_impl_for_arch(const transcrib
         // Moonshine re-decodes the full prefix and its family boundary is
         // token-id agreement; the family applies stable_prefix_agreement_n.
         { "moonshine_streaming", StreamStablePrefixImpl::FamilyTokenAgreement },
+        // Qwen3-ASR's R2T2 variant publishes a byte offset (the length of its
+        // text pipeline's stable prefix) rather than token ids, because that
+        // pipeline rewrites the text — punctuation, spacing and envelope
+        // repair — between chunks, breaking the token<->text correspondence
+        // FamilyNativeCommit's token sum depends on. Non-R2T2 variants of
+        // this arch do not stream at all, so the entry is inert for them.
+        { "qwen3_asr",           StreamStablePrefixImpl::FamilyRawByteCommit  },
     };
 
     const char * name = arch != nullptr && arch->name != nullptr ? arch->name : "";
@@ -1294,6 +1302,14 @@ static size_t selected_stable_prefix_candidate_raw_bytes(transcribe_session * se
         case StreamStablePrefixImpl::FamilyTokenAgreement:
         case StreamStablePrefixImpl::FamilyNativeCommit:
             return family_candidate_raw_prefix_bytes(session);
+        case StreamStablePrefixImpl::FamilyRawByteCommit:
+            // The family published the boundary directly. `has_result` gates
+            // it for the same reason family_candidate_raw_prefix_bytes gates
+            // on it: before the first chunk produces text there is no
+            // transcript for an offset to refer to, and a family that ran
+            // without setting the field must not have a stale value from a
+            // prior stream read as this stream's boundary.
+            return session->has_result ? session->stream_family_committed_bytes : 0;
         case StreamStablePrefixImpl::GenericTextAgreement:
             return generic_text_stable_prefix_candidate_raw_bytes(session);
     }
@@ -2061,9 +2077,7 @@ static transcribe_status transcribe_stream_feed_impl(struct transcribe_session *
     // Fast-path: if native VAD is enabled, audio activity gate is not disabled,
     // and either silence energy OR native VAD not speaking:
     // advance timeline and bypass expensive mel + model encoder pass.
-    if (session->enable_vad &&
-        n_samples >= 256 &&
-        !transcribe::is_activity_gate_disabled() &&
+    if (session->enable_vad && n_samples >= 256 && !transcribe::is_activity_gate_disabled() &&
         session->stream_audio_committed_us == session->stream_audio_input_us &&
         session->stream_tentative_text.empty() &&
         (!session->stream_vad.is_speaking() || !transcribe::is_audio_active(pcm, static_cast<size_t>(n_samples)))) {

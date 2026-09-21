@@ -8,6 +8,7 @@
 #include "gguf.h"
 #include "qwen3_asr.h"
 #include "r2t2-package.h"
+#include "r2t2-stream.h"
 #include "transcribe-arch.h"
 #include "transcribe-batch-util.h"
 #include "transcribe-debug.h"
@@ -150,6 +151,14 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
     if (const transcribe_status st = read_capability_kv(loader.gguf(), m->caps); st != TRANSCRIBE_OK) {
         return st;
     }
+    // Streaming capability is derived from the package, not read from a KV: the
+    // GGUF carries no streaming capability tag, and the R2T2 hooks in
+    // r2t2-stream.cpp gate themselves on the same package marker. Setting it
+    // only here (rather than unconditionally for the family) is what keeps a
+    // native Qwen3-ASR file from advertising a stream API it has no hooks for.
+    if (m->variant == k_r2t2_variant) {
+        m->caps.supports_streaming = true;
+    }
     if (const transcribe_status st = read_languages_kv(loader.gguf(), *m); st != TRANSCRIBE_OK) {
         return st;
     }
@@ -255,8 +264,8 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
     // catalog with those planned as F32 so that streaming performs the
     // conversion; every other package is unaffected and keeps this context.
     if (is_r2t2_package(loader.gguf())) {
-        ggml_context * normalized = nullptr;
-        const transcribe_status st = plan_r2t2_dtypes(m->ctx_meta, &normalized);
+        ggml_context *          normalized = nullptr;
+        const transcribe_status st         = plan_r2t2_dtypes(m->ctx_meta, &normalized);
         if (st != TRANSCRIBE_OK) {
             gguf_free(gguf_data);
             return st;
@@ -522,6 +531,15 @@ constexpr LangNameEntry k_qwen3_asr_language_names[] = {
 // directly from the vocab (never hardcoded) and append it by hand. The
 // dispatcher validates `bcp47` against caps.languages first, so an unknown
 // code here means converter/map drift — surface as UNSUPPORTED_LANGUAGE.
+const char * bcp47_for_publisher_name(const std::string & name) {
+    for (const auto & e : k_qwen3_asr_language_names) {
+        if (name == e.pub_name) {
+            return e.bcp47;
+        }
+    }
+    return nullptr;
+}
+
 transcribe_status encode_language_prefix(const transcribe::Tokenizer & tok,
                                          const char *                  bcp47,
                                          std::vector<int32_t> &        out_ids) {
@@ -590,11 +608,40 @@ void pack_mel_chunks(const float *         mel,  // [n_mels, T_mel]
     }
 }
 
-transcribe_status run(transcribe_session *          session,
-                      const float *                 pcm,
-                      int                           n_samples,
-                      const transcribe_run_params * params) {
-    if (session == nullptr || pcm == nullptr || n_samples <= 0) {
+}  // namespace
+
+// One complete decode pass: mel -> audio encoder -> prefill -> greedy step loop
+// -> detokenized text. Shared verbatim by the offline run() below and by the
+// Confucius4-R2T2 streaming path (r2t2-stream.cpp), which calls it once per
+// committed audio chunk. Keeping one implementation is what makes the two
+// paths numerically identical by construction rather than by review: the
+// streaming re-decode is the *same* graph sequence offline runs, over a longer
+// buffer.
+//
+// `suffix_ids`, when non-null, is appended to the prompt after the assistant
+// header. Offline that is the "language {Name}<asr_text>" seed; for R2T2
+// streaming it is that seed plus the already-decoded continuation text, which
+// is exactly the reference's `prompt_raw_ + prefix`.
+//
+// `max_new_tokens` is the greedy generation budget. Offline uses k_max_new;
+// streaming uses the reference's per-chunk budget, so it is a parameter here.
+//
+// This function writes ONLY session scratch (mel_buf, enc_host, t_* timers) and
+// the abort flag. It does not touch full_text / segments / has_result / the
+// detected language, and it does not free the scheduler or KV cache: the caller
+// owns result state and GPU lifetime, which is what lets the streaming path
+// keep the KV cache alive across chunks instead of reallocating per chunk.
+transcribe_status run_decode_pass(transcribe_session *          session,
+                                  const float *                 pcm,
+                                  int                           n_samples,
+                                  const transcribe_run_params * params,
+                                  const std::vector<int32_t> *  suffix_ids,
+                                  int                           max_new_tokens,
+                                  DecodePassResult *            out) {
+    if (session == nullptr || pcm == nullptr || n_samples <= 0 || out == nullptr) {
+        return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+    if (max_new_tokens <= 0) {
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
 
@@ -605,23 +652,9 @@ transcribe_status run(transcribe_session *          session,
     }
 
     // Pre-run abort check (Qwen3-ASR is single-shot, so this is the only
-    // observation point).
+    // observation point). The streaming caller polls between chunks.
     if (cc->poll_abort()) {
         return TRANSCRIBE_ERR_ABORTED;
-    }
-
-    // Language hint. Null/empty == auto-detect (the LM emits its own
-    // "language X<asr_text>" prefix, stripped by the output parser below). A
-    // non-null code is resolved to "language {Name}<asr_text>" tokens that seed
-    // the assistant turn; a resolve failure surfaces as UNSUPPORTED_LANGUAGE.
-    std::vector<int32_t>         lang_prefix_ids;
-    const std::vector<int32_t> * lang_prefix_ptr = nullptr;
-    if (params != nullptr && params->language != nullptr && params->language[0] != '\0') {
-        if (const transcribe_status st = encode_language_prefix(cm->tok, params->language, lang_prefix_ids);
-            st != TRANSCRIBE_OK) {
-            return st;
-        }
-        lang_prefix_ptr = &lang_prefix_ids;
     }
 
     transcribe::debug::init();
@@ -771,7 +804,7 @@ transcribe_status run(transcribe_session *          session,
     // Prompt construction.
     std::vector<int32_t> prompt_ids;
     std::vector<int64_t> audio_positions;
-    build_prompt_tokens(cm->hparams, cm->chat_tokens, T_enc, lang_prefix_ptr, prompt_ids, audio_positions);
+    build_prompt_tokens(cm->hparams, cm->chat_tokens, T_enc, suffix_ids, prompt_ids, audio_positions);
     const int T_prompt   = static_cast<int>(prompt_ids.size());
     const int prefix_len = audio_positions.empty() ? 0 : static_cast<int>(audio_positions.front());
     const int suffix_len = T_prompt - prefix_len - T_enc;
@@ -780,13 +813,13 @@ transcribe_status run(transcribe_session *          session,
     // Input-length gate: audio + prompt + generation must fit the decoder
     // context window. Reject an over-length clip here, before prefill/decode.
     const int ceiling = qwen3_context_ceiling(cc->n_ctx, cm->hparams);
-    if (T_prompt + k_max_new > ceiling) {
+    if (T_prompt + max_new_tokens > ceiling) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "qwen3_asr run: input too long — %d audio + %d prompt tokens "
                             "leave no room for output within the %d-token context (need %d). "
                             "Shorten the audio (see transcribe_capabilities.max_audio_ms) or "
                             "split it into segments.",
-                            T_enc, prefix_len + suffix_len, ceiling, T_prompt + k_max_new);
+                            T_enc, prefix_len + suffix_len, ceiling, T_prompt + max_new_tokens);
         return TRANSCRIBE_ERR_INPUT_TOO_LONG;
     }
 
@@ -795,7 +828,7 @@ transcribe_status run(transcribe_session *          session,
     // graph's flash-attn path wants pow2 attention width). A pre-allocated
     // smaller cache is freed and re-allocated.
     int want_n_ctx = 1024;
-    while (want_n_ctx < T_prompt + k_max_new) {
+    while (want_n_ctx < T_prompt + max_new_tokens) {
         want_n_ctx *= 2;
     }
     if (want_n_ctx > ceiling) {
@@ -941,7 +974,7 @@ transcribe_status run(transcribe_session *          session,
 
     // Step loop.
     const int32_t eos_id   = cm->hparams.eos_token_id;
-    const int32_t max_new  = k_max_new;
+    const int32_t max_new  = max_new_tokens;
     int           cur_past = T_prompt;
 
     // params->spec_k_drafts: -1 = family default (=0, disabled), 0 =
@@ -1226,15 +1259,11 @@ transcribe_status run(transcribe_session *          session,
     n_steps        = static_cast<int>(generated_ids.size()) - 1;
 
     // Decode stopped at EOS (complete) or the generation budget / context width
-    // (truncated). Surface the latter via transcribe_was_truncated() + WARN.
-    if (next_tok != eos_id) {
-        cc->was_truncated = true;
-        transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_WARN,
-                            "qwen3_asr run: output truncated at %d tokens — decode reached the "
-                            "generation budget before end-of-stream; the transcript may be "
-                            "incomplete.",
-                            static_cast<int>(generated_ids.size()));
-    }
+    // (truncated). The caller decides what a truncated decode means: offline it
+    // is a WARN plus TRANSCRIBE_ERR_OUTPUT_TRUNCATED, streaming it is the
+    // expected end of a chunk that still has audio behind it, so it is NOT
+    // logged or flagged here.
+    const bool truncated = next_tok != eos_id;
 
     // Map granular counters to the debug-print shape. With graph reuse all
     // per-step overhead collapses to tensor_set; build/alloc/ctx_reset are
@@ -1251,39 +1280,7 @@ transcribe_status run(transcribe_session *          session,
     // Decode generated ids to text (Tokenizer::decode handles the "gpt2"
     // byte-level inversion natively).
     std::string raw_text = cm->tok.decode(generated_ids.data(), static_cast<int>(generated_ids.size()));
-    cc->raw_text         = raw_text;  // pre-envelope text, via transcribe_raw_text
-
-    // Parse Qwen3-ASR output: auto-detect emits "language X<asr_text>text"
-    // (strip prefix); forced emits "text" (we already seeded the prefix). The
-    // split is unconditional — absent prefix leaves transcript_text = raw_text.
-    std::string transcript_text = raw_text;
-    if (auto sep = raw_text.find("<asr_text>"); sep != std::string::npos) {
-        // Auto-detect path: surface the model-picked language name as
-        // detected_language (reverse-mapped to BCP-47), but only when the
-        // caller did NOT supply a hint (the field reports what the model told
-        // us, not what we told it).
-        if (lang_prefix_ptr == nullptr) {
-            constexpr const char k_prefix[] = "language ";
-            const size_t         name_start = raw_text.find(k_prefix);
-            if (name_start != std::string::npos && name_start < sep) {
-                const size_t ns   = name_start + (sizeof(k_prefix) - 1);
-                std::string  name = raw_text.substr(ns, sep - ns);
-                while (!name.empty() && (name.back() == ' ' || name.back() == '\t' || name.back() == '\n')) {
-                    name.pop_back();
-                }
-                for (const auto & e : k_qwen3_asr_language_names) {
-                    if (name == e.pub_name) {
-                        cc->detected_language = e.bcp47;
-                        break;
-                    }
-                }
-            }
-        }
-        transcript_text = raw_text.substr(sep + std::strlen("<asr_text>"));
-    }
-
-    // Write full_text + a single segment (no timestamps; TIMESTAMPS_NONE).
-    cc->t_decode_us = ggml_time_us() - t_dec_start;
+    cc->t_decode_us      = ggml_time_us() - t_dec_start;
 
     // Optional perf breakdown (finer split than the public mel/encode/decode
     // timings), gated on env var.
@@ -1326,6 +1323,113 @@ transcribe_status run(transcribe_session *          session,
         }
     }
 
+    out->raw_text    = std::move(raw_text);
+    out->truncated   = truncated;
+    out->n_generated = static_cast<int>(generated_ids.size());
+    return TRANSCRIBE_OK;
+}
+
+namespace {  // reopen: everything below is file-local, as above the core.
+
+// Offline single-shot transcription: resolve the language hint, run one decode
+// pass over the whole clip, then envelope the text into the session result.
+//
+// All of the numeric work lives in run_decode_pass above; what stays here is
+// everything that is specific to being *offline* — the language hint becoming a
+// prompt seed, the auto-detect language readback, the single segment, and the
+// per-run GPU teardown. Streaming reuses run_decode_pass and supplies its own
+// answer to each of those.
+transcribe_status run(transcribe_session *          session,
+                      const float *                 pcm,
+                      int                           n_samples,
+                      const transcribe_run_params * params) {
+    if (session == nullptr || pcm == nullptr || n_samples <= 0) {
+        return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+    auto * cc = static_cast<QwenAsrSession *>(session);
+    auto * cm = static_cast<QwenAsrModel *>(cc->model);
+    if (cm == nullptr) {
+        return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+
+    // Language hint. Null/empty == auto-detect (the LM emits its own
+    // "language X<asr_text>" prefix, stripped by the parser below). A non-null
+    // code is resolved to "language {Name}<asr_text>" tokens that seed the
+    // assistant turn; a resolve failure surfaces as UNSUPPORTED_LANGUAGE.
+    std::vector<int32_t>         lang_prefix_ids;
+    const std::vector<int32_t> * lang_prefix_ptr = nullptr;
+    if (params != nullptr && params->language != nullptr && params->language[0] != '\0') {
+        if (const transcribe_status st = encode_language_prefix(cm->tok, params->language, lang_prefix_ids);
+            st != TRANSCRIBE_OK) {
+            return st;
+        }
+        lang_prefix_ptr = &lang_prefix_ids;
+    }
+
+    // Free GPU buffers (scheduler galloc + KV cache) after the run to prevent
+    // memory accumulation across repeated calls. The session persists across
+    // calls (e.g. Multi-STT extra models with multi_stt_keep_extra_models_loaded),
+    // so releasing here lets CUDA's caching allocator reuse freed blocks on the
+    // next run() rather than growing the cache (GPU memory leak on Windows).
+    // run_decode_pass deliberately does not do this: the streaming path keeps
+    // the scheduler and KV cache alive across chunks. Note this runs on the
+    // error paths too, which is why it is a scope guard rather than a call
+    // before each return.
+    struct GpuGuard {
+        QwenAsrSession * cc;
+
+        ~GpuGuard() {
+            cc->kv_cache.free();
+            if (cc->sched != nullptr) {
+                safe_sched_free(cc->sched);
+                cc->sched = nullptr;
+            }
+        }
+    } gpu_guard{ cc };
+
+    DecodePassResult        pass;
+    const transcribe_status st = run_decode_pass(session, pcm, n_samples, params, lang_prefix_ptr, k_max_new, &pass);
+    if (st != TRANSCRIBE_OK) {
+        return st;
+    }
+
+    cc->raw_text      = pass.raw_text;  // pre-envelope text, via transcribe_raw_text
+    cc->was_truncated = pass.truncated;
+    if (pass.truncated) {
+        transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_WARN,
+                            "qwen3_asr run: output truncated at %d tokens — decode reached the "
+                            "generation budget before end-of-stream; the transcript may be "
+                            "incomplete.",
+                            pass.n_generated);
+    }
+
+    // Parse Qwen3-ASR output: auto-detect emits "language X<asr_text>text"
+    // (strip prefix); forced emits "text" (we already seeded the prefix). The
+    // split is unconditional — absent prefix leaves transcript_text = raw_text.
+    std::string transcript_text = pass.raw_text;
+    if (auto sep = pass.raw_text.find("<asr_text>"); sep != std::string::npos) {
+        // Auto-detect path: surface the model-picked language name as
+        // detected_language (reverse-mapped to BCP-47), but only when the
+        // caller did NOT supply a hint (the field reports what the model told
+        // us, not what we told it).
+        if (lang_prefix_ptr == nullptr) {
+            constexpr const char k_prefix[] = "language ";
+            const size_t         name_start = pass.raw_text.find(k_prefix);
+            if (name_start != std::string::npos && name_start < sep) {
+                const size_t ns   = name_start + (sizeof(k_prefix) - 1);
+                std::string  name = pass.raw_text.substr(ns, sep - ns);
+                while (!name.empty() && (name.back() == ' ' || name.back() == '\t' || name.back() == '\n')) {
+                    name.pop_back();
+                }
+                if (const char * bcp47 = bcp47_for_publisher_name(name); bcp47 != nullptr) {
+                    cc->detected_language = bcp47;
+                }
+            }
+        }
+        transcript_text = pass.raw_text.substr(sep + std::strlen("<asr_text>"));
+    }
+
+    // Write full_text + a single segment (no timestamps; TIMESTAMPS_NONE).
     cc->full_text   = transcript_text;
     cc->result_kind = TRANSCRIBE_TIMESTAMPS_NONE;
     cc->has_result  = true;
@@ -1337,9 +1441,7 @@ transcribe_status run(transcribe_session *          session,
 
     // A truncated decode returns OUTPUT_TRUNCATED; the partial transcript above
     // stays readable (like an aborted run).
-    cleanup_gpu();
-
-    return cc->was_truncated ? TRANSCRIBE_ERR_OUTPUT_TRUNCATED : TRANSCRIBE_OK;
+    return pass.truncated ? TRANSCRIBE_ERR_OUTPUT_TRUNCATED : TRANSCRIBE_OK;
 }
 
 // ===========================================================================
@@ -1946,12 +2048,19 @@ extern const Arch arch = {
     /* .init_context     = */ init_context,
     /* .run              = */ run,
     /* .run_batch        = */ run_batch,
-    /* .stream_validate  = */ nullptr,
-    /* .stream_begin     = */ nullptr,
-    /* .stream_feed      = */ nullptr,
-    /* .stream_finalize  = */ nullptr,
-    /* .stream_reset     = */ nullptr,
-    /* .accepts_ext_kind = */ nullptr,
+    // Streaming is the Confucius4-R2T2 variant's surface (r2t2-stream.cpp).
+    // The hooks are installed unconditionally and gate themselves on the
+    // package marker, so a non-R2T2 qwen3_asr model reports
+    // supports_streaming = false and rejects the stream extension rather than
+    // exposing a surface it cannot serve. The triple is all-or-nothing: the
+    // dispatcher returns NOT_IMPLEMENTED if any of the three is NULL, so they
+    // are installed together.
+    /* .stream_validate  = */ r2t2_stream_validate,
+    /* .stream_begin     = */ r2t2_stream_begin,
+    /* .stream_feed      = */ r2t2_stream_feed,
+    /* .stream_finalize  = */ r2t2_stream_finalize,
+    /* .stream_reset     = */ r2t2_stream_reset,
+    /* .accepts_ext_kind = */ r2t2_accepts_ext_kind,
 };
 
 }  // namespace transcribe::qwen3_asr

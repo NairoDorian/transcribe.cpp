@@ -60,6 +60,28 @@ pub struct VoxtralRealtimeStreamOptions {
     pub min_decode_interval_ms: Option<i32>,
 }
 
+/// R2T2 (Confucius4-R2T2) native-streaming chunk size, in whole milliseconds.
+///
+/// This is the one family knob that is a free integer rather than a preset
+/// menu: every value in the closed range 80..=2000 ms is accepted, 1 ms step,
+/// no rounding to a coarser grid. At 16 kHz one millisecond is exactly 16
+/// samples, so no value in the range quantizes. `None` keeps the C default
+/// (320 ms) stamped by `transcribe_r2t2_stream_ext_init`.
+///
+/// The value is copied at `stream_begin`: changing it mid-stream cannot affect
+/// the decoder state already accumulated, so it applies to the next stream.
+///
+/// Note there is deliberately no range check here — the native side rejects an
+/// out-of-range value rather than clamping it (see `r2t2-stream.cpp`), and
+/// duplicating the bounds in Rust would let the two drift apart. Callers that
+/// want to fail fast can compare against the constants in
+/// `include/transcribe/r2t2.h`; the authoritative answer comes from the
+/// stream call itself.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct R2T2StreamOptions {
+    pub chunk_size_ms: Option<u32>,
+}
+
 /// Sortformer streaming operating point (latency / accuracy trade-off).
 /// The menu is discrete (jointly-tuned bundles), not a latency dial;
 /// `Default` keeps the GGUF-shipped checkpoint configuration.
@@ -119,6 +141,12 @@ pub enum StreamExtension {
     ParakeetBuffered(ParakeetBufferedStreamOptions),
     MoonshineStreaming(MoonshineStreamingOptions),
     VoxtralRealtime(VoxtralRealtimeStreamOptions),
+    /// R2T2 is a `qwen3_asr` *variant*, not its own arch family — but it is the
+    /// only qwen3_asr model that streams, and it is the only family whose
+    /// latency control is a continuous millisecond value. Probe
+    /// `Model::accepts_ext(ExtSlot::Stream, EXT_KIND_R2T2_STREAM)` before
+    /// attaching: an ordinary Qwen3-ASR model does not accept this kind.
+    R2T2(R2T2StreamOptions),
 }
 
 /// Owns a materialized run-slot C extension struct (and any strings it points
@@ -192,6 +220,7 @@ pub(crate) enum StreamExtRaw {
     ParakeetBuffered(Box<sys::transcribe_parakeet_buffered_stream_ext>),
     MoonshineStreaming(Box<sys::transcribe_moonshine_streaming_stream_ext>),
     VoxtralRealtime(Box<sys::transcribe_voxtral_realtime_stream_ext>),
+    R2T2(Box<sys::transcribe_r2t2_stream_ext>),
 }
 
 impl StreamExtRaw {
@@ -211,6 +240,9 @@ impl StreamExtRaw {
             StreamExtRaw::VoxtralRealtime(e) => {
                 (&**e) as *const sys::transcribe_voxtral_realtime_stream_ext
                     as *const sys::transcribe_ext
+            }
+            StreamExtRaw::R2T2(e) => {
+                (&**e) as *const sys::transcribe_r2t2_stream_ext as *const sys::transcribe_ext
             }
         }
     }
@@ -248,6 +280,12 @@ impl StreamExtension {
                 set(&mut e.num_delay_tokens, o.num_delay_tokens);
                 set(&mut e.min_decode_interval_ms, o.min_decode_interval_ms);
                 StreamExtRaw::VoxtralRealtime(Box::new(e))
+            }
+            StreamExtension::R2T2(o) => {
+                let mut e: sys::transcribe_r2t2_stream_ext = unsafe { std::mem::zeroed() };
+                unsafe { sys::transcribe_r2t2_stream_ext_init(&mut e) };
+                set(&mut e.chunk_size_ms, o.chunk_size_ms);
+                StreamExtRaw::R2T2(Box::new(e))
             }
         }
     }

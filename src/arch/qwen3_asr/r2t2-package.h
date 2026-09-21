@@ -1,11 +1,13 @@
 #pragma once
 #include "transcribe.h"
+
 #include <string>
 #include <utility>
 #include <vector>
 struct gguf_context;
 struct ggml_context;
 struct ggml_tensor;
+
 namespace transcribe::qwen3_asr {
 /// Value prepare_r2t2_metadata() writes into `stt.variant`, and the variant the
 /// loader must report for such a file. One spelling in one place: the adapter
@@ -17,8 +19,8 @@ inline constexpr const char * k_r2t2_variant = "confucius4-r2t2-1.7b";
 /// native qwen3_asr file. Keyed on the packaging marker, not on `stt.variant`:
 /// the variant string is itself produced by prepare_r2t2_metadata, so it
 /// cannot be the thing that decides whether to run it.
-bool is_r2t2_package(const gguf_context * meta);
-transcribe_status prepare_r2t2_metadata(gguf_context * meta);
+bool                                               is_r2t2_package(const gguf_context * meta);
+transcribe_status                                  prepare_r2t2_metadata(gguf_context * meta);
 std::vector<std::pair<ggml_tensor *, std::string>> rename_r2t2_tensors(ggml_context * ctx);
 
 /// Rebuild a tensor catalog in which every BF16 entry is planned as F32, every
@@ -38,4 +40,18 @@ std::vector<std::pair<ggml_tensor *, std::string>> rename_r2t2_tensors(ggml_cont
 /// The source context is left untouched; the caller owns the result and is
 /// responsible for freeing whichever context it replaces.
 transcribe_status plan_r2t2_dtypes(ggml_context * src_ctx, ggml_context ** out_ctx);
+
+/// Streaming cadence bounds and default, in milliseconds, as fixed by the
+/// R2T2 contract. Exposed so the streaming hooks and the extension validator
+/// cannot drift apart; see r2t2-stream.cpp.
+inline constexpr uint32_t k_r2t2_chunk_ms_min     = 80;
+inline constexpr uint32_t k_r2t2_chunk_ms_max     = 2000;
+inline constexpr uint32_t k_r2t2_chunk_ms_default = 320;
+
+/// Resolve a caller's stream extension into the cadence to run at, defaulting
+/// to k_r2t2_chunk_ms_default when no extension is supplied. Pure, so it is
+/// safe both from stream_validate (which must not disturb the snapshot) and
+/// from stream_begin. Rejects an out-of-range value rather than clamping it.
+transcribe_status resolve_r2t2_stream_ext(const struct transcribe_stream_params * stream_params,
+                                          uint32_t *                              out_chunk_ms);
 }  // namespace transcribe::qwen3_asr

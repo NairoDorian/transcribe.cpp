@@ -50,6 +50,11 @@ void transcribe_session::clear_result() {
     stream_tentative_text.clear();
     stream_raw_tentative_start_bytes = 0;
     stream_raw_history.clear();
+    // Family-published stable-prefix boundary. Cleared with the transcript it
+    // indexes: it is a byte offset into the full_text that has just been
+    // wiped, so leaving it set would let the next stream's first feed commit
+    // a prefix of text that was never published by that stream.
+    stream_family_committed_bytes = 0;
 }
 
 void transcribe_model::set_languages(std::vector<std::string> langs) {

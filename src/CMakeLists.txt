@@ -173,6 +173,7 @@ set(_srcs_qwen3_asr
     # already reads, so nothing here reaches the runtime until a loader path
     # calls it.
     arch/qwen3_asr/r2t2-package.cpp
+    arch/qwen3_asr/r2t2-stream.cpp
     arch/qwen3_asr/r2t2-text.cpp
     # cJSON parses the JSON sidecars the sibling's GGUF embeds (config.json,
     # tokenizer.json). Same vendoring posture as whisper's miniz above: one C

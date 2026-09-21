@@ -7,6 +7,7 @@
 
 #include "transcribe.h"
 #include "transcribe/parakeet.h"
+#include "transcribe/r2t2.h"
 #include "transcribe/voxtral_realtime.h"
 #include "transcribe/whisper.h"
 #include "wav.h"
@@ -1554,11 +1555,28 @@ int main(int argc, char ** argv) {
             transcribe_parakeet_buffered_stream_ext_init(&pkt_buf_sp);
             struct transcribe_voxtral_realtime_stream_ext vx_sp;
             transcribe_voxtral_realtime_stream_ext_init(&vx_sp);
+            struct transcribe_r2t2_stream_ext r2t2_sp;
+            transcribe_r2t2_stream_ext_init(&r2t2_sp);
             const bool want_cache_aware = (args.stream_att_right >= 0);
             const bool want_buffered =
                 args.stream_buf_left_ms >= 0 || args.stream_buf_chunk_ms >= 0 || args.stream_buf_right_ms >= 0;
-            if (want_cache_aware && transcribe_model_accepts_ext_kind(model, TRANSCRIBE_EXT_SLOT_STREAM,
-                                                                      TRANSCRIBE_EXT_KIND_PARAKEET_STREAM)) {
+            // Each arm is gated on the model accepting that family's
+            // extension kind, so the arms are mutually exclusive by capability
+            // and the order below is not load-bearing.
+            //
+            // R2T2 is the one case where --stream-chunk-ms carries real meaning
+            // for the family and not just for this driver. Without the
+            // extension the variant falls back to its 320 ms default, so every
+            // cadence would decode identically and a latency sweep would be
+            // measuring the same run N times. Passing the flag through as the
+            // extension's chunk_size_ms is what makes the number the caller
+            // asked for the number the model actually decodes at.
+            if (transcribe_model_accepts_ext_kind(model, TRANSCRIBE_EXT_SLOT_STREAM, TRANSCRIBE_EXT_KIND_R2T2_STREAM)) {
+                r2t2_sp.chunk_size_ms = (uint32_t) args.stream_chunk_ms;
+                sp.family             = &r2t2_sp.ext;
+                std::printf("stream: r2t2 chunk_size_ms=%u\n", (unsigned) r2t2_sp.chunk_size_ms);
+            } else if (want_cache_aware && transcribe_model_accepts_ext_kind(model, TRANSCRIBE_EXT_SLOT_STREAM,
+                                                                             TRANSCRIBE_EXT_KIND_PARAKEET_STREAM)) {
                 pkt_sp.att_context_right = args.stream_att_right;
                 sp.family                = &pkt_sp.ext;
                 std::printf("stream: att_context_right=%d\n", args.stream_att_right);
@@ -1578,24 +1596,80 @@ int main(int argc, char ** argv) {
                 sp.family              = &vx_sp.ext;
                 std::printf("stream: voxtral num_delay_tokens=%d\n", args.stream_voxtral_delay);
             }
-            run_st = transcribe_stream_begin(ctx, &rp, &sp);
+            // Streaming has no meaningful `realtime:` figure: that one is
+            // derived from transcribe_get_timings, which accumulates one
+            // pass's mel+encode+decode and therefore reports only the last
+            // tick for a stream — it cannot see the feed loop at all. Time the
+            // loop here instead, so a cadence sweep measures what it claims
+            // to. The span covers begin through finalize, i.e. everything the
+            // caller waits for after the model is loaded.
+            const auto t_stream0      = std::chrono::steady_clock::now();
+            double     feed_ms_total  = 0.0;
+            double     feed_ms_max    = 0.0;
+            int        feed_ms_max_at = -1;
+            run_st                    = transcribe_stream_begin(ctx, &rp, &sp);
             if (run_st != TRANSCRIBE_OK) {
                 std::fprintf(stderr, "stream_begin: %s\n", transcribe_status_string(run_st));
             } else {
-                size_t pos    = 0;
-                int    feed_n = 0;
+                size_t      pos    = 0;
+                int         feed_n = 0;
+                // Append-only witness. The stream contract says bytes exposed
+                // through committed_text are never rewritten for the life of
+                // the stream, and this is the only place in the tree that can
+                // observe it directly: the dispatcher enforces it internally,
+                // but a family that publishes a non-advancing boundary would
+                // show up here as a stall, and one that rewrote committed text
+                // would show up as a mismatch. Reset by begin/reset, so the
+                // check is per-stream.
+                std::string committed_witness;
+                bool        committed_violation = false;
                 while (pos < pcm.size()) {
                     const size_t take = std::min<size_t>(static_cast<size_t>(chunk_samples), pcm.size() - pos);
                     struct transcribe_stream_update upd;
                     transcribe_stream_update_init(&upd);
-                    run_st = transcribe_stream_feed(ctx, pcm.data() + pos, static_cast<int>(take), &upd);
+                    const auto t_feed = std::chrono::steady_clock::now();
+                    run_st            = transcribe_stream_feed(ctx, pcm.data() + pos, static_cast<int>(take), &upd);
+                    const double feed_ms =
+                        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_feed).count();
+                    feed_ms_total += feed_ms;
+                    if (feed_ms > feed_ms_max) {
+                        feed_ms_max    = feed_ms;
+                        feed_ms_max_at = feed_n;
+                    }
                     if (run_st != TRANSCRIBE_OK) {
                         std::fprintf(stderr, "stream_feed[%d]: %s\n", feed_n, transcribe_status_string(run_st));
                         break;
                     }
                     pos += take;
-                    std::printf("  feed[%2d]: input=%lld ms buffered=%lld ms", feed_n,
-                                (long long) upd.input_received_ms, (long long) upd.buffered_ms);
+                    std::printf("  feed[%2d]: input=%lld ms buffered=%lld ms decode=%.1f ms", feed_n,
+                                (long long) upd.input_received_ms, (long long) upd.buffered_ms, feed_ms);
+                    struct transcribe_stream_text stext;
+                    transcribe_stream_text_init(&stext);
+                    if (transcribe_stream_get_text(ctx, &stext) == TRANSCRIBE_OK) {
+                        const std::string committed =
+                            stext.committed_text != nullptr ? std::string(stext.committed_text) : std::string();
+                        // The guarantee, exactly: this tick's committed text
+                        // still starts with everything the previous ticks
+                        // committed. A shrink or a rewrite both fail here,
+                        // because both make `committed` stop having
+                        // `committed_witness` as a prefix.
+                        if (committed.compare(0, committed_witness.size(), committed_witness) != 0) {
+                            if (!committed_violation) {
+                                std::fprintf(stderr,
+                                             "\n  !! committed[%d] no longer starts with the previously "
+                                             "committed prefix\n     was: \"%s\"\n     now: \"%s\"\n",
+                                             feed_n, committed_witness.c_str(), committed.c_str());
+                            }
+                            committed_violation = true;
+                        } else {
+                            committed_witness = committed;
+                        }
+                        if (stext.committed_text_bytes > 0 || stext.tentative_text_bytes > 0) {
+                            std::printf("  committed=\"%s\" tentative=\"%s\"",
+                                        stext.committed_text != nullptr ? stext.committed_text : "",
+                                        stext.tentative_text != nullptr ? stext.tentative_text : "");
+                        }
+                    }
                     if (upd.result_changed) {
                         const char * partial = transcribe_full_text(ctx);
                         std::printf("  partial=\"%s\"", (partial && *partial) ? partial : "");
@@ -1612,6 +1686,52 @@ int main(int argc, char ** argv) {
                         "revision=%d input=%lld ms committed=%lld ms\n",
                         transcribe_status_string(run_st), fin_upd.revision, (long long) fin_upd.input_received_ms,
                         (long long) fin_upd.audio_committed_ms);
+                    struct transcribe_stream_text stext;
+                    transcribe_stream_text_init(&stext);
+                    if (transcribe_stream_get_text(ctx, &stext) == TRANSCRIBE_OK) {
+                        const std::string committed =
+                            stext.committed_text != nullptr ? std::string(stext.committed_text) : std::string();
+                        if (committed.size() < committed_witness.size() ||
+                            committed.compare(0, committed_witness.size(), committed_witness) != 0) {
+                            committed_violation = true;
+                        }
+                        std::printf("  committed-final: %zu bytes, tentative=%zu bytes\n", committed.size(),
+                                    (size_t) stext.tentative_text_bytes);
+                    }
+                }
+                // The streaming counterpart of the offline `realtime:` line.
+                // Audibility of the transcript is bounded by the slowest single
+                // feed, not by the total: a stream that finishes fast overall
+                // but stalls 900 ms on one tick is a stream that stutters. So
+                // both are reported, and the max carries the feed index that
+                // produced it so the tick cost curve can be read off directly.
+                const double stream_ms =
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_stream0).count();
+                const double audio_s = duration_s;
+                std::printf("  stream-wall: %.1f ms total for %.2f s audio", stream_ms, audio_s);
+                if (stream_ms > 0.0) {
+                    std::printf(" (%.1fx realtime)", audio_s * 1000.0 / stream_ms);
+                }
+                std::printf("\n");
+                std::printf("  stream-feeds: n=%d sum=%.1f ms max=%.1f ms @feed[%d]\n", feed_n, feed_ms_total,
+                            feed_ms_max, feed_ms_max_at);
+                if (feed_ms_max > 0.0 && args.stream_chunk_ms > 0) {
+                    // Headroom against the cadence itself: <= 1.0 means the
+                    // model keeps up with real time at this chunk size, which
+                    // is the condition for the cadence to be usable live.
+                    std::printf("  stream-headroom: slowest feed is %.2fx the %d ms cadence\n",
+                                feed_ms_max / (double) args.stream_chunk_ms, args.stream_chunk_ms);
+                }
+                if (committed_violation) {
+                    std::fprintf(stderr,
+                                 "stream: COMMITTED-TEXT VIOLATION — the append-only "
+                                 "guarantee was broken by this stream\n");
+                    // Report through output_ok, not run_st: the transcript is
+                    // still valid and worth printing, so the run must not be
+                    // marked non-OK (that would suppress the text). output_ok
+                    // is the existing channel for a failure the harness
+                    // detected itself, and it still forces EXIT_FAILURE.
+                    output_ok = false;
                 }
             }
         } else {

@@ -290,6 +290,24 @@ struct transcribe_session {
     uint64_t                stream_raw_tentative_start_bytes = 0;
     std::deque<std::string> stream_raw_history;
 
+    // Family-published stable-prefix boundary, as a byte offset into
+    // `full_text`. Read only by StreamStablePrefixImpl::FamilyRawByteCommit
+    // (see stream_stable_prefix_impl_for_arch), for families whose stable
+    // prefix is produced by a text pipeline rather than by token ids — i.e.
+    // where the family knows the boundary but the token<->text
+    // correspondence `family_candidate_raw_prefix_bytes` relies on does not
+    // hold. The family writes it in stream_feed / stream_finalize before
+    // returning; the dispatcher's apply_stream_text_policy then reads it.
+    //
+    // Must be a byte offset that lands on a UTF-8 boundary of `full_text`
+    // (the dispatcher floors it defensively, but a family that publishes a
+    // mid-codepoint offset is publishing a bug). Monotonic growth is NOT
+    // required of the family: append_committed_raw_prefix ignores a
+    // candidate that does not advance the boundary, which is exactly the
+    // "only ever commit new bytes" contract the reference implements by
+    // publishing new code points.
+    size_t stream_family_committed_bytes = 0;
+
     void clear_result();
 
     // Per-run ggml compute scratch, owned by the base so every family

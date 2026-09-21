@@ -9,6 +9,7 @@
 #include "transcribe.h"
 #include "transcribe/moonshine_streaming.h"
 #include "transcribe/parakeet.h"
+#include "transcribe/r2t2.h"
 #include "transcribe/sortformer.h"
 #include "transcribe/voxtral_realtime.h"
 #include "transcribe/whisper.h"
@@ -46,9 +47,10 @@ TRANSCRIBE_API int transcribe_get_whisper_chunk_count(const struct transcribe_se
     return 0;
 }
 
-TRANSCRIBE_API transcribe_status transcribe_get_whisper_chunk_trace(const struct transcribe_session *       /*session*/,
-                                                                    int                                     /*i*/,
-                                                                    struct transcribe_whisper_chunk_trace * /*out_trace*/) {
+TRANSCRIBE_API transcribe_status
+transcribe_get_whisper_chunk_trace(const struct transcribe_session * /*session*/,
+                                   int /*i*/,
+                                   struct transcribe_whisper_chunk_trace * /*out_trace*/) {
     return TRANSCRIBE_ERR_UNSUPPORTED_ARCH;
 }
 
@@ -75,7 +77,8 @@ TRANSCRIBE_API void transcribe_voxtral_realtime_stream_ext_init(struct transcrib
 #if !defined(TRANSCRIBE_ENABLE_ARCH_MOONSHINE_STREAMING)
 extern "C" {
 
-TRANSCRIBE_API void transcribe_moonshine_streaming_stream_ext_init(struct transcribe_moonshine_streaming_stream_ext * p) {
+TRANSCRIBE_API void transcribe_moonshine_streaming_stream_ext_init(
+    struct transcribe_moonshine_streaming_stream_ext * p) {
     if (p == nullptr) {
         return;
     }
@@ -127,6 +130,29 @@ TRANSCRIBE_API void transcribe_sortformer_stream_ext_init(struct transcribe_sort
     p->ext.size = sizeof(*p);
     p->ext.kind = TRANSCRIBE_EXT_KIND_SORTFORMER_STREAM;
     p->preset   = TRANSCRIBE_SORTFORMER_PRESET_DEFAULT;
+}
+
+}  // extern "C"
+#endif
+
+#if !defined(TRANSCRIBE_ENABLE_ARCH_QWEN3_ASR)
+extern "C" {
+
+TRANSCRIBE_API void transcribe_r2t2_stream_ext_init(struct transcribe_r2t2_stream_ext * p) {
+    if (p == nullptr) {
+        return;
+    }
+    std::memset(p, 0, sizeof(*p));
+    p->ext.size      = sizeof(*p);
+    p->ext.kind      = TRANSCRIBE_EXT_KIND_R2T2_STREAM;
+    // Spelled out rather than shared with the family: this function exists
+    // precisely for builds that exclude the family, so it cannot reach that
+    // family's constant. The C header documents 320 ms as the contract
+    // default, and this is that value. The two initializers are therefore an
+    // untested duplicate of one number, and a change to one must change the
+    // other; no current test compares them, because the two definitions never
+    // coexist in one binary.
+    p->chunk_size_ms = 320;
 }
 
 }  // extern "C"

@@ -13,7 +13,7 @@ import ctypes as _c
 # Stable digest of the ABI surface below (structs, enums, macros, layout,
 # prototypes). A native provider package echoes this back so the API
 # package can reject an ABI-mismatched provider before dlopen.
-PUBLIC_HEADER_HASH = "4867800ba6f83bb1"
+PUBLIC_HEADER_HASH = "04f3840712a65e1b"
 
 # === enum constants ===
 TRANSCRIBE_OK = 0
@@ -113,6 +113,7 @@ TRANSCRIBE_WHISPER_PROMPT_ALL_SEGMENTS = 1
 TRANSCRIBE_EXT_KIND_MOONSHINE_STREAMING_STREAM = 1414746957
 TRANSCRIBE_EXT_KIND_PARAKEET_BUFFERED_STREAM = 1396853584
 TRANSCRIBE_EXT_KIND_PARAKEET_STREAM = 1414744912
+TRANSCRIBE_EXT_KIND_R2T2_STREAM = 844378706
 TRANSCRIBE_EXT_KIND_SORTFORMER_STREAM = 1414743635
 TRANSCRIBE_EXT_KIND_VOXTRAL_REALTIME_STREAM = 1414746710
 TRANSCRIBE_EXT_KIND_WHISPER_RUN = 1314015319
@@ -154,6 +155,8 @@ class transcribe_parakeet_stream_ext(_c.Structure):
     pass
 class transcribe_parakeet_buffered_stream_ext(_c.Structure):
     pass
+class transcribe_r2t2_stream_ext(_c.Structure):
+    pass
 class transcribe_sortformer_stream_ext(_c.Structure):
     pass
 class transcribe_voxtral_realtime_stream_ext(_c.Structure):
@@ -181,6 +184,7 @@ transcribe_speaker_segment._fields_ = [("struct_size", _c.c_uint64), ("t0_ms", _
 transcribe_moonshine_streaming_stream_ext._fields_ = [("ext", transcribe_ext), ("min_decode_interval_ms", _c.c_int32)]
 transcribe_parakeet_stream_ext._fields_ = [("ext", transcribe_ext), ("att_context_right", _c.c_int32)]
 transcribe_parakeet_buffered_stream_ext._fields_ = [("ext", transcribe_ext), ("left_ms", _c.c_int32), ("chunk_ms", _c.c_int32), ("right_ms", _c.c_int32)]
+transcribe_r2t2_stream_ext._fields_ = [("ext", transcribe_ext), ("chunk_size_ms", _c.c_uint32)]
 transcribe_sortformer_stream_ext._fields_ = [("ext", transcribe_ext), ("preset", _c.c_int)]
 transcribe_voxtral_realtime_stream_ext._fields_ = [("ext", transcribe_ext), ("num_delay_tokens", _c.c_int32), ("min_decode_interval_ms", _c.c_int32)]
 transcribe_whisper_run_ext._fields_ = [("ext", transcribe_ext), ("initial_prompt", _c.c_char_p), ("prompt_tokens", _c.POINTER(_c.c_int32)), ("n_prompt_tokens", _c.c_size_t), ("prompt_condition", _c.c_int), ("condition_on_prev_tokens", _c.c_bool), ("max_prev_context_tokens", _c.c_int32), ("temperature", _c.c_float), ("temperature_inc", _c.c_float), ("compression_ratio_thold", _c.c_float), ("logprob_thold", _c.c_float), ("no_speech_thold", _c.c_float), ("seed", _c.c_uint32), ("max_initial_timestamp", _c.c_float)]
@@ -226,6 +230,7 @@ STRUCT_LAYOUT = {
     'transcribe_moonshine_streaming_stream_ext': {'size': 24, 'align': 8, 'offsets': {'ext': 0, 'min_decode_interval_ms': 16}},
     'transcribe_parakeet_stream_ext': {'size': 24, 'align': 8, 'offsets': {'ext': 0, 'att_context_right': 16}},
     'transcribe_parakeet_buffered_stream_ext': {'size': 32, 'align': 8, 'offsets': {'ext': 0, 'left_ms': 16, 'chunk_ms': 20, 'right_ms': 24}},
+    'transcribe_r2t2_stream_ext': {'size': 24, 'align': 8, 'offsets': {'ext': 0, 'chunk_size_ms': 16}},
     'transcribe_sortformer_stream_ext': {'size': 24, 'align': 8, 'offsets': {'ext': 0, 'preset': 16}},
     'transcribe_voxtral_realtime_stream_ext': {'size': 24, 'align': 8, 'offsets': {'ext': 0, 'num_delay_tokens': 16, 'min_decode_interval_ms': 20}},
     'transcribe_whisper_run_ext': {'size': 80, 'align': 8, 'offsets': {'ext': 0, 'initial_prompt': 16, 'prompt_tokens': 24, 'n_prompt_tokens': 32, 'prompt_condition': 40, 'condition_on_prev_tokens': 44, 'max_prev_context_tokens': 48, 'temperature': 52, 'temperature_inc': 56, 'compression_ratio_thold': 60, 'logprob_thold': 64, 'no_speech_thold': 68, 'seed': 72, 'max_initial_timestamp': 76}},
@@ -355,6 +360,8 @@ def configure(lib):
     lib.transcribe_parakeet_stream_ext_init.argtypes = [_c.POINTER(transcribe_parakeet_stream_ext)]
     lib.transcribe_print_timings.restype = None
     lib.transcribe_print_timings.argtypes = [_c.c_void_p]
+    lib.transcribe_r2t2_stream_ext_init.restype = None
+    lib.transcribe_r2t2_stream_ext_init.argtypes = [_c.POINTER(transcribe_r2t2_stream_ext)]
     lib.transcribe_raw_text.restype = _c.c_char_p
     lib.transcribe_raw_text.argtypes = [_c.c_void_p]
     lib.transcribe_register_arch_dir.restype = _c.c_int

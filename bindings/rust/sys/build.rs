@@ -258,8 +258,9 @@ fn main() {
         .define("TRANSCRIBE_BUILD_SHARED", if shared { "ON" } else { "OFF" })
         // Each enabled architecture is built as a separate loadable plugin
         // rather than compiled into libtranscribe. The plugin SET comes from
-        // TRANSCRIBE_MODEL_SET (defined below), so this composes with
-        // `minimal-multilingual` (3 plugins) or the `full` default (18).
+        // TRANSCRIBE_MODEL_SET (defined below); `_all_families` in
+        // src/CMakeLists.txt is the authority for how many families that is,
+        // so no count is restated here — it drifts with every new family.
         .define("TRANSCRIBE_ARCH_DL", if arch_dl { "ON" } else { "OFF" });
 
     // Ninja Generator Setup:

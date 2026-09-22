@@ -77,7 +77,12 @@ def write_wav_16k_mono(data: np.ndarray, sr: int, out_path: Path) -> None:
 
 def write_manifest(entries: list[dict], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
+    # encoding="utf-8" is load-bearing, not hygiene: ensure_ascii=False means the
+    # transcripts go out as raw characters, and the platform default codec on
+    # Windows is cp1252, which raises on anything outside Latin-1. FLEURS French
+    # alone carries U+2009 in its transcripts, so the writer died mid-ingest for
+    # every language that needs it.
+    with open(path, "w", encoding="utf-8") as f:
         for e in entries:
             f.write(json.dumps(e, ensure_ascii=False) + "\n")
 
@@ -180,7 +185,7 @@ def ingest_fleurs(repo: Path, args: argparse.Namespace) -> int:
     manifest = repo / f"samples/wer/fleurs-{lang}.manifest.jsonl"
 
     if manifest.exists() and not args.force:
-        n_existing = sum(1 for _ in open(manifest))
+        n_existing = sum(1 for _ in open(manifest, encoding="utf-8"))
         print(f"OK already exists: {manifest} ({n_existing} utterances). "
               f"Pass --force to regenerate.")
         return 0
@@ -261,7 +266,7 @@ def ingest_eka_medical_asr(repo: Path, args: argparse.Namespace) -> int:
     manifest = repo / f"samples/wer/eka-medical-asr-{lang}.manifest.jsonl"
 
     if manifest.exists() and not args.force:
-        n_existing = sum(1 for _ in open(manifest))
+        n_existing = sum(1 for _ in open(manifest, encoding="utf-8"))
         print(f"OK already exists: {manifest} ({n_existing} utterances). "
               f"Pass --force to regenerate.")
         return 0

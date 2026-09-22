@@ -202,3 +202,13 @@ presets, first verify each file loads and emits valid `transcribe-cli`
 output, then use WER for user-facing quality. `scripts/quant_accuracy.py`
 is only an optional diagnostic for inspecting activation drift against an
 F32 baseline.
+
+## Beyond presets
+
+A preset cannot express "everything at Q6_K except `mlp.down_proj`", so
+per-block analysis of a new family needs per-tensor control, which this tool
+does not offer. `docs/tools/quantization-arms.md` covers that workflow — the
+external converter, its override semantics, the census check, and the
+validation protocol that decides which arms are actually good. For worked
+results on one family see
+`docs/porting/families/confucius4_r2t2-quantization.md`.

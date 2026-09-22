@@ -39,6 +39,10 @@ This split mirrors `llama.cpp`'s `convert_hf_to_gguf.py` →
 - [**quantization.md**](quantization.md) — `transcribe-quantize` C++
   binary. GGUF → quantized GGUF. Preset table, per-tensor policy,
   bucket rules, filename convention.
+- [**quantization-arms.md**](quantization-arms.md) — building arms that
+  differ in exactly one block, when a preset is too blunt. The external
+  per-tensor converter and its override semantics, `scripts/quant/*`, the
+  validation protocol, and what generalizes about quant floors.
 
 ## Numerical validation
 

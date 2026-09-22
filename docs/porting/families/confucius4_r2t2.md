@@ -137,6 +137,14 @@ frontend normalization metadata is interpreted as `none` by preflight even
 though Whisper applies log-mel clamping/scaling. GGUF capability checks await
 conversion. The golden manifest remains explicitly marked as a skeleton.
 
+## Quantization
+
+See `docs/porting/families/confucius4_r2t2-quantization.md` for the measured
+precision ladder: which blocks tolerate which type, the 1.187 GB floor
+(`r2t2-q4_k_m.gguf`, 52% below Q8_0), the Q6_K floor on `mlp.down_proj`, and the
+build recipe. `docs/tools/quantization-arms.md` covers the per-tensor method
+generally.
+
 ## Local reference checkpoint
 
 The pinned publisher safetensors checkpoint has been downloaded under ignored

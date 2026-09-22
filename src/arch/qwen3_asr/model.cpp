@@ -13,6 +13,7 @@
 #include "transcribe-arch.h"
 #include "transcribe-batch-util.h"
 #include "transcribe-debug.h"
+#include "transcribe-decode-budget.h"
 #include "transcribe-env.h"
 #include "transcribe-flash-policy.h"
 #include "transcribe-graph-opt.h"
@@ -78,8 +79,8 @@ constexpr const char k_default_variant[] = "qwen3-asr";
 // transcript that fills the generation budget before end-of-stream is flagged
 // via transcribe_was_truncated().
 
-// Per-run generation budget (matches the reference dumper default).
-constexpr int k_max_new = 256;
+// Generation reserve: what the input gate keeps free, and the decode-budget floor.
+constexpr int k_gen_reserve = 256;
 
 // Effective decoder context ceiling, in tokens: the model's trained maximum,
 // optionally lowered — never raised — by the caller's session n_ctx knob.
@@ -103,7 +104,7 @@ int64_t qwen3_max_audio_ms(const QwenAsrHParams & hp) {
         return 0;
     }
     constexpr int k_prompt_overhead = 48;  // chat affixes; advisory
-    const int     max_audio_tokens  = hp.dec_max_position_embeddings - k_prompt_overhead - k_max_new;
+    const int     max_audio_tokens  = hp.dec_max_position_embeddings - k_prompt_overhead - k_gen_reserve;
     if (max_audio_tokens <= 0) {
         return 0;
     }
@@ -192,7 +193,7 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
         m->limits.has_context_cap    = true;
         m->limits.model_max_ctx      = m->hparams.dec_max_position_embeddings;
         m->limits.prompt_overhead    = 48;
-        m->limits.gen_reserve        = k_max_new;
+        m->limits.gen_reserve        = k_gen_reserve;
         // audio_tokens ≈ mel_frames / 8 ; mel_frames = ms*sr/(hop*1000)
         m->limits.ms_per_audio_token = 8.0 * m->hparams.fe_hop_length * 1000.0 / m->hparams.fe_sample_rate;
         m->limits.kv_elems_per_ctx_token =
@@ -610,8 +611,9 @@ using transcribe::qwen3_asr::pack_mel_chunks;
 // streaming it is that seed plus the already-decoded continuation text, which
 // is exactly the reference's `prompt_raw_ + prefix`.
 //
-// `max_new_tokens` is the greedy generation budget. Offline uses k_max_new;
-// streaming uses the reference's per-chunk budget, so it is a parameter here.
+// `max_new_tokens` is the greedy generation budget: > 0 is an absolute cap
+// (streaming's per-tick budget); 0 sizes the budget from the audio length
+// (offline, floor k_gen_reserve — see docs/input-limits.md).
 //
 // This function writes ONLY session scratch (mel_buf, enc_host, t_* timers) and
 // the abort flag. It does not touch full_text / segments / has_result / the
@@ -632,7 +634,7 @@ transcribe_status run_decode_pass(transcribe_session *          session,
     if (session == nullptr || pcm == nullptr || n_samples <= 0 || out == nullptr) {
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
-    if (max_new_tokens <= 0) {
+    if (max_new_tokens < 0) {
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
 
@@ -1000,22 +1002,31 @@ transcribe_status run_decode_pass(transcribe_session *          session,
     // Input-length gate: audio + prompt + generation must fit the decoder
     // context window. Reject an over-length clip here, before prefill/decode.
     const int ceiling = qwen3_context_ceiling(cc->n_ctx, cm->hparams);
-    if (T_prompt + max_new_tokens > ceiling) {
+    if (T_prompt + k_gen_reserve > ceiling) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "qwen3_asr run: input too long — %d audio + %d prompt tokens "
                             "leave no room for output within the %d-token context (need %d). "
                             "Shorten the audio (see transcribe_capabilities.max_audio_ms) or "
                             "split it into segments.",
-                            T_enc, prefix_len + suffix_len, ceiling, T_prompt + max_new_tokens);
+                            T_enc, prefix_len + suffix_len, ceiling, T_prompt + k_gen_reserve);
         return TRANSCRIBE_ERR_INPUT_TOO_LONG;
     }
 
+    // Decode budget: streaming passes an absolute per-tick cap (the reference
+    // StreamConfig value); the offline pass passes 0 and sizes from the audio
+    // length, floor k_gen_reserve, clamped to the context (docs/input-limits.md).
+    const int max_new =
+        max_new_tokens > 0 ?
+            max_new_tokens :
+            transcribe::pick_decode_budget(transcribe::predict_transcript_tokens(T_enc, cm->limits.ms_per_audio_token),
+                                           k_gen_reserve, T_prompt, ceiling);
+
     // KV cache init (grow-to-fit, clamped to the context ceiling). Size to
-    // hold prompt + generation budget, rounded up to a power of two (the step
+    // hold prompt + decode budget, rounded up to a power of two (the step
     // graph's flash-attn path wants pow2 attention width). A pre-allocated
     // smaller cache is freed and re-allocated.
     int want_n_ctx = 1024;
-    while (want_n_ctx < T_prompt + max_new_tokens) {
+    while (want_n_ctx < T_prompt + max_new) {
         want_n_ctx *= 2;
     }
     if (want_n_ctx > ceiling) {
@@ -1255,7 +1266,6 @@ transcribe_status run_decode_pass(transcribe_session *          session,
 
     // Step loop.
     const int32_t eos_id   = cm->hparams.eos_token_id;
-    const int32_t max_new  = max_new_tokens;
     int           cur_past = T_prompt;
 
     // params->spec_k_drafts: -1 = family default (=0, disabled), 0 =
@@ -1703,7 +1713,8 @@ transcribe_status run(transcribe_session *          session,
     } gpu_guard{ cc };
 
     DecodePassResult        pass;
-    const transcribe_status st = run_decode_pass(session, pcm, n_samples, params, lang_prefix_ptr, k_max_new, &pass);
+    const transcribe_status st =
+        run_decode_pass(session, pcm, n_samples, params, lang_prefix_ptr, /*max_new_tokens=*/0, &pass);
     if (st != TRANSCRIBE_OK) {
         return st;
     }
@@ -2207,8 +2218,8 @@ transcribe_status run_batch(transcribe_session *          session,
 
     // Prompt length bound → max_n_kv and batched-cache n_ctx. Build and keep
     // each utterance's prompt token ids for the batched prefill.
-    const int                         max_new      = 256;
     int                               max_T_prompt = 0;
+    int                               max_T_enc    = 0;
     int                               prefix_len   = 0;
     // Per-utterance terminal status for rejected rows. Defaults to INVALID_ARG;
     // over-length rows below are upgraded to INPUT_TOO_LONG.
@@ -2224,7 +2235,7 @@ transcribe_status run_batch(transcribe_session *          session,
         T_prompt[b] = static_cast<int>(prompt_ids[b].size());
         prefix_len  = ap.empty() ? 0 : static_cast<int>(ap.front());
         // Same gate as single-shot run(); the rest of the batch still runs.
-        if (T_prompt[b] + max_new > ceiling) {
+        if (T_prompt[b] + k_gen_reserve > ceiling) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "qwen3_asr run_batch: utterance %d input too long — %d audio + "
                                 "%d prompt tokens exceed the %d-token context. See "
@@ -2235,6 +2246,7 @@ transcribe_status run_batch(transcribe_session *          session,
             continue;
         }
         max_T_prompt = std::max(max_T_prompt, T_prompt[b]);
+        max_T_enc    = std::max(max_T_enc, T_enc[b]);
     }
     if (max_T_prompt == 0) {
         // No usable utterance — emit per-row errors and return.
@@ -2245,6 +2257,9 @@ transcribe_status run_batch(transcribe_session *          session,
         }
         return TRANSCRIBE_OK;
     }
+    const int max_new =
+        transcribe::pick_decode_budget(transcribe::predict_transcript_tokens(max_T_enc, cm->limits.ms_per_audio_token),
+                                       k_gen_reserve, max_T_prompt, ceiling);
     int max_n_kv = 1024;
     while (max_n_kv < max_T_prompt + max_new) {
         max_n_kv *= 2;

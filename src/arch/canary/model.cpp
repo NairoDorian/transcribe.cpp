@@ -14,6 +14,7 @@
 #include "transcribe-arch.h"
 #include "transcribe-batch-util.h"
 #include "transcribe-debug.h"
+#include "transcribe-decode-budget.h"
 #include "transcribe-env.h"
 #include "transcribe-flash-policy.h"
 #include "transcribe-load-common.h"
@@ -214,9 +215,12 @@ constexpr float kBnEps = 1e-5f;
 //   (a) INPUT — the encoder rel-pos table (enc_pos_emb_max_len, ~400 s).
 //       T_enc must stay within it or the runtime table aliases past the
 //       trained range; gated up front. Drives max_audio_ms.
-//   (b) DECODER self-KV (dec_max_position) + 512 max-new cap bound the
-//       OUTPUT length; an overrun is kept as a partial and flagged via
+//   (b) DECODER self-KV (dec_max_position) bounds the OUTPUT length; an
+//       overrun is kept as a partial and flagged via
 //       transcribe_was_truncated(), not rejected.
+
+// Generation reserve: floor under the per-run decode budget.
+constexpr int k_gen_reserve = 512;
 
 // Predicted encoder frame count T_enc for a given mel frame count. The
 // FastConformer pre-encode downsamples time via stride-2, kernel-3, pad-1
@@ -388,10 +392,16 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
     // effective_max_audio_ms to the encoder bound regardless of n_ctx; the
     // decoder self-KV (which n_ctx does lower) only bounds transcript length.
     if (m->hparams.dec_max_position > 0) {
-        m->limits.has_context_cap        = true;
-        m->limits.audio_from_caps        = true;
-        m->limits.model_max_ctx          = m->hparams.dec_max_position;
-        m->limits.gen_reserve            = 512;  // run()'s max-new-tokens cap
+        m->limits.has_context_cap = true;
+        m->limits.audio_from_caps = true;
+        m->limits.model_max_ctx   = m->hparams.dec_max_position;
+        m->limits.gen_reserve     = k_gen_reserve;
+        // Encoder rate, for the decode budget only: audio_from_caps pins
+        // effective_max_audio_ms to the encoder bound, so this moves no limit.
+        if (m->hparams.enc_subsampling_factor > 0 && m->hparams.fe_hop_length > 0 && m->hparams.fe_sample_rate > 0) {
+            m->limits.ms_per_audio_token = static_cast<double>(m->hparams.enc_subsampling_factor) *
+                                           m->hparams.fe_hop_length * 1000.0 / m->hparams.fe_sample_rate;
+        }
         // Whisper-style decoder self-KV: dec_d_model per layer, K and V, no GQA.
         m->limits.kv_elems_per_ctx_token = (int64_t) m->hparams.dec_d_model * m->hparams.dec_n_layers * 2;
     }
@@ -1103,8 +1113,10 @@ transcribe_status run(transcribe_session *          session,
 
         cc->clear_result();
 
-        const int eos_id     = cm->hparams.eos_token_id;
-        const int max_tokens = std::min(512, cc->kv_cache.n_ctx - prompt_len);
+        const int eos_id = cm->hparams.eos_token_id;
+        const int max_tokens =
+            transcribe::pick_decode_budget(transcribe::predict_transcript_tokens(T_enc, cm->limits.ms_per_audio_token),
+                                           k_gen_reserve, prompt_len, cc->kv_cache.n_ctx);
 
         int next_token = 0;
         if (prompt_skip_softmax && db.argmax_out != nullptr) {
@@ -1631,15 +1643,17 @@ transcribe_status run_batch(transcribe_session *          session,
     }
 
     // Batched KV cache.
-    const int max_new  = 512;
-    int       max_n_kv = 1024;
-    while (max_n_kv < prompt_len + max_new) {
-        max_n_kv *= 2;
-    }
     // Decoder self-KV ceiling: dec_max_position, optionally lowered (never
     // raised) by the caller's n_ctx knob. Default knob (0) leaves it at
     // dec_max_position, so in-spec batched decode is unchanged.
     const int n_ctx_cap = canary_context_ceiling(cc->n_ctx, hp);
+    const int max_new =
+        transcribe::pick_decode_budget(transcribe::predict_transcript_tokens(T_enc_max, cm->limits.ms_per_audio_token),
+                                       k_gen_reserve, prompt_len, n_ctx_cap);
+    int max_n_kv = 1024;
+    while (max_n_kv < prompt_len + max_new) {
+        max_n_kv *= 2;
+    }
     if (max_n_kv > n_ctx_cap) {
         max_n_kv = n_ctx_cap;
     }

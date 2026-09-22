@@ -15,6 +15,7 @@
 #include "transcribe-arch.h"
 #include "transcribe-batch-util.h"
 #include "transcribe-debug.h"
+#include "transcribe-decode-budget.h"
 #include "transcribe-env.h"
 #include "transcribe-flash-policy.h"
 #include "transcribe-load-common.h"
@@ -416,6 +417,9 @@ transcribe_status promote_conv_pw_to_f32_on_cpu(CohereModel & m) {
 
 constexpr const char k_default_variant[] = "cohere-asr";
 
+// Generation reserve: floor under the per-run decode budget.
+constexpr int k_gen_reserve = 512;
+
 // Forward declarations for the Arch trait below.
 extern transcribe_status load(Loader &, const transcribe_model_load_params *, transcribe_model **);
 extern transcribe_status init_context(transcribe_model *, const transcribe_session_params *, transcribe_session **);
@@ -477,7 +481,7 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
         // Fixed control-token preamble (see run()'s prompt_pieces). Audio is
         // in cross-KV, so there is no audio-token overhead here.
         m->limits.prompt_overhead        = 10;
-        m->limits.gen_reserve            = 512;  // max-new-tokens cap in run()
+        m->limits.gen_reserve            = k_gen_reserve;
         // ms-per-audio-token = subsampling_factor * hop_length * 1000 / sr.
         m->limits.ms_per_audio_token     = static_cast<double>(m->hparams.enc_subsampling_factor) *
                                            m->hparams.fe_hop_length * 1000.0 / m->hparams.fe_sample_rate;
@@ -1060,8 +1064,10 @@ transcribe_status run(transcribe_session *          session,
         // Load-time validation guarantees eos_token_id >= 0; no
         // fallback is needed here. See the tokenizer.eos_id() check
         // in cohere::load() at the top of this file.
-        const int eos_id     = cm->hparams.eos_token_id;
-        const int max_tokens = std::min(512, cc->kv_cache.n_ctx - prompt_len);
+        const int eos_id = cm->hparams.eos_token_id;
+        const int max_tokens =
+            transcribe::pick_decode_budget(transcribe::predict_transcript_tokens(T_enc, cm->limits.ms_per_audio_token),
+                                           k_gen_reserve, prompt_len, cc->kv_cache.n_ctx);
 
         // Pick the first generated token. Fast path reads a single
         // int32 argmax that the GPU computed; debug path reads the
@@ -1594,14 +1600,16 @@ transcribe_status run_batch(transcribe_session *          session,
     }
 
     // ----- Allocate batched KV cache -----
-    const int max_new  = std::min(512, /*budget*/ 4096);
-    int       max_n_kv = 1024;
-    while (max_n_kv < prompt_len + max_new) {
-        max_n_kv *= 2;
-    }
     // Honor the session context cap (same ceiling the single-shot path uses),
     // not the raw model max — so a lowered n_ctx bounds batch decoder KV too.
     const int n_ctx_cap = cohere_dec_ctx_ceiling(cc->n_ctx, hp);
+    const int max_new =
+        transcribe::pick_decode_budget(transcribe::predict_transcript_tokens(T_enc_max, cm->limits.ms_per_audio_token),
+                                       k_gen_reserve, prompt_len, n_ctx_cap);
+    int max_n_kv = 1024;
+    while (max_n_kv < prompt_len + max_new) {
+        max_n_kv *= 2;
+    }
     if (max_n_kv > n_ctx_cap) {
         max_n_kv = n_ctx_cap;
     }

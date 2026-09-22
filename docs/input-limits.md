@@ -73,13 +73,10 @@ need and do not have a length gate.
 | --- | --- | --- |
 | qwen3_asr, canary_qwen, funasr_nano, granite, granite_nar, voxtral, cohere, canary, moonshine_streaming | decoder context window (`dec_max_position_embeddings` / `dec_max_seq`), or a learned encoder/adapter positional table (`enc_pos_emb_max_len`, and `adapter.pos_emb` for moonshine_streaming) — all from GGUF | KV cache grows to fit, clamped to the model's true max. Over-length input is **rejected before the decode** (or before the encoder, where a positional table is the binding limit) with `TRANSCRIBE_ERR_INPUT_TOO_LONG`. |
 
-These families wrap an LLM-style decoder whose context window
-(`audio_tokens + prompt + generation`) is the binding constraint. The number of
-tokens a clip consumes is a deterministic function of its sample count
-(`n_samples → mel frames → fixed subsampling → audio tokens`), so the library
-computes the prefill size *before* running the encoder and rejects an
-over-length clip immediately — the caller never pays for a compute pass that
-cannot fit. The rejection goes through the log callback, not raw stderr.
+A clip's sample count deterministically fixes its decoder prefill size or
+encoder frame count, so the library checks the relevant bound before running
+and rejects over-length input immediately. The rejection goes through the log
+callback, not raw stderr.
 
 Moonshine Streaming is encoder-decoder rather than audio-LLM, but has the same
 hard-gate behavior: its 4096-row learned adapter position table receives one
@@ -88,14 +85,20 @@ also the limit reported by `max_audio_ms`; one-shot, batch, and streaming calls
 reject audio past it before an out-of-range embedding lookup can occur.
 
 The one case that cannot be predicted up front is the transcript itself running
-long enough to exhaust the remaining budget mid-decode (rare — the output would
-have to be very large for the audio length). There, the run returns the hard
-status `TRANSCRIBE_ERR_OUTPUT_TRUNCATED` while keeping the partial transcript
-readable (exactly like an aborted run); `transcribe_was_truncated(session)` is
-also set, and a `WARN` is logged. A truncated transcript is never returned as
-`TRANSCRIBE_OK` — a caller cannot mistake it for complete — and the partial
-output is never discarded. In `transcribe_run_batch` this is a per-utterance
-status (the whole-batch call still returns `TRANSCRIBE_OK`).
+long enough to exhaust the remaining budget mid-decode. There, the run returns
+the hard status `TRANSCRIBE_ERR_OUTPUT_TRUNCATED` while keeping the partial
+transcript readable (exactly like an aborted run);
+`transcribe_was_truncated(session)` is also set, and a `WARN` is logged. A
+truncated transcript is never returned as `TRANSCRIBE_OK` — a caller cannot
+mistake it for complete — and the partial output is never discarded. In
+`transcribe_run_batch` this is a per-utterance status (the whole-batch call
+still returns `TRANSCRIBE_OK`).
+
+Autoregressive families scale the decode budget with audio length, capped by
+the remaining decoder context. Lowering `n_ctx` can therefore make truncation
+more likely. For `canary` and `cohere`, input and output have separate encoder
+and decoder limits; `max_audio_ms` reports the encoder limit, not a recommended
+chunk size.
 
 ### 3. Soft window — warn and proceed
 
@@ -161,7 +164,7 @@ with `TRANSCRIBE_ERR_INPUT_TOO_LONG` (one-shot and batch) or surfaced via
 
 | Situation | Status | Log | Result |
 | --- | --- | --- | --- |
-| Input within limit | `TRANSCRIBE_OK` | — | full transcript |
+| Input within limit and decode completes | `TRANSCRIBE_OK` | — | full transcript |
 | Over-length, hard-cap family | `TRANSCRIBE_ERR_INPUT_TOO_LONG` | `ERROR` via callback | no transcript (rejected before the decode) |
 | Generation ran long mid-decode | `TRANSCRIBE_ERR_OUTPUT_TRUNCATED` | `WARN` via callback | partial transcript readable; `transcribe_was_truncated() == true` |
 | Over-window, soft-window family | `TRANSCRIBE_OK` | `WARN` via callback | full transcript (accuracy may be degraded) |

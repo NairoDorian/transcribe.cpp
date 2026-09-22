@@ -158,7 +158,8 @@ struct EncoderPrefixCache {
 
 // Run one full decode pass over `pcm`: mel -> audio encoder -> prefill ->
 // greedy step loop. `suffix_ids` (may be null) is appended after the assistant
-// header. `max_new_tokens` is the generation budget.
+// header. `max_new_tokens` is the generation budget: > 0 an absolute cap
+// (streaming ticks), 0 sizes it from the audio length (offline).
 //
 // `enc_cache` (may be null) is the streaming encoder prefix cache described
 // above. Offline callers pass null. A non-null cache is consulted and updated

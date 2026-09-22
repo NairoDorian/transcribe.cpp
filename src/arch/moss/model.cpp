@@ -16,6 +16,7 @@
 #include "transcribe-arch.h"
 #include "transcribe-batch-util.h"
 #include "transcribe-debug.h"
+#include "transcribe-decode-budget.h"
 #include "transcribe-env.h"
 #include "transcribe-flash-policy.h"
 #include "transcribe-load-common.h"
@@ -759,10 +760,8 @@ transcribe_status run(transcribe_session *          session,
         return TRANSCRIBE_ERR_INPUT_TOO_LONG;
     }
 
-    // Generation budget scales with audio length: the emergent transcript
-    // (text + [start]/[Sxx]/[end] markers) tracks the audio-token count, which
-    // for long-form far exceeds the k_max_new floor. Clamp to the context.
-    const int gen_budget = std::min(ceiling - T_prompt, std::max(k_max_new, 2 * T_enc + 128));
+    // Above the plain audio-token count: the transcript carries [start]/[Sxx]/[end] markers.
+    const int gen_budget = transcribe::pick_decode_budget(2 * T_enc + 128, k_max_new, T_prompt, ceiling);
 
     // KV cache (grow-to-fit, clamped to ceiling). Short inputs retain the old
     // 1K/2K/4K buckets; longer ones grow in 4K steps so crossing 32K does not
@@ -1195,9 +1194,7 @@ transcribe_status run_batch(transcribe_session *          session,
         return TRANSCRIBE_OK;
     }
 
-    // Batch-wide generation budget: covers the longest utterance's transcript
-    // (scales with its audio tokens), clamped to the context.
-    const int batch_budget = std::min(ceiling - max_T_prompt, std::max(k_max_new, 2 * max_T_enc + 128));
+    const int batch_budget = transcribe::pick_decode_budget(2 * max_T_enc + 128, k_max_new, max_T_prompt, ceiling);
 
     int max_n_kv = 1024;
     while (max_n_kv < max_T_prompt + batch_budget) {

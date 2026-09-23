@@ -2161,8 +2161,9 @@ transcribe_status whisper_run(transcribe_session *          session,
             const bool primary_is_gpu = cm->plan.primary_kind != transcribe::BackendKind::Cpu &&
                                         cm->plan.primary_kind != transcribe::BackendKind::Accel &&
                                         cm->plan.primary_kind != transcribe::BackendKind::Unknown;
-            const bool use_step_graph = (primary_is_gpu || !transcribe::env::flag("TRANSCRIBE_DISABLE_STATIC_DECODE")) &&
-                                        !transcribe::debug::enabled();
+            const bool use_step_graph =
+                (primary_is_gpu || !transcribe::env::flag("TRANSCRIBE_DISABLE_STATIC_DECODE")) &&
+                !transcribe::debug::enabled();
 
             // Sized to fit prompt + max generated tail, padded to next pow2,
             // capped at n_ctx_decoder (448).

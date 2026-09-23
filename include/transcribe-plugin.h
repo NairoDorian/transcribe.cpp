@@ -7,6 +7,7 @@
 #pragma once
 
 #include "transcribe.h"
+
 #include <stdint.h>
 
 #define TRANSCRIBE_ARCH_PLUGIN_ABI_VERSION 1
@@ -30,7 +31,7 @@ struct transcribe_arch;
 
 typedef struct transcribe_arch_plugin {
     // ABI version for compatibility verification
-    uint32_t abi_version;
+    uint32_t     abi_version;
     // The canonical architecture name (e.g. "parakeet", "granite", "qwen3_asr")
     const char * arch_name;
     // Pointer to the family's Arch instance
@@ -42,7 +43,7 @@ typedef const transcribe_arch_plugin * (*transcribe_arch_plugin_entry_fn)(void);
 
 #define TRANSCRIBE_ARCH_PLUGIN_ENTRY_NAME "transcribe_arch_plugin_get"
 
-#define TRANSCRIBE_ARCH_PLUGIN_DEFINE(name_str, arch_ref)                                                  \
+#define TRANSCRIBE_ARCH_PLUGIN_DEFINE(name_str, arch_ref)                                                 \
     extern "C" TRANSCRIBE_PLUGIN_EXPORT const transcribe_arch_plugin * transcribe_arch_plugin_get(void) { \
         static const transcribe_arch_plugin s_plugin = {                                                  \
             TRANSCRIBE_ARCH_PLUGIN_ABI_VERSION,                                                           \
@@ -55,4 +56,3 @@ typedef const transcribe_arch_plugin * (*transcribe_arch_plugin_entry_fn)(void);
 #ifdef __cplusplus
 }
 #endif
-

@@ -1307,7 +1307,9 @@ transcribe_status run(transcribe_session *          session,
                                            /*n_tokens=*/1, worst_n_past, T_enc,
                                            /*skip_log_softmax=*/true, cc->decoder_use_flash);
                 if (db_reserve.graph != nullptr) {
-                    ggml_backend_sched_reserve(cc->sched, db_reserve.graph);
+                    if (!ggml_backend_sched_reserve(cc->sched, db_reserve.graph)) {
+                        log_msg(TRANSCRIBE_LOG_LEVEL_WARN, "canary run: ggml_backend_sched_reserve failed");
+                    }
                 }
             }
 

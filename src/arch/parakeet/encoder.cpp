@@ -71,8 +71,8 @@ bool detect_direct_dw_in_pre_encode(const char * backend) {
 // On CPU backend it is native; on CUDA/Metal keep false to use ggml_conv_2d (im2col).
 bool detect_direct_conv0_in_pre_encode(const char * backend, bool causal_pe) {
     if (causal_pe) {
-        const bool is_cpu = backend == nullptr ||
-                            (std::strstr(backend, "CPU") != nullptr || std::strstr(backend, "cpu") != nullptr);
+        const bool is_cpu =
+            backend == nullptr || (std::strstr(backend, "CPU") != nullptr || std::strstr(backend, "cpu") != nullptr);
         return is_cpu;
     }
     const bool is_metal =

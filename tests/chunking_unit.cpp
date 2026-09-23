@@ -34,7 +34,7 @@ int main() {
 
         // 60s of audio: 960,000 samples
         const int64_t total_samples = 960000;
-        auto spans = plan_audio_chunks(total_samples, spec);
+        auto          spans         = plan_audio_chunks(total_samples, spec);
 
         CHECK(spans.size() == 3);
         CHECK(spans[0].index == 0);
@@ -60,7 +60,7 @@ int main() {
         // 0s - 25s: loud speech (sine wave, amplitude 0.8)
         // 25s - 27s: silence (amplitude 0.0) -> samples 400,000 to 432,000
         // 27s - 40s: loud speech (amplitude 0.8)
-        const int64_t n_samples = 640000;
+        const int64_t      n_samples = 640000;
         std::vector<float> pcm(n_samples, 0.0f);
         for (int64_t i = 0; i < 400000; ++i) {
             pcm[i] = 0.8f * std::sin(2.0f * 3.14159f * 440.0f * static_cast<float>(i) / 16000.0f);
@@ -91,14 +91,14 @@ int main() {
         // Chunk 0: covers [0s, 30s] (0 samples start)
         transcribe_session::ResultSet rs0;
         rs0.has_result = true;
-        rs0.full_text = "Hello world";
-        rs0.raw_text  = "Hello world";
-        rs0.tokens = {
-            { 1, "Hello", 0.95f, 500, 1000, 0, 0 },
+        rs0.full_text  = "Hello world";
+        rs0.raw_text   = "Hello world";
+        rs0.tokens     = {
+            { 1, "Hello", 0.95f, 500,  1000, 0, 0 },
             { 2, "world", 0.98f, 1100, 1800, 0, 1 },
         };
         rs0.words = {
-            { "Hello", 500, 1000, 0, 0, 1 },
+            { "Hello", 500,  1000, 0, 0, 1 },
             { "world", 1100, 1800, 0, 1, 1 },
         };
         rs0.segments = {
@@ -108,26 +108,26 @@ int main() {
         // Chunk 1: covers [30s, 60s] (480,000 samples start at 16kHz -> 30,000 ms offset)
         transcribe_session::ResultSet rs1;
         rs1.has_result = true;
-        rs1.full_text = "this is a test";
-        rs1.raw_text  = "this is a test";
-        rs1.tokens = {
-            { 3, "this", 0.92f, 200, 600, 0, 0 },
-            { 4, "is", 0.94f, 700, 900, 0, 1 },
-            { 5, "a", 0.91f, 1000, 1100, 0, 2 },
+        rs1.full_text  = "this is a test";
+        rs1.raw_text   = "this is a test";
+        rs1.tokens     = {
+            { 3, "this", 0.92f, 200,  600,  0, 0 },
+            { 4, "is",   0.94f, 700,  900,  0, 1 },
+            { 5, "a",    0.91f, 1000, 1100, 0, 2 },
             { 6, "test", 0.96f, 1200, 1700, 0, 3 },
         };
         rs1.words = {
-            { "this", 200, 600, 0, 0, 1 },
-            { "is", 700, 900, 0, 1, 1 },
-            { "a", 1000, 1100, 0, 2, 1 },
+            { "this", 200,  600,  0, 0, 1 },
+            { "is",   700,  900,  0, 1, 1 },
+            { "a",    1000, 1100, 0, 2, 1 },
             { "test", 1200, 1700, 0, 3, 1 },
         };
         rs1.segments = {
             { "this is a test", 200, 1700, 0, 4, 0, 4, 0 },
         };
 
-        std::vector<transcribe_session::ResultSet> chunk_results = { rs0, rs1 };
-        std::vector<int64_t> chunk_start_samples = { 0, 480000 };
+        std::vector<transcribe_session::ResultSet> chunk_results       = { rs0, rs1 };
+        std::vector<int64_t>                       chunk_start_samples = { 0, 480000 };
 
         auto merged = merge_chunk_results(chunk_results, chunk_start_samples, 16000);
 
@@ -146,14 +146,14 @@ int main() {
         // Second chunk tokens rebased by +30,000 ms:
         CHECK(merged.tokens[2].t0_ms == 30200);
         CHECK(merged.tokens[2].t1_ms == 30600);
-        CHECK(merged.tokens[2].seg_index == 1);     // was 0, offset by 1 segment
-        CHECK(merged.tokens[2].word_index == 2);    // was 0, offset by 2 words
+        CHECK(merged.tokens[2].seg_index == 1);   // was 0, offset by 1 segment
+        CHECK(merged.tokens[2].word_index == 2);  // was 0, offset by 2 words
 
         // Second chunk words rebased:
         CHECK(merged.words[2].t0_ms == 30200);
         CHECK(merged.words[2].t1_ms == 30600);
         CHECK(merged.words[2].seg_index == 1);
-        CHECK(merged.words[2].first_token == 2);   // was 0, offset by 2 tokens
+        CHECK(merged.words[2].first_token == 2);  // was 0, offset by 2 tokens
 
         // Second chunk segment rebased:
         CHECK(merged.segments[1].t0_ms == 30200);

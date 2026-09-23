@@ -1,6 +1,6 @@
 // transcribe-plugin-entry.cpp - Standardized entry point for architecture plugins.
-#include "transcribe-plugin.h"
 #include "transcribe-arch.h"
+#include "transcribe-plugin.h"
 
 #ifndef TRANSCRIBE_PLUGIN_ARCH_NAME
 #    error "TRANSCRIBE_PLUGIN_ARCH_NAME must be defined"
@@ -17,7 +17,7 @@ extern const Arch arch;
 }  // namespace transcribe
 
 #define TRANSCRIBE_STR_IMPL(x) #x
-#define TRANSCRIBE_STR(x) TRANSCRIBE_STR_IMPL(x)
+#define TRANSCRIBE_STR(x)      TRANSCRIBE_STR_IMPL(x)
 
 extern "C" TRANSCRIBE_PLUGIN_EXPORT const transcribe_arch_plugin * transcribe_arch_plugin_get(void) {
     static const transcribe_arch_plugin s_plugin = {

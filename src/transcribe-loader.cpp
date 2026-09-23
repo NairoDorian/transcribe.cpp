@@ -51,10 +51,10 @@ gguf_context * Loader::release_gguf() {
 // has the gguf_context and the ggml_context to do it properly.
 namespace {
 struct ForeignPackaging {
-    const char * packaging;  // value of general.architecture
-    const char * family_key; // sidecar KV naming the family
-    const char * family_id;  // value of that KV this repo implements
-    const char * arch;       // transcribe family to dispatch to
+    const char * packaging;   // value of general.architecture
+    const char * family_key;  // sidecar KV naming the family
+    const char * family_id;   // value of that KV this repo implements
+    const char * arch;        // transcribe family to dispatch to
 };
 
 constexpr ForeignPackaging kForeignPackaging[] = {

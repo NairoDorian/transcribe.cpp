@@ -14,8 +14,8 @@ namespace transcribe::r2t2 {
 // on UTF-8 text and mirror the Python string semantics so the streaming
 // state machine reproduces the reference outputs token for token.
 
-inline constexpr const char * kAsrTextTag = "<asr_text>";
-inline constexpr const char * kLanguagePrefix = "language ";
+inline constexpr const char * kAsrTextTag      = "<asr_text>";
+inline constexpr const char * kLanguagePrefix  = "language ";
 inline constexpr const char * kReplacementChar = "\xEF\xBF\xBD";
 
 struct R2T2ParsedOutput {

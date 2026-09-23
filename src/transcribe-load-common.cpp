@@ -468,15 +468,15 @@ transcribe_status stream_tensor_data(const std::string &  path,
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "%s: tensor \"%s\" not in gguf data", error_tag, t->name);
             return TRANSCRIBE_ERR_GGUF;
         }
-        const size_t    toffset  = gguf_get_tensor_offset(gguf_data, idx);
-        const ggml_type src_type = gguf_get_tensor_type(gguf_data, idx);
-        const size_t    nbytes   = ggml_nbytes(t);
+        const size_t    toffset   = gguf_get_tensor_offset(gguf_data, idx);
+        const ggml_type src_type  = gguf_get_tensor_type(gguf_data, idx);
+        const size_t    nbytes    = ggml_nbytes(t);
         // When the file's dtype and the planned dtype agree — every tensor of
         // every GGUF this project publishes — the read is exactly as long as
         // the destination and this is byte-for-byte the upload it always was.
         // Only a dtype change reads the file's own (differently sized) span.
-        const bool   convert   = (src_type != t->type);
-        const size_t src_bytes = convert ? gguf_get_tensor_size(gguf_data, idx) : nbytes;
+        const bool      convert   = (src_type != t->type);
+        const size_t    src_bytes = convert ? gguf_get_tensor_size(gguf_data, idx) : nbytes;
 
         const std::streamoff abs_offset =
             static_cast<std::streamoff>(data_offset) + static_cast<std::streamoff>(toffset);
@@ -515,7 +515,7 @@ transcribe_status stream_tensor_data(const std::string &  path,
             // unambiguous and to_float/from_float_ref operate on whole
             // elements. A quantized source would need block-aware handling
             // this path does not do.
-            const size_t src_expect = static_cast<size_t>(n_elem) * ggml_type_size(src_type);
+            const size_t             src_expect = static_cast<size_t>(n_elem) * ggml_type_size(src_type);
             // F32 carries no traits of its own — it is the pivot both
             // directions convert through, so the identity needs none and
             // ggml leaves both members unset. Requiring them here would

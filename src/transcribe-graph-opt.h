@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Adapted from audio.cpp's graph_optimizer.cpp, copyright 2026 ShugoAI LLC.
-// See licenses/audio-cpp-Apache-2.0.txt. This subset keeps GGML v0.24 scheduler
+// See licenses/audio-cpp-Apache-2.0.txt. This subset keeps GGML v0.25 scheduler
 // metadata, output tensors and views intact; no downstream GGML APIs are used.
 #pragma once
 

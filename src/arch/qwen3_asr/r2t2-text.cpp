@@ -22,23 +22,21 @@ std::vector<uint32_t> utf8_to_codepoints(const std::string & text) {
         if (byte < 0x80) {
             out.push_back(byte);
             i += 1;
-        } else if ((byte >> 5) == 0x6 && i + 1 < text.size() &&
-                   (static_cast<unsigned char>(text[i + 1]) >> 6) == 0x2) {
+        } else if ((byte >> 5) == 0x6 && i + 1 < text.size() && (static_cast<unsigned char>(text[i + 1]) >> 6) == 0x2) {
             out.push_back(((byte & 0x1F) << 6) | (static_cast<unsigned char>(text[i + 1]) & 0x3F));
             i += 2;
-        } else if ((byte >> 4) == 0xE && i + 2 < text.size() &&
-                   (static_cast<unsigned char>(text[i + 1]) >> 6) == 0x2 &&
+        } else if ((byte >> 4) == 0xE && i + 2 < text.size() && (static_cast<unsigned char>(text[i + 1]) >> 6) == 0x2 &&
                    (static_cast<unsigned char>(text[i + 2]) >> 6) == 0x2) {
             out.push_back(((byte & 0x0F) << 12) | ((static_cast<unsigned char>(text[i + 1]) & 0x3F) << 6) |
-                (static_cast<unsigned char>(text[i + 2]) & 0x3F));
+                          (static_cast<unsigned char>(text[i + 2]) & 0x3F));
             i += 3;
         } else if ((byte >> 3) == 0x1E && i + 3 < text.size() &&
                    (static_cast<unsigned char>(text[i + 1]) >> 6) == 0x2 &&
                    (static_cast<unsigned char>(text[i + 2]) >> 6) == 0x2 &&
                    (static_cast<unsigned char>(text[i + 3]) >> 6) == 0x2) {
             out.push_back(((byte & 0x07) << 18) | ((static_cast<unsigned char>(text[i + 1]) & 0x3F) << 12) |
-                ((static_cast<unsigned char>(text[i + 2]) & 0x3F) << 6) |
-                (static_cast<unsigned char>(text[i + 3]) & 0x3F));
+                          ((static_cast<unsigned char>(text[i + 2]) & 0x3F) << 6) |
+                          (static_cast<unsigned char>(text[i + 3]) & 0x3F));
             i += 4;
         } else {
             out.push_back(0xFFFD);
@@ -81,7 +79,7 @@ bool is_chinese_codepoint(uint32_t codepoint) {
 
 bool is_ascii_digit_or_letter(uint32_t codepoint) {
     return (codepoint >= '0' && codepoint <= '9') || (codepoint >= 'a' && codepoint <= 'z') ||
-        (codepoint >= 'A' && codepoint <= 'Z');
+           (codepoint >= 'A' && codepoint <= 'Z');
 }
 
 bool is_python_space(uint32_t codepoint) {
@@ -198,8 +196,8 @@ bool is_ascii_alnum_or_quote(uint32_t codepoint) {
 
 std::vector<uint32_t> fix_char_repeats(const std::vector<uint32_t> & s, int threshold) {
     std::vector<uint32_t> out;
-    size_t i = 0;
-    const size_t n = s.size();
+    size_t                i = 0;
+    const size_t          n = s.size();
     while (i < n) {
         size_t count = 1;
         while (i + count < n && s[i + count] == s[i]) {
@@ -208,7 +206,8 @@ std::vector<uint32_t> fix_char_repeats(const std::vector<uint32_t> & s, int thre
         if (static_cast<int>(count) > threshold) {
             out.push_back(s[i]);
         } else {
-            out.insert(out.end(), s.begin() + static_cast<std::ptrdiff_t>(i), s.begin() + static_cast<std::ptrdiff_t>(i + count));
+            out.insert(out.end(), s.begin() + static_cast<std::ptrdiff_t>(i),
+                       s.begin() + static_cast<std::ptrdiff_t>(i + count));
         }
         i += count;
     }
@@ -216,14 +215,14 @@ std::vector<uint32_t> fix_char_repeats(const std::vector<uint32_t> & s, int thre
 }
 
 std::vector<uint32_t> fix_pattern_repeats(const std::vector<uint32_t> & s, int threshold, int max_len) {
-    const size_t n = s.size();
+    const size_t n                = s.size();
     const size_t min_repeat_chars = static_cast<size_t>(threshold) * 2;
     if (n < min_repeat_chars) {
         return s;
     }
     std::vector<uint32_t> result;
-    size_t i = 0;
-    bool exhausted = false;
+    size_t                i         = 0;
+    bool                  exhausted = false;
     while (i + min_repeat_chars <= n) {
         bool found = false;
         for (int k = 1; k <= max_len; ++k) {
@@ -232,11 +231,14 @@ std::vector<uint32_t> fix_pattern_repeats(const std::vector<uint32_t> & s, int t
                 break;
             }
             const auto pattern_begin = s.begin() + static_cast<std::ptrdiff_t>(i);
-            const auto pattern = std::vector<uint32_t>(pattern_begin, pattern_begin + static_cast<std::ptrdiff_t>(pattern_length));
+            const auto pattern =
+                std::vector<uint32_t>(pattern_begin, pattern_begin + static_cast<std::ptrdiff_t>(pattern_length));
             bool valid = true;
             for (int rep = 1; rep < threshold; ++rep) {
                 const size_t start_idx = i + static_cast<size_t>(rep) * pattern_length;
-                if (std::vector<uint32_t>(s.begin() + static_cast<std::ptrdiff_t>(start_idx), s.begin() + static_cast<std::ptrdiff_t>(start_idx + pattern_length)) != pattern) {
+                if (std::vector<uint32_t>(s.begin() + static_cast<std::ptrdiff_t>(start_idx),
+                                          s.begin() + static_cast<std::ptrdiff_t>(start_idx + pattern_length)) !=
+                    pattern) {
                     valid = false;
                     break;
                 }
@@ -244,14 +246,17 @@ std::vector<uint32_t> fix_pattern_repeats(const std::vector<uint32_t> & s, int t
             if (valid) {
                 size_t end_index = i + pattern_length * static_cast<size_t>(threshold);
                 while (end_index + pattern_length <= n &&
-                       std::vector<uint32_t>(s.begin() + static_cast<std::ptrdiff_t>(end_index), s.begin() + static_cast<std::ptrdiff_t>(end_index + pattern_length)) == pattern) {
+                       std::vector<uint32_t>(s.begin() + static_cast<std::ptrdiff_t>(end_index),
+                                             s.begin() + static_cast<std::ptrdiff_t>(end_index + pattern_length)) ==
+                           pattern) {
                     end_index += pattern_length;
                 }
                 result.insert(result.end(), pattern.begin(), pattern.end());
                 const auto rest = fix_pattern_repeats(
-                    std::vector<uint32_t>(s.begin() + static_cast<std::ptrdiff_t>(end_index), s.end()), threshold, max_len);
+                    std::vector<uint32_t>(s.begin() + static_cast<std::ptrdiff_t>(end_index), s.end()), threshold,
+                    max_len);
                 result.insert(result.end(), rest.begin(), rest.end());
-                i = n;
+                i     = n;
                 found = true;
                 break;
             }
@@ -272,15 +277,16 @@ std::vector<uint32_t> fix_pattern_repeats(const std::vector<uint32_t> & s, int t
 /// str.strip() semantics over the Python whitespace set.
 std::string strip_python(const std::string & text) {
     const auto codepoints = utf8_to_codepoints(text);
-    size_t begin = 0;
-    size_t end = codepoints.size();
+    size_t     begin      = 0;
+    size_t     end        = codepoints.size();
     while (begin < end && is_python_space(codepoints[begin])) {
         ++begin;
     }
     while (end > begin && is_python_space(codepoints[end - 1])) {
         --end;
     }
-    return codepoints_to_utf8(std::vector<uint32_t>(codepoints.begin() + static_cast<std::ptrdiff_t>(begin), codepoints.begin() + static_cast<std::ptrdiff_t>(end)));
+    return codepoints_to_utf8(std::vector<uint32_t>(codepoints.begin() + static_cast<std::ptrdiff_t>(begin),
+                                                    codepoints.begin() + static_cast<std::ptrdiff_t>(end)));
 }
 
 bool contains_ascii_needle(const std::string & text, const char * needle) {
@@ -305,7 +311,9 @@ std::string to_lower_ascii(const std::string & text) {
     return out;
 }
 
-R2T2ParsedOutput parse_tagged_output(const std::string & raw, const std::string & user_language, bool apply_repetition_fix) {
+R2T2ParsedOutput parse_tagged_output(const std::string & raw,
+                                     const std::string & user_language,
+                                     bool                apply_repetition_fix) {
     if (user_language.empty()) {
         std::string s = strip_python(raw);
         if (s.empty()) {
@@ -315,28 +323,28 @@ R2T2ParsedOutput parse_tagged_output(const std::string & raw, const std::string 
             s = detect_and_fix_repetitions(s);
         }
         if (!contains_asr_text_tag(s)) {
-            return {std::string(), strip_python(s)};
+            return { std::string(), strip_python(s) };
         }
-        const std::string meta_part = text_before_asr_tag(s);
-        const std::string text_part = text_after_asr_tag(s);
+        const std::string meta_part  = text_before_asr_tag(s);
+        const std::string text_part  = text_after_asr_tag(s);
         const std::string meta_lower = to_lower_ascii(meta_part);
         if (meta_lower.find("language none") != std::string::npos) {
             const std::string t = strip_python(text_part);
             if (t.empty()) {
                 return {};
             }
-            return {std::string(), t};
+            return { std::string(), t };
         }
         std::string language;
-        size_t line_begin = 0;
+        size_t      line_begin = 0;
         while (line_begin <= meta_part.size()) {
-            const size_t line_end = meta_part.find('\n', line_begin);
-            const std::string line = strip_python(meta_part.substr(
-                line_begin,
-                line_end == std::string::npos ? std::string::npos : line_end - line_begin));
+            const size_t      line_end = meta_part.find('\n', line_begin);
+            const std::string line     = strip_python(meta_part.substr(
+                line_begin, line_end == std::string::npos ? std::string::npos : line_end - line_begin));
             if (!line.empty()) {
                 if (starts_with_ascii(line, kLanguagePrefix)) {
-                    const std::string value = strip_python(line.substr(std::char_traits<char>::length(kLanguagePrefix)));
+                    const std::string value =
+                        strip_python(line.substr(std::char_traits<char>::length(kLanguagePrefix)));
                     if (!value.empty()) {
                         language = normalize_language_name(value);
                     }
@@ -348,14 +356,14 @@ R2T2ParsedOutput parse_tagged_output(const std::string & raw, const std::string 
             }
             line_begin = line_end + 1;
         }
-        return {language, strip_python(text_part)};
+        return { language, strip_python(text_part) };
     }
     // Forced language: the model output is treated as pure transcription text.
     std::string s = strip_python(raw);
     if (!s.empty() && apply_repetition_fix) {
         s = detect_and_fix_repetitions(s);
     }
-    return {user_language, s};
+    return { user_language, s };
 }
 
 }  // namespace
@@ -365,7 +373,7 @@ std::string sanitize_utf8_lossy(const std::string & text) {
     out.reserve(text.size() + 16);
     size_t i = 0;
     while (i < text.size()) {
-        const auto byte = static_cast<unsigned char>(text[i]);
+        const auto   byte      = static_cast<unsigned char>(text[i]);
         const size_t remaining = text.size() - i;
         if (byte < 0x80) {
             out.push_back(text[i]);
@@ -402,7 +410,7 @@ std::string sanitize_utf8_lossy(const std::string & text) {
 }
 
 std::string normalize_punct_by_context(const std::string & text) {
-    const auto codepoints = utf8_to_codepoints(text);
+    const auto            codepoints = utf8_to_codepoints(text);
     std::vector<uint32_t> out;
     out.reserve(codepoints.size());
     for (size_t pos = 0; pos < codepoints.size(); ++pos) {
@@ -412,11 +420,11 @@ std::string normalize_punct_by_context(const std::string & text) {
             continue;
         }
         // Find the closest preceding non-space character.
-        uint32_t previous = 0;
-        bool has_previous = false;
+        uint32_t previous     = 0;
+        bool     has_previous = false;
         for (size_t back = pos; back-- > 0;) {
             if (!is_python_space(codepoints[back])) {
-                previous = codepoints[back];
+                previous     = codepoints[back];
                 has_previous = true;
                 break;
             }
@@ -438,13 +446,13 @@ std::string normalize_punct_by_context(const std::string & text) {
 
 std::string detect_and_fix_repetitions(const std::string & text, int threshold) {
     auto codepoints = utf8_to_codepoints(text);
-    codepoints = fix_char_repeats(codepoints, threshold);
-    codepoints = fix_pattern_repeats(codepoints, threshold, 20);
+    codepoints      = fix_char_repeats(codepoints, threshold);
+    codepoints      = fix_pattern_repeats(codepoints, threshold, 20);
     return codepoints_to_utf8(codepoints);
 }
 
 std::string remove_spaces_between_chinese(const std::string & text) {
-    const auto codepoints = utf8_to_codepoints(text);
+    const auto            codepoints = utf8_to_codepoints(text);
     std::vector<uint32_t> out;
     out.reserve(codepoints.size());
     size_t i = 0;
@@ -454,10 +462,11 @@ std::string remove_spaces_between_chinese(const std::string & text) {
             while (j < codepoints.size() && is_python_space(codepoints[j])) {
                 ++j;
             }
-            const bool between_chinese = i > 0 && j < codepoints.size() &&
-                is_chinese_codepoint(codepoints[i - 1]) && is_chinese_codepoint(codepoints[j]);
+            const bool between_chinese = i > 0 && j < codepoints.size() && is_chinese_codepoint(codepoints[i - 1]) &&
+                                         is_chinese_codepoint(codepoints[j]);
             if (!between_chinese) {
-                out.insert(out.end(), codepoints.begin() + static_cast<std::ptrdiff_t>(i), codepoints.begin() + static_cast<std::ptrdiff_t>(j));
+                out.insert(out.end(), codepoints.begin() + static_cast<std::ptrdiff_t>(i),
+                           codepoints.begin() + static_cast<std::ptrdiff_t>(j));
             }
             i = j;
             continue;
@@ -470,8 +479,8 @@ std::string remove_spaces_between_chinese(const std::string & text) {
 
 std::string normalize_language_name(const std::string & language) {
     const auto codepoints = utf8_to_codepoints(language);
-    size_t begin = 0;
-    size_t end = codepoints.size();
+    size_t     begin      = 0;
+    size_t     end        = codepoints.size();
     while (begin < end && is_python_space(codepoints[begin])) {
         ++begin;
     }
@@ -504,17 +513,38 @@ std::string resolve_language(const std::string & language) {
     // The model spec and the WebUI speak ISO-639 style codes; the R2T2 prompt
     // wants the canonical names from config.json.
     static constexpr std::pair<const char *, const char *> kIsoToName[] = {
-        {"zh", "Chinese"},      {"en", "English"},     {"yue", "Cantonese"},
-        {"ar", "Arabic"},       {"de", "German"},      {"fr", "French"},
-        {"es", "Spanish"},      {"pt", "Portuguese"},  {"id", "Indonesian"},
-        {"it", "Italian"},      {"ko", "Korean"},      {"ru", "Russian"},
-        {"th", "Thai"},         {"vi", "Vietnamese"},  {"ja", "Japanese"},
-        {"tr", "Turkish"},      {"hi", "Hindi"},       {"ms", "Malay"},
-        {"nl", "Dutch"},        {"sv", "Swedish"},     {"da", "Danish"},
-        {"fi", "Finnish"},      {"pl", "Polish"},      {"cs", "Czech"},
-        {"fil", "Filipino"},    {"fa", "Persian"},     {"el", "Greek"},
-        {"hu", "Hungarian"},    {"mk", "Macedonian"},  {"ro", "Romanian"},
-        {"auto", ""},           {"none", ""},
+        { "zh",   "Chinese"    },
+        { "en",   "English"    },
+        { "yue",  "Cantonese"  },
+        { "ar",   "Arabic"     },
+        { "de",   "German"     },
+        { "fr",   "French"     },
+        { "es",   "Spanish"    },
+        { "pt",   "Portuguese" },
+        { "id",   "Indonesian" },
+        { "it",   "Italian"    },
+        { "ko",   "Korean"     },
+        { "ru",   "Russian"    },
+        { "th",   "Thai"       },
+        { "vi",   "Vietnamese" },
+        { "ja",   "Japanese"   },
+        { "tr",   "Turkish"    },
+        { "hi",   "Hindi"      },
+        { "ms",   "Malay"      },
+        { "nl",   "Dutch"      },
+        { "sv",   "Swedish"    },
+        { "da",   "Danish"     },
+        { "fi",   "Finnish"    },
+        { "pl",   "Polish"     },
+        { "cs",   "Czech"      },
+        { "fil",  "Filipino"   },
+        { "fa",   "Persian"    },
+        { "el",   "Greek"      },
+        { "hu",   "Hungarian"  },
+        { "mk",   "Macedonian" },
+        { "ro",   "Romanian"   },
+        { "auto", ""           },
+        { "none", ""           },
     };
     const std::string lowered = to_lower_ascii(trimmed);
     for (const auto & [code, name] : kIsoToName) {
@@ -525,16 +555,19 @@ std::string resolve_language(const std::string & language) {
     return normalize_language_name(trimmed);
 }
 
-R2T2ParsedOutput parse_language_output(const std::string & raw, const std::string & user_language) {    // The reference strips only the right side when the forced language is
+R2T2ParsedOutput parse_language_output(
+    const std::string & raw,
+    const std::string & user_language) {  // The reference strips only the right side when the forced language is
     // exactly "English", and both sides otherwise.
     std::string s;
     if (user_language == "English") {
-        auto codepoints = utf8_to_codepoints(raw);
-        size_t end = codepoints.size();
+        auto   codepoints = utf8_to_codepoints(raw);
+        size_t end        = codepoints.size();
         while (end > 0 && is_python_space(codepoints[end - 1])) {
             --end;
         }
-        s = codepoints_to_utf8(std::vector<uint32_t>(codepoints.begin(), codepoints.begin() + static_cast<std::ptrdiff_t>(end)));
+        s = codepoints_to_utf8(
+            std::vector<uint32_t>(codepoints.begin(), codepoints.begin() + static_cast<std::ptrdiff_t>(end)));
     } else {
         s = strip_python(raw);
     }
@@ -542,7 +575,7 @@ R2T2ParsedOutput parse_language_output(const std::string & raw, const std::strin
         return {};
     }
     if (!user_language.empty()) {
-        return {user_language, s};
+        return { user_language, s };
     }
     return parse_tagged_output(s, std::string(), /*apply_repetition_fix=*/false);
 }
@@ -582,9 +615,8 @@ std::string utf8_slice_from_codepoint(const std::string & text, std::size_t star
     if (start_codepoint >= codepoints.size()) {
         return {};
     }
-    return codepoints_to_utf8(std::vector<uint32_t>(
-        codepoints.begin() + static_cast<std::ptrdiff_t>(start_codepoint),
-        codepoints.end()));
+    return codepoints_to_utf8(
+        std::vector<uint32_t>(codepoints.begin() + static_cast<std::ptrdiff_t>(start_codepoint), codepoints.end()));
 }
 
 bool ends_with_rollback_punctuation(const std::string & trimmed_text) {

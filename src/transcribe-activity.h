@@ -26,13 +26,13 @@ bool is_audio_active(const float * pcm, size_t n_samples, float threshold_dbfs =
 
 // Find active speech region within a PCM buffer, using sliding window and margin.
 AudioActivityRegion find_audio_activity_region(const float * pcm,
-                                              size_t        n_samples,
-                                              float         threshold_dbfs = -42.0f,
-                                              float         window_seconds = 0.030f,
-                                              float         margin_seconds = 0.100f,
-                                              int           sample_rate_hz = 16000);
+                                               size_t        n_samples,
+                                               float         threshold_dbfs = -42.0f,
+                                               float         window_seconds = 0.030f,
+                                               float         margin_seconds = 0.100f,
+                                               int           sample_rate_hz = 16000);
 
 // Environment kill-switch check: TRANSCRIBE_DISABLE_ACTIVITY_GATE=1
 bool is_activity_gate_disabled();
 
-} // namespace transcribe
+}  // namespace transcribe

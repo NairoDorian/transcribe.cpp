@@ -1,6 +1,7 @@
 // transcribe-activity.cpp - native fast energy activity detection.
 
 #include "transcribe-activity.h"
+
 #include "transcribe-env.h"
 
 #include <algorithm>
@@ -43,18 +44,19 @@ bool is_audio_active(const float * pcm, size_t n_samples, float threshold_dbfs) 
 }
 
 AudioActivityRegion find_audio_activity_region(const float * pcm,
-                                              size_t        n_samples,
-                                              float         threshold_dbfs,
-                                              float         window_seconds,
-                                              float         margin_seconds,
-                                              int           sample_rate_hz) {
+                                               size_t        n_samples,
+                                               float         threshold_dbfs,
+                                               float         window_seconds,
+                                               float         margin_seconds,
+                                               int           sample_rate_hz) {
     AudioActivityRegion region;
     if (pcm == nullptr || n_samples == 0 || sample_rate_hz <= 0) {
         return region;
     }
 
-    const size_t window_frames = std::max<size_t>(1, static_cast<size_t>(std::llround(window_seconds * sample_rate_hz)));
-    const size_t margin_frames = static_cast<size_t>(std::llround(margin_seconds * sample_rate_hz));
+    const size_t window_frames =
+        std::max<size_t>(1, static_cast<size_t>(std::llround(window_seconds * sample_rate_hz)));
+    const size_t margin_frames    = static_cast<size_t>(std::llround(margin_seconds * sample_rate_hz));
     const double threshold_energy = std::pow(10.0, static_cast<double>(threshold_dbfs) / 10.0);
 
     size_t first_active = n_samples;
@@ -89,4 +91,4 @@ AudioActivityRegion find_audio_activity_region(const float * pcm,
     return region;
 }
 
-} // namespace transcribe
+}  // namespace transcribe

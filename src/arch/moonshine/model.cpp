@@ -648,8 +648,8 @@ transcribe_status run(transcribe_session *          session,
     const bool    primary_is_gpu = cm->plan.primary_kind != transcribe::BackendKind::Cpu &&
                                    cm->plan.primary_kind != transcribe::BackendKind::Accel &&
                                    cm->plan.primary_kind != transcribe::BackendKind::Unknown;
-    const bool    use_step_graph = (primary_is_gpu || !transcribe::env::flag("TRANSCRIBE_DISABLE_STATIC_DECODE")) &&
-                                   !transcribe::debug::enabled();
+    const bool    use_step_graph =
+        (primary_is_gpu || !transcribe::env::flag("TRANSCRIBE_DISABLE_STATIC_DECODE")) && !transcribe::debug::enabled();
 
     if (use_step_graph) {
         // ---------- Static-graph step path (GPU) ----------

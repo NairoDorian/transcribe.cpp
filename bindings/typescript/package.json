@@ -35,7 +35,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "koffi": "^3.2.1"
+    "koffi": "^3.3.1"
   },
   "optionalDependencies": {
     "@transcribe-cpp/darwin-arm64-metal": "0.2.3",
@@ -45,7 +45,7 @@
     "@transcribe-cpp/win32-x64-cpu-vulkan": "0.2.3"
   },
   "devDependencies": {
-    "@types/node": "^22.20.2",
+    "@types/node": "^22.20.4",
     "typescript": "^7.0.2"
   }
 }

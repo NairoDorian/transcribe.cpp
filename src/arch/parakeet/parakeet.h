@@ -221,10 +221,9 @@ struct ParakeetStreamingCaches {
 };
 
 struct ParakeetStreamingDecoderGraphDeleter {
-    void operator()(ParakeetStreamingDecoderGraph * g) const noexcept {
-        parakeet_streaming_decoder_graph_free(g);
-    }
+    void operator()(ParakeetStreamingDecoderGraph * g) const noexcept { parakeet_streaming_decoder_graph_free(g); }
 };
+
 using ParakeetStreamingDecoderGraphPtr =
     std::unique_ptr<ParakeetStreamingDecoderGraph, ParakeetStreamingDecoderGraphDeleter>;
 

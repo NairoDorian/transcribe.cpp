@@ -39,9 +39,8 @@ impl VoiceActivityDetector {
     /// Returns (is_speaking, frame_score).
     pub fn process_frame(&mut self, frame_256: &[f32; 256]) -> (bool, f32) {
         let mut score = 0.0f32;
-        let speaking = unsafe {
-            sys::transcribe_vad_process_frame(self.ptr, frame_256.as_ptr(), &mut score)
-        };
+        let speaking =
+            unsafe { sys::transcribe_vad_process_frame(self.ptr, frame_256.as_ptr(), &mut score) };
         (speaking, score)
     }
 

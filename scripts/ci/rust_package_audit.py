@@ -74,7 +74,11 @@ def package_file_list() -> list[str]:
         capture_output=True,
         text=True,
     )
-    return [line.strip() for line in out.stdout.splitlines() if line.strip()]
+    return [
+        line.strip().replace("\\", "/")
+        for line in out.stdout.splitlines()
+        if line.strip()
+    ]
 
 
 def build_crate() -> Path:

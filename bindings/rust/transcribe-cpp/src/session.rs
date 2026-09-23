@@ -626,9 +626,8 @@ impl Stream<'_> {
     ///
     /// Threshold must be in `[0.05, 0.95]`.
     pub fn set_vad_threshold(&mut self, threshold: f32) -> Result<()> {
-        let status = unsafe {
-            sys::transcribe_stream_set_vad_threshold(self.session.ptr, threshold)
-        };
+        let status =
+            unsafe { sys::transcribe_stream_set_vad_threshold(self.session.ptr, threshold) };
         check(status, "stream set vad threshold")
     }
 

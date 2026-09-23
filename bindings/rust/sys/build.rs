@@ -97,7 +97,8 @@ fn main() {
     // the Cargo features below never apply here.
     println!("cargo:rerun-if-env-changed=TRANSCRIBE_DIR");
     println!("cargo:rerun-if-env-changed=TRANSCRIBE_PREBUILT_DIR");
-    let prebuilt_dir = env::var_os("TRANSCRIBE_DIR").or_else(|| env::var_os("TRANSCRIBE_PREBUILT_DIR"));
+    let prebuilt_dir =
+        env::var_os("TRANSCRIBE_DIR").or_else(|| env::var_os("TRANSCRIBE_PREBUILT_DIR"));
     if let Some(dir) = prebuilt_dir {
         let prefix = PathBuf::from(dir);
         let manifest = find_manifest(&prefix).unwrap_or_else(|| {
@@ -291,9 +292,7 @@ fn main() {
     }
 
     if !using_ninja {
-        println!(
-            "cargo:warning=transcribe-cpp-sys: [BUILD] Using default CMake generator"
-        );
+        println!("cargo:warning=transcribe-cpp-sys: [BUILD] Using default CMake generator");
     }
 
     // Force optimization on MSVC. `.profile("Release")` only selects the *config*
@@ -369,8 +368,8 @@ fn main() {
     }
 
     // ccache: compiler caching to accelerate recompilation on cache misses
-    let ccache_disabled = env::var("TRANSCRIBE_NO_CCACHE").is_ok()
-        || env::var("GGML_CCACHE").as_deref() == Ok("OFF");
+    let ccache_disabled =
+        env::var("TRANSCRIBE_NO_CCACHE").is_ok() || env::var("GGML_CCACHE").as_deref() == Ok("OFF");
     if !ccache_disabled {
         if let Some(ccache) = find_ccache() {
             println!(
@@ -881,7 +880,9 @@ fn resolve_cuda_arch(is_cuda: bool) -> Option<String> {
         return None;
     }
 
-    if let Ok(val) = env::var("TRANSCRIBE_CUDA_ARCHITECTURES").or_else(|_| env::var("CMAKE_CUDA_ARCHITECTURES")) {
+    if let Ok(val) =
+        env::var("TRANSCRIBE_CUDA_ARCHITECTURES").or_else(|_| env::var("CMAKE_CUDA_ARCHITECTURES"))
+    {
         let val = val.trim();
         if val == "default" {
             return None; // None signals CMake default / full multi-arch
@@ -918,7 +919,10 @@ fn find_ccache() -> Option<PathBuf> {
             return Some(pb);
         }
     }
-    if let Ok(output) = std::process::Command::new("ccache").arg("--version").output() {
+    if let Ok(output) = std::process::Command::new("ccache")
+        .arg("--version")
+        .output()
+    {
         if output.status.success() {
             return Some(PathBuf::from("ccache"));
         }
@@ -929,7 +933,11 @@ fn find_ccache() -> Option<PathBuf> {
         if cargo_ccache.is_file() {
             return Some(cargo_ccache);
         }
-        let local_ccache = user_path.join("AppData").join("Local").join("bin").join("ccache.exe");
+        let local_ccache = user_path
+            .join("AppData")
+            .join("Local")
+            .join("bin")
+            .join("ccache.exe");
         if local_ccache.is_file() {
             return Some(local_ccache);
         }
@@ -945,16 +953,21 @@ fn find_ninja() -> Option<PathBuf> {
             return Some(pb);
         }
     }
-    if let Ok(output) = std::process::Command::new("ninja").arg("--version").output() {
+    if let Ok(output) = std::process::Command::new("ninja")
+        .arg("--version")
+        .output()
+    {
         if output.status.success() {
             return Some(PathBuf::from("ninja"));
         }
     }
     // Check known Visual Studio paths
-    let mut vswhere_path = PathBuf::from(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe");
+    let mut vswhere_path =
+        PathBuf::from(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe");
     if !vswhere_path.is_file() {
         if let Some(pf86) = env::var_os("ProgramFiles(x86)") {
-            vswhere_path = PathBuf::from(pf86).join(r"Microsoft Visual Studio\Installer\vswhere.exe");
+            vswhere_path =
+                PathBuf::from(pf86).join(r"Microsoft Visual Studio\Installer\vswhere.exe");
         }
     }
     if vswhere_path.is_file() {
@@ -994,14 +1007,19 @@ fn setup_msvc_environment() -> bool {
     }
 
     // Locate vswhere.exe
-    let mut vswhere_path = PathBuf::from(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe");
+    let mut vswhere_path =
+        PathBuf::from(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe");
     if !vswhere_path.is_file() {
         if let Some(pf86) = env::var_os("ProgramFiles(x86)") {
-            vswhere_path = PathBuf::from(pf86).join(r"Microsoft Visual Studio\Installer\vswhere.exe");
+            vswhere_path =
+                PathBuf::from(pf86).join(r"Microsoft Visual Studio\Installer\vswhere.exe");
         }
     }
     if !vswhere_path.is_file() {
-        println!("cargo:warning=transcribe-cpp-sys: [MSVC] vswhere.exe not found at {}", vswhere_path.display());
+        println!(
+            "cargo:warning=transcribe-cpp-sys: [MSVC] vswhere.exe not found at {}",
+            vswhere_path.display()
+        );
         return false;
     }
 
@@ -1019,7 +1037,10 @@ fn setup_msvc_environment() -> bool {
     {
         Ok(o) if o.status.success() => o,
         Ok(o) => {
-            println!("cargo:warning=transcribe-cpp-sys: [MSVC] vswhere failed with status {:?}", o.status);
+            println!(
+                "cargo:warning=transcribe-cpp-sys: [MSVC] vswhere failed with status {:?}",
+                o.status
+            );
             return false;
         }
         Err(e) => {
@@ -1035,13 +1056,18 @@ fn setup_msvc_environment() -> bool {
         .trim()
         .to_string();
     if vs_install.is_empty() {
-        println!("cargo:warning=transcribe-cpp-sys: [MSVC] vswhere returned empty installation path");
+        println!(
+            "cargo:warning=transcribe-cpp-sys: [MSVC] vswhere returned empty installation path"
+        );
         return false;
     }
 
     let vcvars_bat = PathBuf::from(&vs_install).join(r"VC\Auxiliary\Build\vcvars64.bat");
     if !vcvars_bat.is_file() {
-        println!("cargo:warning=transcribe-cpp-sys: [MSVC] vcvars64.bat not found at {}", vcvars_bat.display());
+        println!(
+            "cargo:warning=transcribe-cpp-sys: [MSVC] vcvars64.bat not found at {}",
+            vcvars_bat.display()
+        );
         return false;
     }
 
@@ -1058,7 +1084,11 @@ fn setup_msvc_environment() -> bool {
         Ok(o) if o.status.success() => o,
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr);
-            println!("cargo:warning=transcribe-cpp-sys: [MSVC] vcvars64.bat failed with status {:?}: {}", o.status, stderr.trim());
+            println!(
+                "cargo:warning=transcribe-cpp-sys: [MSVC] vcvars64.bat failed with status {:?}: {}",
+                o.status,
+                stderr.trim()
+            );
             return false;
         }
         Err(e) => {

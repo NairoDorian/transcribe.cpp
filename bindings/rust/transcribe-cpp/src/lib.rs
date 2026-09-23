@@ -55,10 +55,10 @@
 
 pub use transcribe_cpp_sys as sys;
 
-mod backend;
-mod cancel;
 #[cfg(feature = "arch-dl")]
 mod arch;
+mod backend;
+mod cancel;
 mod error;
 mod family;
 mod logging;

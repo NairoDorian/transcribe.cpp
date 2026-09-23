@@ -179,4 +179,3 @@ fn vad_lifecycle_and_energy_pregate() {
 
     vad.set_threshold(0.35);
 }
-

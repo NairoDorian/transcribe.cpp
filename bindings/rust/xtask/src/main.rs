@@ -117,7 +117,10 @@ fn generate(root: &Path) -> String {
          pub const PUBLIC_HEADER_HASH: &str = \"{abihash}\";\n\
          \n"
     );
-    format!("{banner}{}", normalize_enum_newtype_signedness(bindings.to_string()))
+    format!(
+        "{banner}{}",
+        normalize_enum_newtype_signedness(bindings.to_string())
+    )
 }
 
 /// Rewrite bindgen's enum newtypes to the canonical (unsigned) form.

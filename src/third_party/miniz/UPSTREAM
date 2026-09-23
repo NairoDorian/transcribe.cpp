@@ -1,7 +1,7 @@
 repo:    https://github.com/richgel999/miniz
-release: 3.1.1
-tag:     3.1.1
-sha:     d10b03cc73475af673df40f06e5cefd1d5f940d9
+release: 3.1.2
+tag:     3.1.2
+sha:     77d0dce8627735138c51770d1799a1ef48f2117d
 
 This directory is a vendored snapshot of miniz at the release above: the
 amalgamated single-file distribution (miniz.c + miniz.h) attached to the GitHub

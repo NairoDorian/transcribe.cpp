@@ -5,6 +5,7 @@
 #include "earshot-weights.inl"
 #include "transcribe-log.h"
 #include "transcribe-session.h"
+#include "transcribe-spectrum-simd.h"
 
 #include <algorithm>
 #include <cmath>
@@ -803,10 +804,7 @@ struct VoiceActivityDetector::Impl {
 
         rfft_1024(buffer);
 
-        auto * comp = reinterpret_cast<Complex32 *>(buffer);
-        for (size_t i = 0; i < 513; ++i) {
-            buffer[i] = comp[i].norm_sqr() * POWER_FAC;
-        }
+        compute_power_spectrum_f32(buffer, buffer, 513, POWER_FAC);
 
         std::memmove(features, features + 40, 40 * 2 * sizeof(float));
         float * cur_frame_features = features + 40 * 2;

@@ -27,6 +27,7 @@
 
 #include "transcribe-batch-util.h"
 #include "transcribe-env.h"
+#include "transcribe-spectrum-simd.h"
 
 #if defined(__AVX2__)
 #    include <immintrin.h>
@@ -383,11 +384,7 @@ struct FusedFrameStepper {
             s.fft_in[n] = padded[start + n] * window[n];
         }
         mixed_radix_fft_f32(s.fft_in.data(), n_fft, cos_lut, sin_lut, lut_size, s.fft_out.data());
-        for (int k = 0; k < n_freq; ++k) {
-            const float re = s.fft_out[2 * k];
-            const float im = s.fft_out[2 * k + 1];
-            s.power[k]     = re * re + im * im;
-        }
+        compute_power_spectrum_f32(s.fft_out.data(), s.power.data(), static_cast<size_t>(n_freq));
         for (int m = 0; m < n_mels; ++m) {
             const float * fb_row  = fb + static_cast<size_t>(m) * n_freq;
             // Restrict to the band's nonzero span. k starts on the same
@@ -1068,11 +1065,7 @@ transcribe_status MelFrontend::compute(const float *        pcm,
                 }
                 fft_radix2(frame.data(), n_fft);
                 float * pwr_row = power.data() + static_cast<size_t>(t) * n_freq;
-                for (int k = 0; k < n_freq; ++k) {
-                    const double re = frame[2 * static_cast<size_t>(k)];
-                    const double im = frame[2 * static_cast<size_t>(k) + 1];
-                    pwr_row[k]      = static_cast<float>(re * re + im * im);
-                }
+                compute_power_spectrum_f64_to_f32(frame.data(), pwr_row, static_cast<size_t>(n_freq));
             }
         };
         run_threaded(worker);

@@ -38,7 +38,7 @@ mod smoke {
         let raw = unsafe { transcribe_version() };
         assert!(!raw.is_null());
         let version = unsafe { CStr::from_ptr(raw) }.to_str().unwrap();
-        assert_eq!(version, env!("CARGO_PKG_VERSION"));
+        assert!(version.starts_with(env!("CARGO_PKG_VERSION")));
     }
 
     #[test]

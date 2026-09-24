@@ -134,6 +134,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=TRANSCRIBE_NINJA_PATH");
     println!("cargo:rerun-if-env-changed=TRANSCRIBE_MODEL_SET");
     println!("cargo:rerun-if-env-changed=TRANSCRIBE_MODELS");
+    println!("cargo:rerun-if-env-changed=TRANSCRIBE_CMAKE_ARGS");
+    println!("cargo:rerun-if-env-changed=CMAKE_ARGS");
 
     // Explicit escape hatch: skip the persistent cache and compile from source.
     let force_rebuild = env::var_os("TRANSCRIBE_FORCE_REBUILD").is_some();
@@ -192,10 +194,15 @@ fn main() {
     let is_cuda = feature("CUDA");
     let cuda_arch = resolve_cuda_arch(is_cuda);
 
+    let cmake_args_env = env::var("TRANSCRIBE_CMAKE_ARGS")
+        .or_else(|_| env::var("CMAKE_ARGS"))
+        .ok();
+
     // Cache key includes a source-tree fingerprint (max mtime across tracked
-    // source dirs) and targeted CUDA arch so the persistent cache invalidates
-    // automatically when transcribe.cpp sources change (git pull, local edit)
-    // or when switching between dev (single-arch) and release (multi-arch).
+    // source dirs), targeted CUDA arch, and CMake configure flags so the
+    // persistent cache invalidates automatically when transcribe.cpp sources
+    // change (git pull, local edit), when switching between dev (single-arch)
+    // and release (multi-arch), or when CMake configure flags change.
     let cache_key = compute_cache_key(
         &root,
         &target_os,
@@ -203,6 +210,7 @@ fn main() {
         &target_env,
         &active_features,
         cuda_arch.as_deref(),
+        cmake_args_env.as_deref(),
     );
     let cache_dir = get_cache_root().join(&cache_key);
 
@@ -445,18 +453,62 @@ fn main() {
     }
 
     // Clean build directory if generator changed (e.g. Visual Studio -> Ninja)
+    // or if the build directory path changed / has stale CMakeCache pointing to an old location.
     let build_dir = short.as_ref().unwrap_or(&out_dir).join("build");
-    let cache_txt = build_dir.join("CMakeCache.txt");
-    if cache_txt.is_file() {
-        if let Ok(content) = std::fs::read_to_string(&cache_txt) {
-            let has_ninja = content.contains("CMAKE_GENERATOR:INTERNAL=Ninja");
-            if using_ninja != has_ninja {
-                println!(
-                    "cargo:warning=transcribe-cpp-sys: Generator changed -> cleaning build directory {}",
-                    build_dir.display()
-                );
-                let _ = std::fs::remove_dir_all(&build_dir);
+    if build_dir.exists() {
+        let cache_txt = build_dir.join("CMakeCache.txt");
+        let should_clean = if cache_txt.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&cache_txt) {
+                let has_ninja = content.contains("CMAKE_GENERATOR:INTERNAL=Ninja");
+                let build_dir_normalized = build_dir.to_string_lossy().replace('\\', "/");
+                let path_mismatch = content.lines().any(|line| {
+                    if let Some(rest) = line.strip_prefix("CMAKE_CACHEFILE_DIR:INTERNAL=") {
+                        !rest.trim().eq_ignore_ascii_case(&build_dir_normalized)
+                    } else {
+                        false
+                    }
+                });
+                using_ninja != has_ninja || path_mismatch
+            } else {
+                true
             }
+        } else {
+            false
+        };
+
+        // Also check if any external project cache in build/e has a path mismatch
+        let sub_cache = build_dir
+            .join("e")
+            .join("src")
+            .join("vulkan-shaders-gen-build")
+            .join("CMakeCache.txt");
+        let sub_mismatch = if sub_cache.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&sub_cache) {
+                let sub_dir_normalized = sub_cache
+                    .parent()
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                content.lines().any(|line| {
+                    if let Some(rest) = line.strip_prefix("CMAKE_CACHEFILE_DIR:INTERNAL=") {
+                        !rest.trim().eq_ignore_ascii_case(&sub_dir_normalized)
+                    } else {
+                        false
+                    }
+                })
+            } else {
+                true
+            }
+        } else {
+            false
+        };
+
+        if should_clean || sub_mismatch {
+            println!(
+                "cargo:warning=transcribe-cpp-sys: Generator changed or build path moved -> cleaning build directory {}",
+                build_dir.display()
+            );
+            let _ = std::fs::remove_dir_all(&build_dir);
         }
     }
 
@@ -814,9 +866,11 @@ fn get_cache_root() -> PathBuf {
     base.join("handy").join("transcribe_cpp_cache")
 }
 
-/// Compute a unique cache key for the target platform, enabled features, and
-/// source tree fingerprint. The source fingerprint (max mtime across tracked
-/// source dirs) ensures the cache invalidates when any source file changes.
+/// Compute a unique cache key for the target platform, enabled features,
+/// CMake configure flags, and source tree fingerprint. The source fingerprint
+/// (max mtime across tracked source dirs) ensures the cache invalidates when any
+/// source file changes. Hashing cmake_args ensures changing CMake build flags
+/// invalidates the cache and triggers a reconfigure.
 fn compute_cache_key(
     root: &Path,
     target_os: &str,
@@ -824,6 +878,7 @@ fn compute_cache_key(
     target_env: &str,
     features: &[&str],
     cuda_arch: Option<&str>,
+    cmake_args: Option<&str>,
 ) -> String {
     let mut s = format!("{target_os}-{target_arch}-{target_env}-release-");
     let mut sorted_features = features.to_vec();
@@ -836,6 +891,14 @@ fn compute_cache_key(
         s.push_str("cudaarch-");
         s.push_str(arch);
         s.push('_');
+    }
+    if let Some(extra) = cmake_args {
+        let trimmed = extra.trim();
+        if !trimmed.is_empty() {
+            s.push_str("args-");
+            s.push_str(trimmed);
+            s.push('_');
+        }
     }
     s.push_str(&format!("src-{}", max_source_mtime(root)));
     let mut hash: u64 = 0xcbf29ce484222325; // FNV-1a: stable across rustc versions
@@ -911,7 +974,7 @@ fn resolve_cuda_arch(is_cuda: bool) -> Option<String> {
     }
 }
 
-/// Find ccache on PATH, from TRANSCRIBE_CCACHE_PATH, or in standard developer tool locations.
+/// Find ccache or sccache on PATH, from TRANSCRIBE_CCACHE_PATH, or in standard developer tool locations.
 fn find_ccache() -> Option<PathBuf> {
     if let Ok(p) = env::var("TRANSCRIBE_CCACHE_PATH") {
         let pb = PathBuf::from(p);
@@ -919,27 +982,28 @@ fn find_ccache() -> Option<PathBuf> {
             return Some(pb);
         }
     }
-    if let Ok(output) = std::process::Command::new("ccache")
-        .arg("--version")
-        .output()
-    {
-        if output.status.success() {
-            return Some(PathBuf::from("ccache"));
+    for bin in ["ccache", "sccache"] {
+        if let Ok(output) = std::process::Command::new(bin).arg("--version").output() {
+            if output.status.success() {
+                return Some(PathBuf::from(bin));
+            }
         }
     }
     if let Some(userprofile) = env::var_os("USERPROFILE") {
         let user_path = PathBuf::from(userprofile);
-        let cargo_ccache = user_path.join(".cargo").join("bin").join("ccache.exe");
-        if cargo_ccache.is_file() {
-            return Some(cargo_ccache);
-        }
-        let local_ccache = user_path
-            .join("AppData")
-            .join("Local")
-            .join("bin")
-            .join("ccache.exe");
-        if local_ccache.is_file() {
-            return Some(local_ccache);
+        for name in ["ccache.exe", "sccache.exe"] {
+            let cargo_bin = user_path.join(".cargo").join("bin").join(name);
+            if cargo_bin.is_file() {
+                return Some(cargo_bin);
+            }
+            let local_bin = user_path
+                .join("AppData")
+                .join("Local")
+                .join("bin")
+                .join(name);
+            if local_bin.is_file() {
+                return Some(local_bin);
+            }
         }
     }
     None
@@ -1162,7 +1226,7 @@ fn walk_mtimes(path: &Path, max: &mut Option<std::time::SystemTime>) {
     }
 }
 
-/// Recursively copy a directory tree.
+/// Recursively copy a directory tree, skipping intermediate build artifacts.
 fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     if !src.exists() {
         return Ok(());
@@ -1170,8 +1234,13 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
+        let file_name = entry.file_name();
+        let name_str = file_name.to_string_lossy();
+        if name_str == "build" || name_str == "CMakeFiles" || name_str.starts_with('.') {
+            continue;
+        }
         let ty = entry.file_type()?;
-        let dst_path = dst.join(entry.file_name());
+        let dst_path = dst.join(&file_name);
         if ty.is_dir() {
             copy_dir_all(&entry.path(), &dst_path)?
         } else {

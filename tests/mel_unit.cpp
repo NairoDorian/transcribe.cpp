@@ -16,6 +16,7 @@
 // preflight script if librosa updates and the tolerances drift.
 
 #include "transcribe-mel.h"
+#include "transcribe-spectrum-simd.h"
 
 #include <cmath>
 #include <cstdio>
@@ -482,9 +483,60 @@ void test_incremental_state_reuse() {
     }
 }
 
+void test_spectrum_simd() {
+    const size_t test_sizes[] = { 3, 7, 8, 15, 16, 25, 201, 257, 513 };
+    for (size_t n : test_sizes) {
+        std::vector<float> complex_in(2 * n);
+        std::vector<float> ref_pwr(n);
+        std::vector<float> ref_mag(n);
+        for (size_t i = 0; i < n; ++i) {
+            float re              = std::sin(static_cast<float>(i) * 0.17f) * 1.5f;
+            float im              = std::cos(static_cast<float>(i) * 0.23f) * 1.2f;
+            complex_in[2 * i]     = re;
+            complex_in[2 * i + 1] = im;
+            ref_pwr[i]            = (re * re + im * im) * 0.5f;
+            ref_mag[i]            = std::sqrt(re * re + im * im) * 0.5f;
+        }
+
+        // Test out-of-place f32 power spectrum
+        std::vector<float> test_pwr(n, 0.0f);
+        transcribe::compute_power_spectrum_f32(complex_in.data(), test_pwr.data(), n, 0.5f);
+        for (size_t i = 0; i < n; ++i) {
+            CHECK_NEAR(test_pwr[i], ref_pwr[i], 1e-5);
+        }
+
+        // Test in-place f32 power spectrum (used by VAD)
+        std::vector<float> in_place_buf = complex_in;
+        transcribe::compute_power_spectrum_f32(in_place_buf.data(), in_place_buf.data(), n, 0.5f);
+        for (size_t i = 0; i < n; ++i) {
+            CHECK_NEAR(in_place_buf[i], ref_pwr[i], 1e-5);
+        }
+
+        // Test f32 magnitude spectrum (fast reciprocal square root)
+        std::vector<float> test_mag(n, 0.0f);
+        transcribe::compute_magnitude_spectrum_f32(complex_in.data(), test_mag.data(), n, 0.5f);
+        for (size_t i = 0; i < n; ++i) {
+            // Newton-Raphson approximation within ~1e-4 relative tolerance
+            CHECK_NEAR(test_mag[i], ref_mag[i], 5e-4);
+        }
+
+        // Test f64 to f32 power spectrum
+        std::vector<double> complex_d(2 * n);
+        for (size_t i = 0; i < 2 * n; ++i) {
+            complex_d[i] = static_cast<double>(complex_in[i]);
+        }
+        std::vector<float> test_pwr_d(n, 0.0f);
+        transcribe::compute_power_spectrum_f64_to_f32(complex_d.data(), test_pwr_d.data(), n, 0.5f);
+        for (size_t i = 0; i < n; ++i) {
+            CHECK_NEAR(test_pwr_d[i], ref_pwr[i], 1e-5);
+        }
+    }
+}
+
 }  // namespace
 
 int main() {
+    test_spectrum_simd();
     test_window();
     test_mel_filterbank();
     test_n_frames_for();

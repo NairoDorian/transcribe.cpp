@@ -5,6 +5,8 @@
 
 #include "transcribe-kaldi-fbank.h"
 
+#include "transcribe-spectrum-simd.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -223,11 +225,7 @@ int KaldiFbankFrontend::compute(const float * pcm, size_t n_samples, std::vector
         fft_radix2(frame.data(), padded_n_fft_);
 
         // Step 6: power spectrum.
-        for (int b = 0; b < n_freq; ++b) {
-            const double re               = frame[2 * b];
-            const double im               = frame[2 * b + 1];
-            power[static_cast<size_t>(b)] = static_cast<float>(re * re + im * im);
-        }
+        compute_power_spectrum_f64_to_f32(frame.data(), power.data(), static_cast<size_t>(n_freq));
 
         // Step 7-8: HTK mel filterbank + log with energy_floor. funasr
         // passes energy_floor=0.0; with that, kaldi falls back to its

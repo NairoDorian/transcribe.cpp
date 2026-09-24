@@ -387,7 +387,8 @@ fn main() {
             let ccache_str = ccache.to_string_lossy();
             cfg.define("CMAKE_C_COMPILER_LAUNCHER", &*ccache_str);
             cfg.define("CMAKE_CXX_COMPILER_LAUNCHER", &*ccache_str);
-            if is_cuda {
+            let is_sccache = ccache_str.to_lowercase().contains("sccache");
+            if is_cuda && !(is_sccache && target_os == "windows") {
                 cfg.define("CMAKE_CUDA_COMPILER_LAUNCHER", &*ccache_str);
             }
         } else {

@@ -218,7 +218,7 @@ transcribe_status fuse_batch_norm(ParakeetModel & m) {
     ggml_init_params params   = { ctx_size, nullptr, /*no_alloc=*/true };
     m.bn_fused_ctx            = ggml_init(params);
     if (m.bn_fused_ctx == nullptr) {
-        return TRANSCRIBE_ERR_BACKEND;
+        return TRANSCRIBE_ERR_OOM;
     }
 
     // Create all tensors first, then allocate a buffer.
@@ -231,7 +231,7 @@ transcribe_status fuse_batch_norm(ParakeetModel & m) {
     // Allocate on the CPU backend (always last in the scheduler list).
     m.bn_fused_buffer = ggml_backend_alloc_ctx_tensors(m.bn_fused_ctx, m.plan.scheduler_list.back());
     if (m.bn_fused_buffer == nullptr) {
-        return TRANSCRIBE_ERR_BACKEND;
+        return TRANSCRIBE_ERR_OOM;
     }
 
     // Compute fused values from the raw BN tensors.
@@ -354,7 +354,7 @@ transcribe_status init_streaming_caches(ParakeetSession * pc, ParakeetModel * pm
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet stream init_caches: backend buffer alloc failed");
         ggml_free(pc->stream_caches.ctx);
         pc->stream_caches.ctx = nullptr;
-        return TRANSCRIBE_ERR_BACKEND;
+        return TRANSCRIBE_ERR_OOM;
     }
 
     pc->stream_caches.channel_len         = 0;
@@ -561,7 +561,7 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
     if (weights_buffer == nullptr) {
         gguf_free(gguf_data);
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet: alloc_ctx_tensors_with_reclaim failed");
-        return TRANSCRIBE_ERR_GGUF;
+        return TRANSCRIBE_ERR_OOM;
     }
     m->backend_buffer = weights_buffer;
     ggml_backend_buffer_set_usage(weights_buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
@@ -1075,7 +1075,7 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
         pc->compute_ctx        = ggml_init(init_params);
         if (pc->compute_ctx == nullptr) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet run: ggml_init for compute_ctx failed");
-            return TRANSCRIBE_ERR_GGUF;
+            return TRANSCRIBE_ERR_OOM;
         }
     }
 
@@ -1125,7 +1125,7 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
                                            /*graph_size=*/8192, /*parallel=*/false, /*op_offload=*/true);
         if (pc->sched == nullptr) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet run: ggml_backend_sched_new failed");
-            return TRANSCRIBE_ERR_GGUF;
+            return TRANSCRIBE_ERR_BACKEND;
         }
     }
 
@@ -1145,7 +1145,7 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
     if (!alloc_inference_graph(pc->sched, eb.graph)) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet run: ggml_backend_sched_alloc_graph failed");
         cleanup_gpu();
-        return TRANSCRIBE_ERR_GGUF;
+        return TRANSCRIBE_ERR_OOM;
     }
 
     // Upload the mel; the row-major [num_mels, n_frames] buffer is
@@ -1304,7 +1304,7 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet run: ggml_backend_sched_graph_compute failed (%d)",
                 static_cast<int>(gs));
         cleanup_gpu();
-        return TRANSCRIBE_ERR_GGUF;
+        return TRANSCRIBE_ERR_BACKEND;
     }
     pc->t_encode_us = ggml_time_us() - t_enc_start;
     pc->t_decode_us = 0;
@@ -1479,7 +1479,7 @@ static transcribe_status run_batch_encode(ParakeetSession *                     
         init_params.no_alloc   = true;
         pc->compute_ctx        = ggml_init(init_params);
         if (pc->compute_ctx == nullptr) {
-            return TRANSCRIBE_ERR_GGUF;
+            return TRANSCRIBE_ERR_OOM;
         }
     }
 
@@ -1503,12 +1503,12 @@ static transcribe_status run_batch_encode(ParakeetSession *                     
                                            static_cast<int>(pm->plan.scheduler_list.size()),
                                            /*graph_size=*/8192, /*parallel=*/false, /*op_offload=*/true);
         if (pc->sched == nullptr) {
-            return TRANSCRIBE_ERR_GGUF;
+            return TRANSCRIBE_ERR_BACKEND;
         }
     }
     ggml_backend_sched_reset(pc->sched);
     if (!alloc_inference_graph(pc->sched, eb.graph)) {
-        return TRANSCRIBE_ERR_GGUF;
+        return TRANSCRIBE_ERR_OOM;
     }
 
     ggml_backend_tensor_set(eb.mel_in, pc->mel_buf.data(), 0, pc->mel_buf.size() * sizeof(float));
@@ -1643,7 +1643,7 @@ static transcribe_status run_batch_encode(ParakeetSession *                     
     const int64_t t_enc_start = ggml_time_us();
     if (const ggml_status gs = ggml_backend_sched_graph_compute(pc->sched, eb.graph); gs != GGML_STATUS_SUCCESS) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet run_batch: graph_compute failed (%d)", static_cast<int>(gs));
-        return TRANSCRIBE_ERR_GGUF;
+        return TRANSCRIBE_ERR_BACKEND;
     }
     pc->t_encode_us = ggml_time_us() - t_enc_start;
 
@@ -1945,7 +1945,7 @@ transcribe_status ensure_pos_proj_cache(ParakeetSession * pc, ParakeetModel * pm
     transcribe_status st = TRANSCRIBE_OK;
     ggml_backend_sched_reset(pc->sched);
     if (!alloc_inference_graph(pc->sched, graph)) {
-        st = TRANSCRIBE_ERR_BACKEND;
+        st = TRANSCRIBE_ERR_OOM;
     } else {
         ggml_backend_tensor_set(pos_in, pc->pos_buf.data(), 0, static_cast<size_t>(pos_len) * d_model * sizeof(float));
         if (ggml_backend_sched_graph_compute(pc->sched, graph) != GGML_STATUS_SUCCESS) {
@@ -2121,7 +2121,7 @@ transcribe_status emit_streaming_chunk(ParakeetSession * pc,
     ggml_backend_sched_reset(pc->sched);
     if (!alloc_inference_graph(pc->sched, eb.graph)) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet stream: alloc_graph failed");
-        return TRANSCRIBE_ERR_BACKEND;
+        return TRANSCRIBE_ERR_OOM;
     }
     const int64_t t_sched_us = ggml_time_us() - t_sched_start;
 
@@ -2201,7 +2201,7 @@ transcribe_status emit_streaming_chunk(ParakeetSession * pc,
     }
     if (gs != GGML_STATUS_SUCCESS) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet stream: graph_compute failed (%d)", static_cast<int>(gs));
-        return TRANSCRIBE_ERR_GGUF;
+        return TRANSCRIBE_ERR_BACKEND;
     }
     const int64_t t_compute_us = ggml_time_us() - t_compute_start;
 
@@ -2506,7 +2506,7 @@ transcribe_status emit_buffered_chunk(ParakeetSession * pc,
         pc->compute_ctx        = ggml_init(init_params);
         if (pc->compute_ctx == nullptr) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet buffered: ggml_init for compute_ctx failed");
-            return TRANSCRIBE_ERR_GGUF;
+            return TRANSCRIBE_ERR_OOM;
         }
     }
 
@@ -2536,12 +2536,12 @@ transcribe_status emit_buffered_chunk(ParakeetSession * pc,
                                            static_cast<int>(pm->plan.scheduler_list.size()),
                                            /*graph_size=*/8192, /*parallel=*/false, /*op_offload=*/true);
         if (pc->sched == nullptr) {
-            return TRANSCRIBE_ERR_GGUF;
+            return TRANSCRIBE_ERR_BACKEND;
         }
     }
     ggml_backend_sched_reset(pc->sched);
     if (!alloc_inference_graph(pc->sched, eb.graph)) {
-        return TRANSCRIBE_ERR_GGUF;
+        return TRANSCRIBE_ERR_OOM;
     }
     ggml_backend_tensor_set(eb.mel_in, pc->mel_buf.data(), 0, pc->mel_buf.size() * sizeof(float));
 
@@ -2604,7 +2604,7 @@ transcribe_status emit_buffered_chunk(ParakeetSession * pc,
     const int64_t t_enc_start = ggml_time_us();
     if (const ggml_status gs = ggml_backend_sched_graph_compute(pc->sched, eb.graph); gs != GGML_STATUS_SUCCESS) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet buffered: sched_graph_compute failed (%d)", static_cast<int>(gs));
-        return TRANSCRIBE_ERR_GGUF;
+        return TRANSCRIBE_ERR_BACKEND;
     }
     pc->t_encode_us += ggml_time_us() - t_enc_start;
 

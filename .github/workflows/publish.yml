@@ -122,7 +122,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@v10.1.0
       - name: Validate and build catalog.db
         run: |
           set -euo pipefail

@@ -977,7 +977,8 @@ namespace {
 // step's (h, c) into new_state, returns a borrowed pointer into
 // new_state.h.back(). Feeds prev state + embedding into the resident
 // per-call graph, computes, reads new state back into the host LstmState.
-// Caller guarantees g.ready and that new_state is sized to (L, H).
+// Caller guarantees g.ready and that new_state is sized to (L, H). Returns
+// nullptr if the graph compute fails.
 const float * predictor_step_ggml(const HostPredictor & predictor,
                                   PredGraph &           g,
                                   int                   last_token,
@@ -1004,7 +1005,10 @@ const float * predictor_step_ggml(const HostPredictor & predictor,
         ggml_backend_tensor_set(g.pc[l], prev_state.c[static_cast<size_t>(l)].data(), 0, hb);
     }
 
-    ggml_backend_graph_compute(g.backend, g.graph);
+    if (const ggml_status gs = ggml_backend_graph_compute(g.backend, g.graph); gs != GGML_STATUS_SUCCESS) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet decoder: predictor compute failed (%d)", static_cast<int>(gs));
+        return nullptr;
+    }
 
     for (int l = 0; l < g.L; ++l) {
         ggml_backend_tensor_get(g.nh[l], new_state.h[static_cast<size_t>(l)].data(), 0, hb);
@@ -1023,8 +1027,9 @@ const float * predictor_step_ggml(const HostPredictor & predictor,
 //   summed    = enc_proj + pred_proj             [joint_h]
 //   activated = activation(summed)               [joint_h]
 //   logits    = out_w @ activated   + out_b      [joint_n]
-// Activation is one of {relu, sigmoid, tanh} (loader allow-list).
-void joint_step(const HostJoint &    j,
+// Activation is one of {relu, sigmoid, tanh} (loader allow-list). Returns
+// false if the graph compute fails.
+bool joint_step(const HostJoint &    j,
                 const JointGraph &   g,
                 const float *        enc_proj,
                 const float *        pred_state,
@@ -1036,7 +1041,10 @@ void joint_step(const HostJoint &    j,
     // Full joint on the shared decoder pool, one graph, one dispatch.
     ggml_backend_tensor_set(g.pred_in, pred_state, 0, static_cast<size_t>(j.pred_hidden) * sizeof(float));
     ggml_backend_tensor_set(g.enc_in, enc_proj, 0, static_cast<size_t>(j.joint_h) * sizeof(float));
-    ggml_backend_graph_compute(g.backend, g.graph);
+    if (const ggml_status gs = ggml_backend_graph_compute(g.backend, g.graph); gs != GGML_STATUS_SUCCESS) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet decoder: joint compute failed (%d)", static_cast<int>(gs));
+        return false;
+    }
     ggml_backend_tensor_get(g.logits, out_logits.data(), 0, static_cast<size_t>(j.joint_n) * sizeof(float));
 
     // log_softmax over the full joint output matches NeMo's CPU-inference
@@ -1062,6 +1070,7 @@ void joint_step(const HostJoint &    j,
             out_logits[i] -= log_sum;
         }
     }
+    return true;
 }
 
 // Compute the per-utterance encoder projection out[T, joint_h] =
@@ -1342,7 +1351,10 @@ transcribe_status decode_tdt_greedy(const HostDecoderWeights & w,
         const int64_t t0 = ggml_time_us();
         const float * decoder_out;
         if (predictor_dirty) {
-            decoder_out     = predictor_step_ggml(w.predictor, pg, last_token, state, next_state, scratch_x);
+            decoder_out = predictor_step_ggml(w.predictor, pg, last_token, state, next_state, scratch_x);
+            if (decoder_out == nullptr) {
+                return TRANSCRIBE_ERR_BACKEND;
+            }
             predictor_dirty = false;
         } else {
             decoder_out = next_state.h.back().data();
@@ -1358,7 +1370,9 @@ transcribe_status decode_tdt_greedy(const HostDecoderWeights & w,
                 ggml_backend_tensor_set(jgb.enc_in,
                                         enc_proj_all.data() + static_cast<size_t>(step) * static_cast<size_t>(joint_h),
                                         0, static_cast<size_t>(joint_h) * static_cast<size_t>(batch_W) * sizeof(float));
-                ggml_backend_graph_compute(jgb.backend, jgb.graph);
+                if (ggml_backend_graph_compute(jgb.backend, jgb.graph) != GGML_STATUS_SUCCESS) {
+                    return TRANSCRIBE_ERR_BACKEND;
+                }
                 ggml_backend_tensor_get(jgb.logits, logits_w.data(), 0, logits_w.size() * sizeof(float));
                 win_base  = step;
                 win_valid = true;
@@ -1367,13 +1381,17 @@ transcribe_status decode_tdt_greedy(const HostDecoderWeights & w,
                 logits_w.data() + static_cast<size_t>(step - win_base) * static_cast<size_t>(w.joint.joint_n);
             if (batch_check) {
                 const float * enc_proj = enc_proj_all.data() + static_cast<size_t>(step) * static_cast<size_t>(joint_h);
-                joint_step(w.joint, jg, enc_proj, decoder_out, logits);
+                if (!joint_step(w.joint, jg, enc_proj, decoder_out, logits)) {
+                    return TRANSCRIBE_ERR_BACKEND;
+                }
                 joint_batch_check("parakeet decoder (tdt)", logits.data(), frame_logits, w.joint.joint_n, n_token_cls,
                                   n_dur, step, iter);
             }
         } else {
             const float * enc_proj = enc_proj_all.data() + static_cast<size_t>(step) * static_cast<size_t>(joint_h);
-            joint_step(w.joint, jg, enc_proj, decoder_out, logits);
+            if (!joint_step(w.joint, jg, enc_proj, decoder_out, logits)) {
+                return TRANSCRIBE_ERR_BACKEND;
+            }
             frame_logits = logits.data();
         }
         const int64_t t2 = ggml_time_us();
@@ -1589,7 +1607,10 @@ transcribe_status decode_rnnt_greedy(const HostDecoderWeights & w,
         const int64_t t0 = ggml_time_us();
         const float * decoder_out;
         if (predictor_dirty) {
-            decoder_out     = predictor_step_ggml(w.predictor, pg, last_token, state, next_state, scratch_x);
+            decoder_out = predictor_step_ggml(w.predictor, pg, last_token, state, next_state, scratch_x);
+            if (decoder_out == nullptr) {
+                return TRANSCRIBE_ERR_BACKEND;
+            }
             predictor_dirty = false;
         } else {
             decoder_out = next_state.h.back().data();
@@ -1604,7 +1625,9 @@ transcribe_status decode_rnnt_greedy(const HostDecoderWeights & w,
                 ggml_backend_tensor_set(jgb.enc_in,
                                         enc_proj_all.data() + static_cast<size_t>(step) * static_cast<size_t>(joint_h),
                                         0, static_cast<size_t>(joint_h) * static_cast<size_t>(batch_W) * sizeof(float));
-                ggml_backend_graph_compute(jgb.backend, jgb.graph);
+                if (ggml_backend_graph_compute(jgb.backend, jgb.graph) != GGML_STATUS_SUCCESS) {
+                    return TRANSCRIBE_ERR_BACKEND;
+                }
                 ggml_backend_tensor_get(jgb.logits, logits_w.data(), 0, logits_w.size() * sizeof(float));
                 win_base  = step;
                 win_valid = true;
@@ -1613,13 +1636,17 @@ transcribe_status decode_rnnt_greedy(const HostDecoderWeights & w,
                 logits_w.data() + static_cast<size_t>(step - win_base) * static_cast<size_t>(w.joint.joint_n);
             if (batch_check) {
                 const float * enc_proj = enc_proj_all.data() + static_cast<size_t>(step) * static_cast<size_t>(joint_h);
-                joint_step(w.joint, jg, enc_proj, decoder_out, logits);
+                if (!joint_step(w.joint, jg, enc_proj, decoder_out, logits)) {
+                    return TRANSCRIBE_ERR_BACKEND;
+                }
                 joint_batch_check("parakeet decoder (rnnt)", logits.data(), frame_logits, w.joint.joint_n, n_token_cls,
                                   /*n_dur=*/0, step, iter);
             }
         } else {
             const float * enc_proj = enc_proj_all.data() + static_cast<size_t>(step) * static_cast<size_t>(joint_h);
-            joint_step(w.joint, jg, enc_proj, decoder_out, logits);
+            if (!joint_step(w.joint, jg, enc_proj, decoder_out, logits)) {
+                return TRANSCRIBE_ERR_BACKEND;
+            }
             frame_logits = logits.data();
         }
         const int64_t t2 = ggml_time_us();
@@ -1842,14 +1869,19 @@ transcribe_status decode_rnnt_greedy_streaming(const HostDecoderWeights &      w
 
         const float * decoder_out;
         if (predictor_dirty) {
-            decoder_out     = predictor_step_ggml(w.predictor, pg, last_token, state, next_state, scratch_x);
+            decoder_out = predictor_step_ggml(w.predictor, pg, last_token, state, next_state, scratch_x);
+            if (decoder_out == nullptr) {
+                return TRANSCRIBE_ERR_BACKEND;
+            }
             predictor_dirty = false;
         } else {
             decoder_out = next_state.h.back().data();
         }
 
         const float * enc_proj = enc_proj_all.data() + static_cast<size_t>(step) * static_cast<size_t>(joint_h);
-        joint_step(w.joint, jg, enc_proj, decoder_out, logits);
+        if (!joint_step(w.joint, jg, enc_proj, decoder_out, logits)) {
+            return TRANSCRIBE_ERR_BACKEND;
+        }
 
         const float * token_logits = logits.data();
         const int     pred_token   = argmax_range(token_logits, n_token_cls);

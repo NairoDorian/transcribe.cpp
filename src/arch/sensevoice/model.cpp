@@ -148,7 +148,7 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
     if (weights_buffer == nullptr) {
         gguf_free(gguf_data);
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "sensevoice: alloc_ctx_tensors_with_reclaim failed");
-        return TRANSCRIBE_ERR_GGUF;
+        return TRANSCRIBE_ERR_OOM;
     }
     m->backend_buffer = weights_buffer;
     ggml_backend_buffer_set_usage(weights_buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
@@ -462,11 +462,8 @@ transcribe_status run(transcribe_session *          session,
                                            static_cast<int>(cm->plan.scheduler_list.size()),
                                            /*graph_size=*/8192, /*parallel=*/false, /*op_offload=*/true);
         if (cc->sched == nullptr) {
-            transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
-                                "sensevoice run: scheduler allocation failed — out of memory. "
-                                "Split long audio into shorter segments (see "
-                                "transcribe_capabilities.max_audio_ms).");
-            return TRANSCRIBE_ERR_OOM;
+            transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "sensevoice run: ggml_backend_sched_new failed");
+            return TRANSCRIBE_ERR_BACKEND;
         }
     }
     // Free GPU buffers (scheduler galloc) after each transcription to prevent
@@ -559,7 +556,7 @@ transcribe_status run(transcribe_session *          session,
     if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, eb.graph); gs != GGML_STATUS_SUCCESS) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "sensevoice run: graph compute failed (%d)", static_cast<int>(gs));
         cleanup_gpu();
-        return TRANSCRIBE_ERR_GGUF;
+        return TRANSCRIBE_ERR_BACKEND;
     }
     cc->t_encode_us = ggml_time_us() - t_enc_start;
 
@@ -718,11 +715,8 @@ static transcribe_status run_batch_encode(
                                            static_cast<int>(cm->plan.scheduler_list.size()),
                                            /*graph_size=*/8192, /*parallel=*/false, /*op_offload=*/true);
         if (cc->sched == nullptr) {
-            transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
-                                "sensevoice run: scheduler allocation failed — out of memory. "
-                                "Split long audio into shorter segments (see "
-                                "transcribe_capabilities.max_audio_ms).");
-            return TRANSCRIBE_ERR_OOM;
+            transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "sensevoice run: ggml_backend_sched_new failed");
+            return TRANSCRIBE_ERR_BACKEND;
         }
     }
     ggml_backend_sched_reset(cc->sched);
@@ -793,7 +787,7 @@ static transcribe_status run_batch_encode(
     const int64_t t_enc_start = ggml_time_us();
     if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, eb.graph); gs != GGML_STATUS_SUCCESS) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "sensevoice run_batch: graph compute failed (%d)", static_cast<int>(gs));
-        return TRANSCRIBE_ERR_GGUF;
+        return TRANSCRIBE_ERR_BACKEND;
     }
     cc->t_encode_us = ggml_time_us() - t_enc_start;
 

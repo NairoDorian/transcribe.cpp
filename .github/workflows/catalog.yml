@@ -38,7 +38,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@v10.1.0
       - name: Canonical formatting
         run: uv run scripts/catalog/format.py --check
       - name: Schema, integrity and pairing

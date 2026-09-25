@@ -191,7 +191,7 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
     if (weights_buffer == nullptr) {
         gguf_free(gguf_data);
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "medasr: alloc_ctx_tensors_with_reclaim failed");
-        return TRANSCRIBE_ERR_GGUF;
+        return TRANSCRIBE_ERR_OOM;
     }
     m->backend_buffer = weights_buffer;
     ggml_backend_buffer_set_usage(weights_buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
@@ -479,11 +479,8 @@ transcribe_status run(transcribe_session * session, const float * pcm, int n_sam
                                            static_cast<int>(gm->plan.scheduler_list.size()),
                                            /*graph_size=*/8192, /*parallel=*/false, /*op_offload=*/true);
         if (gc->sched == nullptr) {
-            transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
-                                "medasr run: scheduler allocation failed — out of memory. "
-                                "Split long audio into shorter segments (see "
-                                "transcribe_capabilities.max_audio_ms).");
-            return TRANSCRIBE_ERR_OOM;
+            transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "medasr run: ggml_backend_sched_new failed");
+            return TRANSCRIBE_ERR_BACKEND;
         }
     }
     // Free GPU buffers (scheduler galloc buffers) after each transcription to
@@ -542,7 +539,7 @@ transcribe_status run(transcribe_session * session, const float * pcm, int n_sam
     if (ggml_backend_sched_graph_compute(gc->sched, eb.graph) != GGML_STATUS_SUCCESS) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "medasr: graph_compute failed");
         cleanup_gpu();
-        return TRANSCRIBE_ERR_GGUF;
+        return TRANSCRIBE_ERR_BACKEND;
     }
     gc->t_encode_us = ggml_time_us() - t_enc_start;
 
@@ -770,11 +767,8 @@ transcribe_status run_batch_encode(MedAsrSession *                         gc,
                                            static_cast<int>(gm->plan.scheduler_list.size()),
                                            /*graph_size=*/8192, /*parallel=*/false, /*op_offload=*/true);
         if (gc->sched == nullptr) {
-            transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
-                                "medasr run: scheduler allocation failed — out of memory. "
-                                "Split long audio into shorter segments (see "
-                                "transcribe_capabilities.max_audio_ms).");
-            return TRANSCRIBE_ERR_OOM;
+            transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "medasr run: ggml_backend_sched_new failed");
+            return TRANSCRIBE_ERR_BACKEND;
         }
     }
     ggml_backend_sched_reset(gc->sched);
@@ -864,7 +858,7 @@ transcribe_status run_batch_encode(MedAsrSession *                         gc,
     const int64_t t_enc_start = ggml_time_us();
     if (ggml_backend_sched_graph_compute(gc->sched, eb.graph) != GGML_STATUS_SUCCESS) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "medasr run_batch: graph_compute failed");
-        return TRANSCRIBE_ERR_GGUF;
+        return TRANSCRIBE_ERR_BACKEND;
     }
     gc->t_encode_us = ggml_time_us() - t_enc_start;
 

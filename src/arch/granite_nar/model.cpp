@@ -343,7 +343,7 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
     if (weights_buffer == nullptr) {
         gguf_free(gguf_data);
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite_nar: alloc_ctx_tensors_with_reclaim failed");
-        return TRANSCRIBE_ERR_GGUF;
+        return TRANSCRIBE_ERR_OOM;
     }
     m->backend_buffer = weights_buffer;
     ggml_backend_buffer_set_usage(weights_buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
@@ -572,7 +572,7 @@ transcribe_status run(transcribe_session *          ctx_base,
                                            static_cast<int>(cm->plan.scheduler_list.size()), 32768, false, true);
         if (cc->sched == nullptr) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite_nar run: sched_new failed");
-            return TRANSCRIBE_ERR_GGUF;
+            return TRANSCRIBE_ERR_BACKEND;
         }
     }
     // Free GPU buffers (scheduler galloc buffers) after each transcription to
@@ -625,7 +625,7 @@ transcribe_status run(transcribe_session *          ctx_base,
     if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, eb.graph); gs != GGML_STATUS_SUCCESS) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite_nar run: encoder compute failed (%d)", static_cast<int>(gs));
         cleanup_gpu();
-        return TRANSCRIBE_ERR_GGUF;
+        return TRANSCRIBE_ERR_BACKEND;
     }
     cc->t_encode_us = ggml_time_us() - t_enc_start;
 
@@ -741,7 +741,7 @@ transcribe_status run(transcribe_session *          ctx_base,
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite_nar run: projector compute failed (%d)", static_cast<int>(gs));
         ggml_free(proj_ctx);
         cleanup_gpu();
-        return TRANSCRIBE_ERR_GGUF;
+        return TRANSCRIBE_ERR_BACKEND;
     }
 
     try_dump("proj.qformer.out", pb.dumps.qformer_out, "projector");
@@ -847,7 +847,7 @@ transcribe_status run(transcribe_session *          ctx_base,
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite_nar run: decoder compute failed (%d)", static_cast<int>(gs));
         ggml_free(dec_ctx);
         cleanup_gpu();
-        return TRANSCRIBE_ERR_GGUF;
+        return TRANSCRIBE_ERR_BACKEND;
     }
     cc->t_decode_us = ggml_time_us() - t_dec_start;
 

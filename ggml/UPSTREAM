@@ -1,7 +1,7 @@
 repo: https://github.com/ggml-org/ggml.git
-sha:  e565a8f4ce2e462c4973a24c51098dd3c81c0256
-version: 0.25.1
-date: 2026-09-23
+sha:  353b63b439f27ab2cc19dac97ab1681ba6d2d084
+version: 0.25.3
+date: 2026-09-24
 patches:
   patches/ggml/0001-fix-threadpool-oversubscription.patch
   patches/ggml/0002-export-cuda-pool-trim-and-graph-evict.patch

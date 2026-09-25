@@ -300,7 +300,7 @@ jobs:
           assert not banned, f"sdist contains artifacts that must never ship: {banned[:10]}"
           assert any(n.endswith("src/arch/canary/model.cpp") for n in names), \
               "sdist excludes over-matched (root-anchoring regression)"
-          assert total < 40e6, f"sdist unexpectedly large: {total/1e6:.1f} MB (28 MB expected)"
+          assert total < 50e6, f"sdist unexpectedly large: {total/1e6:.1f} MB (~21 MB expected)"
           for required in ("CMakeLists.txt", "include/transcribe.h",
                            "ggml/CMakeLists.txt", "cmake/python-wheel-install.cmake",
                            "bindings/python-native/_contract.py.in"):

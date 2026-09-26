@@ -269,6 +269,13 @@ struct transcribe_session {
     uint32_t                          vad_prefill_ms  = 450;
     uint32_t                          vad_hangover_ms = 1200;
     transcribe::VoiceActivityDetector stream_vad;
+    // Whether the dispatcher's silence fast path may skip feed slices for this
+    // stream. Reset to true by transcribe_stream_begin before the family's
+    // begin hook runs; a family whose model cannot tolerate audio being
+    // removed from its input sets it to false there (R2T2, which re-encodes
+    // the whole accumulated utterance on every tick). VAD telemetry is
+    // unaffected either way.
+    bool                              stream_activity_gate_allowed = true;
 
     // Session-owned copies of the caller's run-params strings, refreshed
     // on every transcribe_stream_begin. The dispatcher hands the family

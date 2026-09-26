@@ -1962,6 +1962,8 @@ static transcribe_status transcribe_stream_begin_impl(struct transcribe_session 
     session->vad_prefill_ms  = vad_prefill_ms;
     session->vad_hangover_ms = vad_hangover_ms;
     session->stream_vad      = transcribe::VoiceActivityDetector(vad_threshold, vad_prefill_ms, vad_hangover_ms);
+    // Per stream: the family's begin hook below may opt out.
+    session->stream_activity_gate_allowed = true;
 
     // Hand the family hook a params view whose pointers the LIBRARY owns.
     // Families may capture `*run_params` for the stream's lifetime
@@ -2086,7 +2088,13 @@ static transcribe_status transcribe_stream_feed_impl(struct transcribe_session *
     // was dropped whenever the VAD had not flipped to speaking yet, and a
     // quiet consonant was dropped mid-speech whenever it dipped under the
     // energy floor.
-    if (session->enable_vad && n_samples >= 256 && !transcribe::is_activity_gate_disabled() &&
+    //
+    // A family can opt out per stream (stream_activity_gate_allowed): the
+    // fast path is only safe for families whose state advances incrementally.
+    // A family that re-encodes the whole accumulated audio each tick sees a
+    // different utterance when silence is cut out of it.
+    if (session->enable_vad && session->stream_activity_gate_allowed && n_samples >= 256 &&
+        !transcribe::is_activity_gate_disabled() &&
         session->stream_audio_committed_us == session->stream_audio_input_us &&
         session->stream_tentative_text.empty() && !session->stream_vad.is_speaking() &&
         !transcribe::is_audio_active(pcm, static_cast<size_t>(n_samples))) {

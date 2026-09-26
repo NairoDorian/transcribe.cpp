@@ -753,6 +753,63 @@ void test_activity_gate_only_skips_silence_with_nothing_buffered() {
     CHECK(transcribe_stream_finalize(&session, nullptr) == TRANSCRIBE_OK);
 }
 
+// Same family, but its begin hook opts out of the fast path, as R2T2 does.
+transcribe_status gate_opt_out_stream_begin(transcribe_session *             session,
+                                            const transcribe_run_params *    run_params,
+                                            const transcribe_stream_params * stream_params) {
+    session->stream_activity_gate_allowed = false;
+    return gate_stream_begin(session, run_params, stream_params);
+}
+
+const transcribe::Arch & gate_opt_out_arch() {
+    static const transcribe::Arch arch = {
+        "fake-gate-opt-out",
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        gate_opt_out_stream_begin,
+        gate_stream_feed,
+        gate_stream_finalize,
+        nullptr,
+        fake_accepts_no_ext,
+    };
+    return arch;
+}
+
+// A family that opts out receives every slice, silence with nothing buffered
+// included; and the opt-out lasts one stream: the next begin re-arms the fast
+// path before the (next) family's hook runs.
+void test_activity_gate_family_opt_out_receives_every_slice() {
+    transcribe_model model;
+    model.arch                    = &gate_opt_out_arch();
+    model.caps.supports_streaming = true;
+    model.caps.max_timestamp_kind = TRANSCRIBE_TIMESTAMPS_NONE;
+    transcribe_session session;
+    session.model = &model;
+
+    transcribe_stream_params sp;
+    transcribe_stream_params_init(&sp);
+    CHECK(transcribe_stream_begin(&session, nullptr, &sp) == TRANSCRIBE_OK);
+    CHECK(!session.stream_activity_gate_allowed);
+
+    float silence[256] = {};
+    for (int i = 0; i < 8; ++i) {
+        CHECK(transcribe_stream_feed(&session, silence, 256, nullptr) == TRANSCRIBE_OK);
+    }
+    CHECK(g_gate_fed_samples == 8 * 256);
+    CHECK(transcribe_stream_finalize(&session, nullptr) == TRANSCRIBE_OK);
+
+    model.arch = &gate_arch();
+    transcribe_stream_reset(&session);
+    CHECK(transcribe_stream_begin(&session, nullptr, &sp) == TRANSCRIBE_OK);
+    CHECK(session.stream_activity_gate_allowed);
+    CHECK(transcribe_stream_feed(&session, silence, 256, nullptr) == TRANSCRIBE_OK);
+    CHECK(g_gate_fed_samples == 0);
+    CHECK(transcribe_stream_finalize(&session, nullptr) == TRANSCRIBE_OK);
+}
+
 void test_stream_text_on_finalize_policy() {
     transcribe_model model;
     init_streaming_model(model);
@@ -1694,5 +1751,6 @@ int main() {
     test_begin_accepts_min_prefix_run_params();
     test_two_sessions_independent_streams();
     test_activity_gate_only_skips_silence_with_nothing_buffered();
+    test_activity_gate_family_opt_out_receives_every_slice();
     return g_failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

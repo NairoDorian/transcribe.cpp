@@ -533,13 +533,21 @@ bool has_decodable_audio(const QwenAsrModel * cm, const std::vector<float> & aud
 // with the utterance, which is what "the stream is slow" looks like from the
 // outside: text arrives far behind the speaker and stops late after they do.
 transcribe_status drain_chunks(QwenAsrSession * cc, bool final_flush, transcribe_stream_update * update) {
-    auto *            cm      = static_cast<QwenAsrModel *>(cc->model);
-    R2T2StreamState & st      = cc->r2t2;
-    const size_t      chunk   = static_cast<size_t>(st.chunk_size_samples);
-    bool              changed = false;
-    transcribe_status status  = TRANSCRIBE_OK;
+    auto *            cm            = static_cast<QwenAsrModel *>(cc->model);
+    R2T2StreamState & st            = cc->r2t2;
+    const size_t      chunk         = static_cast<size_t>(st.chunk_size_samples);
+    bool              changed       = false;
+    transcribe_status status        = TRANSCRIBE_OK;
+    // A final flush is exactly one pass over the whole utterance, and it runs
+    // even when the buffer is already empty. That happens whenever the audio
+    // fed so far is a whole number of chunks (a chunk size that divides the
+    // caller's feed size, e.g. 2000 ms with 16 ms feeds): the last tick then
+    // was a non-final one, which holds back its tail tokens and may not have
+    // produced any text yet in auto-detect mode, and skipping the final pass
+    // ended such streams truncated or empty.
+    bool              final_pending = final_flush;
 
-    while (!st.buffer.empty()) {
+    while (!st.buffer.empty() || final_pending) {
         const size_t whole = (st.buffer.size() / chunk) * chunk;
         // A non-final tick needs a whole chunk before it can advance at all; a
         // final flush takes whatever is left, partial chunk included, because
@@ -548,6 +556,7 @@ transcribe_status drain_chunks(QwenAsrSession * cc, bool final_flush, transcribe
             break;
         }
         const size_t take = final_flush ? st.buffer.size() : whole;
+        final_pending     = false;
 
         st.audio_accum.insert(st.audio_accum.end(), st.buffer.begin(),
                               st.buffer.begin() + static_cast<ptrdiff_t>(take));
@@ -737,6 +746,18 @@ transcribe_status r2t2_stream_begin(transcribe_session *             ctx,
     // consistent with what a caller re-reading immediately after begin sees.
     cc->stream_family_committed_bytes = 0;
 
+    // Opt out of the dispatcher's silence fast path: every fed sample reaches
+    // the buffer. Each tick re-encodes the whole accumulated audio as one
+    // utterance, so cutting silence out of it hands the model a different
+    // utterance (speech starting abruptly, pauses spliced out), and on that
+    // input the checkpoint can emit end-of-sequence as its first token. On a
+    // 10.9 s clip ("So I have twelve dollars, no, ten.") with the fast path
+    // on, 1880 and 2000 ms chunks produced ticks with zero generated tokens
+    // and an empty transcript; with every sample fed, every tick produced
+    // text and the transcript was complete at every chunk size. The caller
+    // decides what silence to feed (the ZER0 app runs its own VAD first).
+    cc->stream_activity_gate_allowed = false;
+
     log_msg(TRANSCRIBE_LOG_LEVEL_DEBUG, "r2t2 stream: begin chunk_size_ms=%u (%lld samples) language=%s",
             st.chunk_size_ms, static_cast<long long>(st.chunk_size_samples),
             st.force_language.empty() ? "(auto)" : st.force_language.c_str());
@@ -760,9 +781,9 @@ transcribe_status r2t2_stream_feed(transcribe_session *       ctx,
     st.audio_input_samples += n_samples;
     st.buffer.insert(st.buffer.end(), pcm, pcm + n_samples);
 
-    // The dispatcher's VAD fast path already handles the silence case; this
-    // path just consumes audio and only pays for a decode when a whole tick is
-    // buffered.
+    // Every fed sample lands here (this family opts out of the dispatcher's
+    // silence fast path, see r2t2_stream_begin); a decode is only paid for
+    // when a whole tick is buffered.
     const transcribe_status status = drain_chunks(cc, /*final_flush=*/false, update);
     // Even on failure: the samples were received, and a cursor pair left equal
     // over a non-empty buffer is exactly what let the fast path drop speech.

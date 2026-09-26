@@ -176,9 +176,9 @@ struct QwenAsrDecBlock {
     // GQA projections; no biases on Qwen3. We experimented with packing
     // Q/K/V into one mul_mat but it consistently regressed on Metal —
     // the 3 small matvecs already run concurrently there and a combined
-    // output's strided views trip downstream kernels. On CUDA it wins
-    // (one 4.7 MB matvec instead of three small ones), so attn_qkv_w is
-    // packed there at load by causal_lm::pack_qkv (null elsewhere).
+    // output's strided views trip downstream kernels. On CUDA it is ~2 %
+    // faster but not byte-identical, so attn_qkv_w is only packed when
+    // TRANSCRIBE_QKV_PACK=1 (causal_lm::pack_qkv; null otherwise).
     ggml_tensor * attn_q_w      = nullptr;  // [hidden, n_heads * head_dim]
     ggml_tensor * attn_k_w      = nullptr;  // [hidden, n_kv_heads * head_dim]
     ggml_tensor * attn_v_w      = nullptr;  // [hidden, n_kv_heads * head_dim]

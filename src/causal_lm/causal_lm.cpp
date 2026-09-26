@@ -949,7 +949,9 @@ transcribe_status pack_gate_up(ggml_backend_t                   backend,
 }
 
 bool qkv_pack_wanted(ggml_backend_t backend) {
-    if (backend == nullptr || transcribe::env::flag("TRANSCRIBE_NO_QKV_PACK")) {
+    // Opt-in: ~2 % faster decode, but the fused matvec rounds differently and
+    // flipped 3 of 100 FLEURS transcripts (fr/de/en/es/it) vs the unfused path.
+    if (backend == nullptr || !transcribe::env::flag("TRANSCRIBE_QKV_PACK")) {
         return false;
     }
     ggml_backend_dev_t dev = ggml_backend_get_device(backend);

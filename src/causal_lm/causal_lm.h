@@ -40,8 +40,8 @@ struct BlockView {
     // Voxtral's Ministral backbone); helpers skip the norm when null.
     ggml_tensor * attn_q_norm   = nullptr;  // [head_dim] per-head Q-norm, or null
     ggml_tensor * attn_k_norm   = nullptr;  // [head_dim] per-head K-norm, or null
-    // Optional packed Q|K|V filled by pack_qkv at load time (CUDA only; it
-    // regresses on Metal). When set, block_prefill / block_step /
+    // Optional packed Q|K|V filled by pack_qkv at load time (opt-in, CUDA
+    // only; it regresses on Metal). When set, block_prefill / block_step /
     // block_step_n run one mul_mat and split it with strided views; the
     // separate q/k/v slots stay required for the batched helpers.
     ggml_tensor * attn_qkv_w    = nullptr;  // [hidden, q_dim + 2*kv_dim], or null
@@ -336,8 +336,8 @@ transcribe_status pack_qkv(ggml_backend_t                backend,
                            PackedGateUpHandles &         out_handles,
                            const char *                  error_tag = "causal_lm");
 
-// True when fusing Q/K/V pays off on `backend` (CUDA/ROCm; not Metal, where
-// it measured slower). TRANSCRIBE_NO_QKV_PACK=1 disables it.
+// True when Q/K/V should be packed on `backend`: opt-in via TRANSCRIBE_QKV_PACK=1,
+// CUDA/ROCm only (slower on Metal). ~2 % decode, not byte-identical to unpacked.
 bool qkv_pack_wanted(ggml_backend_t backend);
 
 // Batched greedy step loop (offline transcribe_run_batch decode).

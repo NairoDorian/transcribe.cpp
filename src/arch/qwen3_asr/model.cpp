@@ -354,7 +354,7 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
         }
     }
 
-    // Pack Q|K|V into one matvec on CUDA (see QwenAsrDecBlock). Costs one
+    // Pack Q|K|V into one matvec (opt-in, TRANSCRIBE_QKV_PACK=1). Costs one
     // extra copy of the attention input projections (~130 MB for 1.7B Q4_K);
     // a failure here only disables the fused path.
     if (transcribe::causal_lm::qkv_pack_wanted(m->plan.primary)) {
@@ -392,13 +392,10 @@ transcribe_status init_context(transcribe_model *                model,
     cc->kv_type   = params->kv_type;
     cc->n_ctx     = transcribe_session_params_n_ctx(params);
 
-    // Encoder flash-attn: off by default, but on CUDA it is 5 % faster
-    // (RTX 4070, R2T2: 48 -> 45 ms encode) with identical transcripts.
-    {
-        ggml_backend_dev_t dev = ggml_backend_get_device(static_cast<QwenAsrModel *>(model)->plan.primary);
-        const char *       reg = dev != nullptr ? ggml_backend_reg_name(ggml_backend_dev_backend_reg(dev)) : nullptr;
-        cc->encoder_use_flash  = reg != nullptr && std::strcmp(reg, "CUDA") == 0;
-    }
+    // Encoder flash-attn stays off: on CUDA it saves ~2 ms per clip but rounds
+    // differently and flipped 9 of 100 FLEURS transcripts (fr/de/en/es/it).
+    // Opt in with TRANSCRIBE_ENCODER_FLASH=1.
+    cc->encoder_use_flash = false;
     cc->decoder_use_flash = true;
     transcribe::flash::apply_env_overrides(cc->encoder_use_flash, cc->decoder_use_flash);
 

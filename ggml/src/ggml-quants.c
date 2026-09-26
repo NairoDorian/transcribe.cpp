@@ -2411,6 +2411,95 @@ void quantize_row_tq2_0_ref(const float * GGML_RESTRICT x, block_tq2_0 * GGML_RE
     }
 }
 
+// Pack one 128-weight group of codes (values 0, 1, 2 = weight -1, 0, +1) into
+// its 24 qs + 2 qh bytes. Shared by the float quantizer below and by
+// converters that already hold exact ternary codes.
+static void tq1_g128_pack_group(const uint8_t * GGML_RESTRICT c, uint8_t * GGML_RESTRICT qs, uint8_t * GGML_RESTRICT qh) {
+    // elements 0..79: 16 bytes x 5 trits, element m + 16 n
+    for (int m = 0; m < 16; ++m) {
+        uint16_t q = 0;
+        for (int n = 0; n < 5; ++n) { q = q*3 + c[m + 16*n]; }
+        qs[m] = (uint8_t)((q * 256 + (243 - 1)) / 243);
+    }
+    // elements 80..119: 8 bytes x 5 trits, element 80 + m + 8 n
+    for (int m = 0; m < 8; ++m) {
+        uint16_t q = 0;
+        for (int n = 0; n < 5; ++n) { q = q*3 + c[80 + m + 8*n]; }
+        qs[16 + m] = (uint8_t)((q * 256 + (243 - 1)) / 243);
+    }
+    // elements 120..127: 2 bytes x 4 trits, element 120 + j + 2 n; the fifth
+    // (least significant) trit is padding 0
+    for (int j = 0; j < 2; ++j) {
+        uint16_t q = 0;
+        for (int n = 0; n < 4; ++n) { q = q*3 + c[120 + j + 2*n]; }
+        q *= 3;
+        qh[j] = (uint8_t)((q * 256 + (243 - 1)) / 243);
+    }
+}
+
+void ggml_tq1_g128_pack_codes(const uint8_t * GGML_RESTRICT codes, const ggml_fp16_t * GGML_RESTRICT scales, void * GGML_RESTRICT vy, int64_t k) {
+    assert(k % QK_K == 0);
+    block_tq1_g128 * GGML_RESTRICT y = vy;
+    for (int64_t i = 0; i < k / QK_K; ++i) {
+        for (int g = 0; g < 2; ++g) {
+            tq1_g128_pack_group(codes + i*QK_K + g*QK_TQ1_G128, y[i].qs + 24*g, y[i].qh + 2*g);
+            y[i].d[g] = scales[2*i + g];
+        }
+    }
+}
+
+void quantize_row_tq1_g128_ref(const float * GGML_RESTRICT x, block_tq1_g128 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_K == 0);
+    uint8_t c[QK_TQ1_G128];
+    for (int64_t i = 0; i < k / QK_K; ++i) {
+        for (int g = 0; g < 2; ++g) {
+            const float * xg = x + i*QK_K + g*QK_TQ1_G128;
+            float amax = 0.0f;
+            for (int j = 0; j < QK_TQ1_G128; ++j) { amax = MAX(amax, fabsf(xg[j])); }
+            const float id = amax ? 1.0f/amax : 0.0f;
+            for (int j = 0; j < QK_TQ1_G128; ++j) { c[j] = (uint8_t)(lroundf(xg[j] * id) + 1); }
+            tq1_g128_pack_group(c, y[i].qs + 24*g, y[i].qh + 2*g);
+            y[i].d[g] = GGML_FP32_TO_FP16(amax);
+        }
+    }
+}
+
+size_t quantize_tq1_g128(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    (void)quant_weights; // not used
+    const size_t row_size = ggml_row_size(GGML_TYPE_TQ1_G128, n_per_row);
+    quantize_row_tq1_g128_ref(src, dst, (int64_t)nrow*n_per_row);
+    return nrow * row_size;
+}
+
+void dequantize_row_tq1_g128(const block_tq1_g128 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_K == 0);
+    const uint8_t pow3[5] = {1, 3, 9, 27, 81};
+    for (int64_t i = 0; i < k / QK_K; ++i) {
+        for (int g = 0; g < 2; ++g) {
+            const float d = GGML_FP16_TO_FP32(x[i].d[g]);
+            const uint8_t * qs = x[i].qs + 24*g;
+            const uint8_t * qh = x[i].qh + 2*g;
+            float * yg = y + i*QK_K + g*QK_TQ1_G128;
+            for (int n = 0; n < 5; ++n) {
+                for (int m = 0; m < 16; ++m) {
+                    const uint8_t q = qs[m] * pow3[n];
+                    yg[m + 16*n] = (float)((((uint16_t) q * 3) >> 8) - 1) * d;
+                }
+                for (int m = 0; m < 8; ++m) {
+                    const uint8_t q = qs[16 + m] * pow3[n];
+                    yg[80 + m + 8*n] = (float)((((uint16_t) q * 3) >> 8) - 1) * d;
+                }
+            }
+            for (int n = 0; n < 4; ++n) {
+                for (int j = 0; j < 2; ++j) {
+                    const uint8_t q = qh[j] * pow3[n];
+                    yg[120 + j + 2*n] = (float)((((uint16_t) q * 3) >> 8) - 1) * d;
+                }
+            }
+        }
+    }
+}
+
 size_t quantize_tq1_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
     (void)quant_weights; // not used
     const size_t row_size = ggml_row_size(GGML_TYPE_TQ1_0, n_per_row);
@@ -5574,6 +5663,17 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
         case GGML_TYPE_TQ2_0:
             {
                 VALIDATE_ROW_DATA_D_F16_IMPL(block_tq2_0, data, nb);
+            } break;
+        case GGML_TYPE_TQ1_G128:
+            {
+                const block_tq1_g128 * q = (const block_tq1_g128 *) data;
+                for (size_t i = 0; i < nb; ++i) {
+                    for (int g = 0; g < 2; ++g) {
+                        if (!validate_fp16(q[i].d[g], i)) {
+                            return false;
+                        }
+                    }
+                }
             } break;
         case GGML_TYPE_IQ1_S:
             {

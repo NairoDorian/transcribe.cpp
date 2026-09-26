@@ -608,6 +608,27 @@ vec2 get_dm(uint ib, uint a_offset) {
 }
 #endif
 
+#if defined(DATA_A_TQ1_G128)
+// The per-group scale is folded into the value; get_dm() is neutral because
+// a block carries two scales.
+float tq1_g128_val(uint ib, uint e, uint a_offset) {
+    const uint bidx = tq1_g128_byte_of(e);
+    const uint qbyte = uint(bidx < 48u ? data_a[a_offset + ib].qs[bidx]
+                                       : data_a[a_offset + ib].qh[bidx - 48u]);
+    return float(data_a[a_offset + ib].d[e >> 7u]) * (float(tq1_0_trit(qbyte, tq1_g128_digit_of(e))) - 1.0);
+}
+vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+    return vec2(tq1_g128_val(ib, iqs, a_offset), tq1_g128_val(ib, iqs + 1u, a_offset));
+}
+vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+    return vec4(tq1_g128_val(ib, iqs, a_offset), tq1_g128_val(ib, iqs + 1u, a_offset),
+                tq1_g128_val(ib, iqs + 2u, a_offset), tq1_g128_val(ib, iqs + 3u, a_offset));
+}
+vec2 get_dm(uint ib, uint a_offset) {
+    return vec2(1, 0);
+}
+#endif
+
 #if defined(DATA_A_TQ1_0)
 float tq1_0_val(uint ib, uint e, uint a_offset) {
     const uint bidx = tq1_0_byte_of(e);

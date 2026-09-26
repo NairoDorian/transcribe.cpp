@@ -616,6 +616,24 @@ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uin
 
         const uint k_pair = row * mm_load_vec_a() / 2;
         store_a(col, k_pair, FLOAT_TYPEV2(v.xy));
+    } else if (MmTypeA == GGML_TYPE_TQ1_G128) {
+        const uint idx = pos_a + col * p.stride_a / mm_load_vec_a() + row;
+
+        const uint ib  = idx / 128;                        // 2 values per idx
+        const uint iqs = (idx % 128) * 2;                  // elem 0,2,4..254
+
+        const float d = float(a_tq1_g128.data[ib].d[iqs >> 7u]); // pair never straddles a group
+        vec2 v;
+        for (uint kk = 0u; kk < 2u; ++kk) {
+            const uint e = iqs + kk;
+            const uint bidx = tq1_g128_byte_of(e);
+            const uint qbyte = uint(bidx < 48u ? a_tq1_g128.data[ib].qs[bidx]
+                                               : a_tq1_g128.data[ib].qh[bidx - 48u]);
+            v[kk] = d * (float(tq1_0_trit(qbyte, tq1_g128_digit_of(e))) - 1.0);
+        }
+
+        const uint k_pair = row * mm_load_vec_a() / 2;
+        store_a(col, k_pair, FLOAT_TYPEV2(v.xy));
     } else if (MmTypeA == GGML_TYPE_TQ2_0) {
         const uint idx = pos_a + col * p.stride_a / mm_load_vec_a() + row;
 

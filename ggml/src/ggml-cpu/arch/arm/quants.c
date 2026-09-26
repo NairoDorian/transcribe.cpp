@@ -1394,6 +1394,75 @@ void ggml_vec_dot_q8_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
     *s = sumf;
 }
 
+void ggml_vec_dot_tq1_g128_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+#if defined(__ARM_NEON)
+    const block_tq1_g128 * GGML_RESTRICT x = vx;
+    const block_q8_K     * GGML_RESTRICT y = vy;
+
+    const int nb = n / QK_K;
+
+    static const uint8_t pow3[5] = {1, 3, 9, 27, 81};
+
+    float sumf = 0.0f;
+
+    for (int i = 0; i < nb; ++i) {
+        float blk = 0.0f;
+        for (int g = 0; g < 2; ++g) {
+            const uint8_t * qs = x[i].qs + 24*g;
+            const uint8_t * qh = x[i].qh + 2*g;
+            const int8_t  * q8 = y[i].qs + 128*g;
+
+            // Sum of code * q over the group, codes in {0, 1, 2}.
+            int32x4_t acc = vdupq_n_s32(0);
+
+            const uint8x16_t qa = vld1q_u8(qs);       // elements 0..79, trit l -> 16 l + m
+            const uint8x8_t  qb = vld1_u8(qs + 16);   // elements 80..119, trit l -> 80 + 8 l + m
+            for (int l = 0; l < 5; ++l) {
+                // (uint8)(q * 3^l) then (t * 3) >> 8, as 16-bit products
+                const uint8x16_t ta = vmulq_u8(qa, vdupq_n_u8(pow3[l]));
+                const uint8x8_t  ca_lo = vshrn_n_u16(vmull_u8(vget_low_u8(ta),  vdup_n_u8(3)), 8);
+                const uint8x8_t  ca_hi = vshrn_n_u16(vmull_u8(vget_high_u8(ta), vdup_n_u8(3)), 8);
+                const int8x16_t  ya = vld1q_s8(q8 + 16*l);
+                acc = vpadalq_s16(acc, vmull_s8(vreinterpret_s8_u8(ca_lo), vget_low_s8(ya)));
+                acc = vpadalq_s16(acc, vmull_s8(vreinterpret_s8_u8(ca_hi), vget_high_s8(ya)));
+
+                const uint8x8_t tb = vmul_u8(qb, vdup_n_u8(pow3[l]));
+                const uint8x8_t cb = vshrn_n_u16(vmull_u8(tb, vdup_n_u8(3)), 8);
+                const int8x8_t  yb = vld1_s8(q8 + 80 + 8*l);
+                acc = vpadalq_s16(acc, vmull_s8(vreinterpret_s8_u8(cb), yb));
+            }
+            int sum = vaddvq_s32(acc);
+
+            // elements 120..127: 2 bytes x 4 trits
+            for (int l = 0; l < 4; ++l) {
+                for (int j = 0; j < 2; ++j) {
+                    const uint8_t q = qh[j] * pow3[l];
+                    sum += (((uint16_t) q * 3) >> 8) * q8[120 + j + 2*l];
+                }
+            }
+
+            // codes are weight + 1: subtract the group's activation sum
+            int qsum = 0;
+            for (int k = 0; k < 8; ++k) {
+                qsum += y[i].bsums[8*g + k];
+            }
+            blk += (float) (sum - qsum) * GGML_CPU_FP16_TO_FP32(x[i].d[g]);
+        }
+        sumf += blk * y[i].d;
+    }
+
+    *s = sumf;
+#else
+    ggml_vec_dot_tq1_g128_q8_K_generic(n, s, bs, vx, bx, vy, by, nrc);
+#endif
+}
+
 void ggml_vec_dot_tq1_0_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(nrc == 1);
     UNUSED(nrc);

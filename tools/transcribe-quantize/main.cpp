@@ -304,7 +304,11 @@ int main(int argc, char ** argv) {
             return 1;
         }
         const std::string name(t->name);
-        const ggml_type   dst_type = resolve_target_type(*preset, name, t->ne[0]);
+        // Natively ternary tensors (GGML_TYPE_TQ1_G128) carry the exact
+        // weights the checkpoint was trained with at 1.75 bpw; every preset
+        // passes them through byte-for-byte and only re-types the rest.
+        const ggml_type   dst_type =
+            t->type == GGML_TYPE_TQ1_G128 ? GGML_TYPE_TQ1_G128 : resolve_target_type(*preset, name, t->ne[0]);
 
         // ggml_row_size handles both block-quant and dense layouts.
         // For multi-row tensors the total bytes is row_size * (nrows

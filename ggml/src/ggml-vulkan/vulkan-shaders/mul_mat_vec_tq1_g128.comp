@@ -1,0 +1,85 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+
+#include "mul_mat_vec_base.glsl"
+
+layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
+
+FLOAT_TYPE temp[NUM_COLS][NUM_ROWS];
+
+// TQ1_G128: two 128-weight groups per 256-block, each with its own scale.
+// Walks the packed bytes directly (byte m, trit t), one byte per thread,
+// expanded in place; eight threads share a block.
+void compute_outputs(const uint32_t first_row, const uint32_t num_rows) {
+    uint a_offset, b_offset, d_offset;
+    get_offsets(a_offset, b_offset, d_offset);
+
+    const uint num_blocks_per_row = p.ncols / QUANT_K;
+    const uint tid = gl_LocalInvocationID.x;
+
+    [[unroll]] for (uint j = 0; j < NUM_COLS; ++j) {
+        [[unroll]] for (uint i = 0; i < NUM_ROWS; ++i) {
+            temp[j][i] = FLOAT_TYPE(0);
+        }
+    }
+
+    for (uint nrow = 0; nrow < num_rows; ++nrow) {
+        const uint ib0 = a_offset + (first_row + nrow) * num_blocks_per_row;
+        for (uint jcol = 0; jcol < NUM_COLS; ++jcol) {
+            const uint b_base = (jcol * p.batch_stride_b);
+            for (uint i = tid/8; i < num_blocks_per_row; i += gl_WorkGroupSize.x/8) {
+                [[unroll]] for (uint g = 0; g < 2; ++g) {
+                    const FLOAT_TYPE d = FLOAT_TYPE(float(data_a[ib0 + i].d[g]));
+                    const uint gbase = i * QUANT_K + g * 128u;
+
+                    // elements 0..79: 16 bytes x 5 trits, element t*16 + m
+                    [[unroll]] for (uint m = tid%8; m < 16; m += 8) {
+                        const uint q_byte = uint(data_a[ib0 + i].qs[24u*g + m]);
+                        [[unroll]] for (uint t = 0; t < 5; ++t) {
+                            const uint xi = tq1_0_trit(q_byte, t);
+                            const FLOAT_TYPE w = d * (FLOAT_TYPE(xi) - FLOAT_TYPE(1));
+                            temp[jcol][nrow] += w * FLOAT_TYPE(data_b[b_base + b_offset + gbase + t * 16u + m]);
+                        }
+                    }
+
+                    // elements 80..119: 8 bytes x 5 trits, element 80 + t*8 + m
+                    {
+                        const uint m = tid%8;
+                        const uint q_byte = uint(data_a[ib0 + i].qs[24u*g + 16u + m]);
+                        [[unroll]] for (uint t = 0; t < 5; ++t) {
+                            const uint xi = tq1_0_trit(q_byte, t);
+                            const FLOAT_TYPE w = d * (FLOAT_TYPE(xi) - FLOAT_TYPE(1));
+                            temp[jcol][nrow] += w * FLOAT_TYPE(data_b[b_base + b_offset + gbase + 80u + t * 8u + m]);
+                        }
+                    }
+
+                    // elements 120..127: 2 bytes x 4 trits, element 120 + t*2 + j
+                    if (tid%8 < 2) {
+                        const uint j = tid%8;
+                        const uint qh_byte = uint(data_a[ib0 + i].qh[2u*g + j]);
+                        [[unroll]] for (uint t = 0; t < 4; ++t) {
+                            const uint xi = tq1_0_trit(qh_byte, t);
+                            const FLOAT_TYPE w = d * (FLOAT_TYPE(xi) - FLOAT_TYPE(1));
+                            temp[jcol][nrow] += w * FLOAT_TYPE(data_b[b_base + b_offset + gbase + 120u + t * 2u + j]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    reduce_result(temp, d_offset, first_row, num_rows, tid);
+}
+
+void main() {
+    const uint first_row = NUM_ROWS * (gl_WorkGroupID.x + gl_NumWorkGroups.x * gl_WorkGroupID.z);
+
+    if (first_row + NUM_ROWS <= p.stride_d) {
+        compute_outputs(first_row, NUM_ROWS);
+    } else {
+        if (first_row >= p.stride_d) {
+            return;
+        }
+        compute_outputs(first_row, p.stride_d - first_row);
+    }
+}

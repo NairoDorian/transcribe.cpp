@@ -81,6 +81,24 @@ if(BUILD_SHARED_LIBS)
 endif()
 
 # -----------------------------------------------------------------------------
+# Group-128 ternary type (GGML_TYPE_TQ1_G128) unit test
+# -----------------------------------------------------------------------------
+#
+# Lossless packing, the CPU dot kernel against an integer reference, and
+# MUL_MAT on every backend compiled into this build against a float
+# reference. parakeet-redux's encoder weights run on this type.
+
+add_executable(transcribe_ternary_tq1_g128_unit
+    ternary_tq1_g128_unit.cpp)
+
+target_link_libraries(transcribe_ternary_tq1_g128_unit PRIVATE ggml)
+
+transcribe_apply_warnings(transcribe_ternary_tq1_g128_unit)
+
+add_test(NAME transcribe_ternary_tq1_g128_unit
+    COMMAND transcribe_ternary_tq1_g128_unit)
+
+# -----------------------------------------------------------------------------
 # Backend classification unit test
 # -----------------------------------------------------------------------------
 #

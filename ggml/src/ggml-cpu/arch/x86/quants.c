@@ -1373,6 +1373,86 @@ void ggml_vec_dot_q8_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
     *s = sumf;
 }
 
+void ggml_vec_dot_tq1_g128_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+#if defined(__AVX2__)
+    const block_tq1_g128 * GGML_RESTRICT x = vx;
+    const block_q8_K     * GGML_RESTRICT y = vy;
+
+    const int nb = n / QK_K;
+
+    static const uint16_t pow3[5] = {1, 3, 9, 27, 81};
+    const __m256i mask8  = _mm256_set1_epi16(0xFF);
+    const __m256i three  = _mm256_set1_epi16(3);
+    const __m128i mask8s = _mm_set1_epi16(0xFF);
+    const __m128i threes = _mm_set1_epi16(3);
+
+    float sumf = 0.0f;
+
+    for (int i = 0; i < nb; ++i) {
+        float blk = 0.0f;
+        for (int g = 0; g < 2; ++g) {
+            const uint8_t * qs = x[i].qs + 24*g;
+            const uint8_t * qh = x[i].qh + 2*g;
+            const int8_t  * q8 = y[i].qs + 128*g;
+
+            // Sum of code * q over the group, codes in {0, 1, 2}.
+            __m256i acc = _mm256_setzero_si256();
+            __m128i accs = _mm_setzero_si128();
+
+            // elements 0..79: 16 bytes, trit l covers elements 16 l .. 16 l + 15
+            const __m256i qa = _mm256_cvtepu8_epi16(_mm_loadu_si128((const __m128i *) qs));
+            // elements 80..119: 8 bytes, trit l covers 80 + 8 l .. 80 + 8 l + 7
+            const __m128i qb = _mm_cvtepu8_epi16(_mm_loadl_epi64((const __m128i *) (qs + 16)));
+            for (int l = 0; l < 5; ++l) {
+                const __m256i p  = _mm256_set1_epi16((short) pow3[l]);
+                const __m256i ta = _mm256_and_si256(_mm256_mullo_epi16(qa, p), mask8);
+                const __m256i ca = _mm256_srli_epi16(_mm256_mullo_epi16(ta, three), 8);
+                const __m256i ya = _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i *) (q8 + 16*l)));
+                acc = _mm256_add_epi32(acc, _mm256_madd_epi16(ca, ya));
+
+                const __m128i ps = _mm_set1_epi16((short) pow3[l]);
+                const __m128i tb = _mm_and_si128(_mm_mullo_epi16(qb, ps), mask8s);
+                const __m128i cb = _mm_srli_epi16(_mm_mullo_epi16(tb, threes), 8);
+                const __m128i yb = _mm_cvtepi8_epi16(_mm_loadl_epi64((const __m128i *) (q8 + 80 + 8*l)));
+                accs = _mm_add_epi32(accs, _mm_madd_epi16(cb, yb));
+            }
+
+            __m128i s4 = _mm_add_epi32(_mm256_castsi256_si128(acc), _mm256_extracti128_si256(acc, 1));
+            s4 = _mm_add_epi32(s4, accs);
+            s4 = _mm_hadd_epi32(s4, s4);
+            s4 = _mm_hadd_epi32(s4, s4);
+            int sum = _mm_cvtsi128_si32(s4);
+
+            // elements 120..127: 2 bytes x 4 trits
+            for (int l = 0; l < 4; ++l) {
+                for (int j = 0; j < 2; ++j) {
+                    const uint8_t q = qh[j] * (uint8_t) pow3[l];
+                    sum += (((uint16_t) q * 3) >> 8) * q8[120 + j + 2*l];
+                }
+            }
+
+            // codes are weight + 1: subtract the group's activation sum
+            int qsum = 0;
+            for (int k = 0; k < 8; ++k) {
+                qsum += y[i].bsums[8*g + k];
+            }
+            blk += (float) (sum - qsum) * GGML_CPU_FP16_TO_FP32(x[i].d[g]);
+        }
+        sumf += blk * y[i].d;
+    }
+
+    *s = sumf;
+#else
+    ggml_vec_dot_tq1_g128_q8_K_generic(n, s, bs, vx, bx, vy, by, nrc);
+#endif
+}
+
 void ggml_vec_dot_tq1_0_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(nrc == 1);
     UNUSED(nrc);

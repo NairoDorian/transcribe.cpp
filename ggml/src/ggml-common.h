@@ -287,6 +287,22 @@ typedef struct {
 } block_tq2_0;
 static_assert(sizeof(block_tq2_0) == sizeof(ggml_half) + QK_K / 4, "wrong tq2_0 block size/padding");
 
+// 1.75 bpw: ternary codes {-1, 0, +1} with one fp16 scale per 128 weights
+// (moondream thrush-ternary-v2 and similar group-128 ternary checkpoints).
+// A block is two independent 128-weight groups; group g uses qs[24g..24g+23],
+// qh[2g..2g+1] and d[g]. Within a group the trits follow TQ1_0's layout scaled
+// by one half: 16 qs bytes x 5 trits (elements 0..79, stride 16), 8 qs bytes x
+// 5 trits (80..119, stride 8), 2 qh bytes x 4 trits (120..127, stride 2). A
+// byte holds its trits most-significant first, stored as ceil(v * 256 / 243)
+// so trit n decodes as ((uint8_t)(q * 3^n) * 3) >> 8, exactly like TQ1_0.
+#define QK_TQ1_G128 128
+typedef struct {
+    uint8_t   qs[48];                    // 24 per group
+    uint8_t   qh[4];                     //  2 per group
+    ggml_half d[QK_K/QK_TQ1_G128];       // one scale per group
+} block_tq1_g128;
+static_assert(sizeof(block_tq1_g128) == 2*sizeof(ggml_half) + 52, "wrong tq1_g128 block size/padding");
+
 //
 // Super-block quantization structures
 //

@@ -1156,6 +1156,16 @@ struct ggml_cuda_type_traits<GGML_TYPE_IQ4_NL> {
     static constexpr int bs = sizeof(block_iq4_nl);
 };
 
+// TQ1_G128 for MMVQ: eight 32-weight slices per 256-block, one per thread
+// (slice s lines up with the s-th Q8_1 block of the activation row).
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_TQ1_G128> {
+    static constexpr int qk = QK_K;
+    static constexpr int qr = 1;
+    static constexpr int qi = QK_K/32;
+    static constexpr int bs = sizeof(block_tq1_g128);
+};
+
 template<>
 struct ggml_cuda_type_traits<GGML_TYPE_IQ4_XS> {
     static constexpr int qk = QK_K;

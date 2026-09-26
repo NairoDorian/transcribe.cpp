@@ -181,12 +181,32 @@ ggml types it will accept for each bucket. Post-unification, these are
 shared constants:
 
 - `transcribe::weights::kQuantLinearTypes` — F32, F16, BF16, Q4_0/1,
-  Q5_0/1, Q8_0, Q4_K, Q5_K, Q6_K.
+  Q5_0/1, Q8_0, Q4_K, Q5_K, Q6_K, TQ1_G128.
 - `transcribe::weights::kQuantConvTypes` — F32, F16.
 
 Every family must accept the full allowlist. A family that can't (e.g.
 because a specific op is missing on a backend) is a bug, not a policy
 difference.
+
+## Native ternary weights (TQ1_G128)
+
+`GGML_TYPE_TQ1_G128` (ggml id 96, downstream patch
+`patches/ggml/0003-tq1_g128-ternary.patch`) stores weights trained as
+ternary {−1, 0, +1} with one fp16 scale per 128 weights — 1.75 bits/weight,
+lossless for checkpoints in that format (first user: parakeet-redux; see
+`docs/models/parakeet-redux-0.6b.quantization.md` for the block layout).
+
+- It is not a preset. Converters write it directly from the checkpoint's
+  ternary codes; `transcribe-quantize` never produces it from float weights
+  and passes existing TQ1_G128 tensors through byte-for-byte under every
+  preset, re-typing only the dense tensors.
+- Kernels: CPU (generic, AVX2, NEON), CUDA (mat-vec + dequant/cuBLAS),
+  Vulkan (mat-vec, tiled mat-mul incl. coopmat2, dequant, get_rows). Metal
+  has no kernel; the scheduler runs those matmuls on the CPU backend.
+- Rows must be a multiple of 256 weights. Conformer pointwise kernels in this
+  type are stored 2-D and always take the direct `mul_mat` path.
+- Tests: `tests/ternary_tq1_g128_unit.cpp`, `ggml/tests/test-backend-ops`
+  (type registered), `scripts/lib/test_ternary.py` (Python packer).
 
 ## Presets roadmap
 

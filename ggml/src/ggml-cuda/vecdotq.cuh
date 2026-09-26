@@ -1351,6 +1351,51 @@ static __device__ __forceinline__ float vec_dot_iq4_nl_q8_1(
     return d * sumi;
 }
 
+// TQ1_G128: code (0, 1, 2) of element l (0..127) of group g.
+static __device__ __forceinline__ int tq1_g128_code(const block_tq1_g128 * b, const int g, const int l) {
+    uint8_t byte;
+    int     n;
+    if (l < 80) {
+        byte = b->qs[24*g + (l & 15)];
+        n    = l >> 4;
+    } else if (l < 120) {
+        byte = b->qs[24*g + 16 + ((l - 80) & 7)];
+        n    = (l - 80) >> 3;
+    } else {
+        byte = b->qh[2*g + ((l - 120) & 1)];
+        n    = (l - 120) >> 1;
+    }
+    const uint8_t pow3 = n == 0 ? 1 : n == 1 ? 3 : n == 2 ? 9 : n == 3 ? 27 : 81;
+    const uint8_t q    = (uint8_t) (byte * pow3);
+    return ((uint16_t) q * 3) >> 8;
+}
+
+#define VDR_TQ1_G128_Q8_1_MMVQ 1
+
+// iqs in [0, 8): 32-weight slice of the 256-block, matching Q8_1 block iqs.
+static __device__ __forceinline__ float vec_dot_tq1_g128_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+
+    const block_tq1_g128 * bq = (const block_tq1_g128 *) vbq + kbx;
+
+    const int g  = iqs >> 2;          // 4 slices per 128-weight group
+    const int l0 = (iqs & 3) * 32;    // first element of the slice in the group
+
+    int sumi = 0;
+#pragma unroll
+    for (int k = 0; k < 8; ++k) {
+        int w = 0;
+#pragma unroll
+        for (int b = 0; b < 4; ++b) {
+            const int c = tq1_g128_code(bq, g, l0 + 4*k + b) - 1;   // -1, 0, +1
+            w |= (c & 0xFF) << (8*b);
+        }
+        sumi = ggml_cuda_dp4a(w, get_int_b4(bq8_1[iqs].qs, k), sumi);
+    }
+
+    return __half2float(bq->d[g]) * __low2float(bq8_1[iqs].ds) * sumi;
+}
+
 #define VDR_IQ4_XS_Q8_1_MMVQ 4
 #define VDR_IQ4_XS_Q8_1_MMQ  4
 

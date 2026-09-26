@@ -338,6 +338,41 @@ uint tq1_0_trit(uint qbyte, uint t) {
 #define DATA_A_QUANT_K
 #endif
 
+#define QUANT_K_TQ1_G128 256
+
+// TQ1_G128: two 128-weight groups per block, one fp16 scale each. Group g
+// uses qs[24g..24g+23], qh[2g..2g+1], d[g]; inside a group the trits follow
+// TQ1_0's stripes at half size (16 x 5, 8 x 5, 2 x 4). Decoded with
+// tq1_0_trit() like TQ1_0.
+struct block_tq1_g128
+{
+    uint8_t qs[48];
+    uint8_t qh[4];
+    float16_t d[2];
+};
+
+// Element e in [0,255] -> packed byte (0..47 qs, 48..51 qh) and trit index.
+uint tq1_g128_byte_of(uint e) {
+    const uint g = e >> 7u;
+    const uint l = e & 127u;
+    return l < 80u  ? 24u*g + (l % 16u)
+         : l < 120u ? 24u*g + 16u + ((l - 80u) % 8u)
+         : 48u + 2u*g + ((l - 120u) % 2u);
+}
+uint tq1_g128_digit_of(uint e) {
+    const uint l = e & 127u;
+    return l < 80u  ? (l / 16u)
+         : l < 120u ? ((l - 80u) / 8u)
+         : ((l - 120u) / 2u);
+}
+
+#if defined(DATA_A_TQ1_G128)
+#define QUANT_K QUANT_K_TQ1_G128
+#define QUANT_R 1
+#define A_TYPE block_tq1_g128
+#define DATA_A_QUANT_K
+#endif
+
 #define QUANT_K_TQ2_0 256
 
 // ternary (BitNet): 2-bit codes, w = (q - 1) * d; qs layout matches q2_K's

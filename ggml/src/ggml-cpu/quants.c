@@ -104,6 +104,12 @@ void quantize_row_q6_K(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, i
 
 // ====================== Ternary (de)-quantization (BitNet b1.58 and TriLMs)
 
+void quantize_row_tq1_g128(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
+    assert(k % QK_K == 0);
+    block_tq1_g128 * GGML_RESTRICT y = vy;
+    quantize_row_tq1_g128_ref(x, y, k);
+}
+
 void quantize_row_tq1_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
     assert(k % QK_K == 0);
     block_tq1_0 * GGML_RESTRICT y = vy;
@@ -525,6 +531,53 @@ void ggml_vec_dot_tq1_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, 
         }
 
         sumf += (float) sum * (GGML_CPU_FP16_TO_FP32(x[i].d) * y[i].d);
+    }
+
+    *s = sumf;
+}
+
+void ggml_vec_dot_tq1_g128_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    const block_tq1_g128 * GGML_RESTRICT x = vx;
+    const block_q8_K     * GGML_RESTRICT y = vy;
+
+    const int nb = n / QK_K;
+
+    const uint8_t pow3[5] = {1, 3, 9, 27, 81};
+
+    float sumf = 0.0f;
+
+    for (int i = 0; i < nb; ++i) {
+        float blk = 0.0f;
+        for (int g = 0; g < 2; ++g) {
+            const uint8_t * qs = x[i].qs + 24*g;
+            const uint8_t * qh = x[i].qh + 2*g;
+            const int8_t  * q8 = y[i].qs + 128*g;
+            int sum = 0;
+            for (int l = 0; l < 5; ++l) {
+                for (int m = 0; m < 16; ++m) {
+                    const uint8_t q = qs[m] * pow3[l];
+                    sum += ((((uint16_t) q * 3) >> 8) - 1) * q8[m + 16*l];
+                }
+                for (int m = 0; m < 8; ++m) {
+                    const uint8_t q = qs[16 + m] * pow3[l];
+                    sum += ((((uint16_t) q * 3) >> 8) - 1) * q8[80 + m + 8*l];
+                }
+            }
+            for (int l = 0; l < 4; ++l) {
+                for (int j = 0; j < 2; ++j) {
+                    const uint8_t q = qh[j] * pow3[l];
+                    sum += ((((uint16_t) q * 3) >> 8) - 1) * q8[120 + j + 2*l];
+                }
+            }
+            blk += (float) sum * GGML_CPU_FP16_TO_FP32(x[i].d[g]);
+        }
+        sumf += blk * y[i].d;
     }
 
     *s = sumf;

@@ -732,6 +732,25 @@ constexpr const char * kTag = kFamilyTag;
         (slot) = _t;                                                                                             \
     } while (0)
 
+// Pointwise (k=1) conv kernels. Dense kernels keep NeMo's conv1d shape
+// [1, in, out]; a quantized kernel (e.g. parakeet-redux's ternary
+// TQ1_G128) is stored 2-D [in, out] because quant blocks run along ne[0].
+// conformer::conv_module reshapes both to [in, out] and routes quantized
+// kernels to the direct mul_mat path.
+#define GET_PW(slot, name, in, out)                                                                              \
+    do {                                                                                                         \
+        const char *  _n = (name);                                                                               \
+        ggml_tensor * _p = ggml_get_tensor(ctx_meta, _n);                                                        \
+        ggml_tensor * _t = (_p != nullptr && ggml_is_quantized(_p->type)) ?                                      \
+                               transcribe::weights::find_tensor(ctx_meta, _n, { TRANSCRIBE_QUANT_LINEAR_TYPES }, \
+                                                                { (in), (out) }, kTag) :                         \
+                               transcribe::weights::find_tensor(ctx_meta, _n, { TRANSCRIBE_QUANT_CONV_TYPES },   \
+                                                                { 1, (in), (out) }, kTag);                       \
+        if (_t == nullptr)                                                                                       \
+            return TRANSCRIBE_ERR_GGUF;                                                                          \
+        (slot) = _t;                                                                                             \
+    } while (0)
+
 }  // namespace
 
 transcribe_status build_parakeet_weights(ggml_context *          ctx_meta,
@@ -822,9 +841,9 @@ transcribe_status build_parakeet_weights(ggml_context *          ctx_meta,
         // back to d_model.
         GET_F32(b.norm_conv_w, lname("enc.blocks.%d.norm_conv.weight", i), d_model);
         GET_F32(b.norm_conv_b, lname("enc.blocks.%d.norm_conv.bias", i), d_model);
-        GET_CONV(b.conv_pw1_w, lname("enc.blocks.%d.conv.pointwise1.weight", i), 1, d_model, 2 * d_model);
+        GET_PW(b.conv_pw1_w, lname("enc.blocks.%d.conv.pointwise1.weight", i), d_model, 2 * d_model);
         GET_CONV(b.conv_dw_w, lname("enc.blocks.%d.conv.depthwise.weight", i), k, 1, d_model);
-        GET_CONV(b.conv_pw2_w, lname("enc.blocks.%d.conv.pointwise2.weight", i), 1, d_model, d_model);
+        GET_PW(b.conv_pw2_w, lname("enc.blocks.%d.conv.pointwise2.weight", i), d_model, d_model);
         GET_F32(b.conv_bn_w, lname("enc.blocks.%d.conv.bn.weight", i), d_model);
         GET_F32(b.conv_bn_b, lname("enc.blocks.%d.conv.bn.bias", i), d_model);
         if (hp.enc_conv_norm_type == ParakeetHParams::ConvNormType::BatchNorm) {

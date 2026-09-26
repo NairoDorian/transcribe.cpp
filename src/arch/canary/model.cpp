@@ -22,6 +22,7 @@
 #include "transcribe-log.h"
 #include "transcribe-mel.h"
 #include "transcribe-meta.h"
+#include "transcribe-repetition-guard.h"
 #include "weights.h"
 
 #include <algorithm>
@@ -1208,6 +1209,7 @@ transcribe_status run(transcribe_session *          session,
         const bool primary_is_gpu = cm->plan.primary_kind != transcribe::BackendKind::Cpu &&
                                     cm->plan.primary_kind != transcribe::BackendKind::Accel &&
                                     cm->plan.primary_kind != transcribe::BackendKind::Unknown;
+        bool       repeating      = false;
 
         if (primary_is_gpu) {
             // Static-graph step path (GPU). max_n_kv: pad to next power of two
@@ -1298,6 +1300,11 @@ transcribe_status run(transcribe_session *          session,
 
                 if (next_token != eos_id) {
                     generated_ids.push_back(next_token);
+                    if (transcribe::stop_on_repetition(generated_ids, "canary run")) {
+                        cc->mark_repetition_stop();
+                        repeating = true;
+                        break;
+                    }
                 }
             }
         } else {
@@ -1373,6 +1380,11 @@ transcribe_status run(transcribe_session *          session,
 
                 if (next_token != eos_id) {
                     generated_ids.push_back(next_token);
+                    if (transcribe::stop_on_repetition(generated_ids, "canary run")) {
+                        cc->mark_repetition_stop();
+                        repeating = true;
+                        break;
+                    }
                 }
             }
         }
@@ -1381,13 +1393,15 @@ transcribe_status run(transcribe_session *          session,
         // KV-full / a compute break without end-of-stream: flag truncation and
         // WARN rather than silently shortening. (Abort paths return early and
         // intentionally do NOT set the flag — abort is not a length truncation.)
-        if (next_token != eos_id) {
+        // A repetition stop has already flagged and logged itself.
+        if (!repeating && next_token != eos_id) {
             cc->was_truncated = true;
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_WARN,
                                 "canary run: output truncated at %d tokens — decode reached the "
                                 "generation budget / decoder context (%d) before end-of-stream; "
                                 "the transcript may be incomplete.",
                                 static_cast<int>(generated_ids.size()), cc->kv_cache.n_ctx);
+            transcribe::trim_repetition_at_budget_stop(generated_ids, "canary run");
         }
 
         commit_result();
@@ -1399,7 +1413,7 @@ transcribe_status run(transcribe_session *          session,
 
     // Partial transcript committed above; a truncated decode returns the hard
     // OUTPUT_TRUNCATED status (the result stays readable, like an aborted run).
-    return cc->was_truncated ? TRANSCRIBE_ERR_OUTPUT_TRUNCATED : TRANSCRIBE_OK;
+    return cc->truncation_status();
 }
 
 // ===========================================================================
@@ -1514,21 +1528,8 @@ transcribe_status run_batch_serial(CanarySession *               cc,
                                    const int *                   n_samples,
                                    int                           n,
                                    const transcribe_run_params * params) {
-    for (int i = 0; i < n; ++i) {
-        if (cc->poll_abort()) {
-            return TRANSCRIBE_ERR_ABORTED;
-        }
-        const transcribe_status st = (pcm[i] == nullptr || n_samples[i] <= 0) ? TRANSCRIBE_ERR_INVALID_ARG :
-                                                                                run(cc, pcm[i], n_samples[i], params);
-        if (st == TRANSCRIBE_OK) {
-            cc->batch_results.push_back(cc->capture_result(st));
-        } else {
-            transcribe_session::ResultSet rs;
-            rs.status = st;
-            cc->batch_results.push_back(std::move(rs));
-        }
-    }
-    return TRANSCRIBE_OK;
+    return transcribe::run_batch_serial(cc, pcm, n_samples, n,
+                                        [&](const float * p, int ns) { return run(cc, p, ns, params); });
 }
 
 transcribe_status run_batch(transcribe_session *          session,
@@ -1840,11 +1841,12 @@ transcribe_status run_batch(transcribe_session *          session,
         rs.status      = TRANSCRIBE_OK;
         // Per-utterance truncation parity with the single-shot path: a valid row
         // that hit the generation budget / context window before eos reports
-        // TRANSCRIBE_ERR_OUTPUT_TRUNCATED (partial transcript retained). Only
-        // override an otherwise-OK status — never a worse one.
+        // TRANSCRIBE_ERR_OUTPUT_TRUNCATED, and one the repetition guard stopped
+        // reports TRANSCRIBE_ERR_OUTPUT_REPETITION (partial transcript retained
+        // either way). Only override an otherwise-OK status — never a worse one.
         if (rs.status == TRANSCRIBE_OK && b < static_cast<int>(truncated.size()) && truncated[b]) {
             cc->was_truncated = true;
-            rs.status         = TRANSCRIBE_ERR_OUTPUT_TRUNCATED;
+            rs.status         = transcribe::decode_stop_status(truncated[b]);
         }
         rs.t_mel_us    = mel_us / valid_count;
         rs.t_encode_us = enc_us / valid_count;

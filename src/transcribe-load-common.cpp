@@ -132,7 +132,7 @@ ggml_backend_buffer_t alloc_cpu_repack_weights(const BackendPlan & plan,
         bytes += ggml_nbytes(t);
     }
     if (n_kept == 0) {
-        ggml_backend_buffer_free(buf);
+        safe_buffer_free(buf);
         return nullptr;
     }
     ggml_backend_buffer_set_usage(buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);

@@ -39,6 +39,7 @@ from .errors import (
     ModelLoadError,
     NotImplementedByModel,
     OutOfMemory,
+    OutputRepetition,
     OutputTruncated,
     TranscribeError,
     UnsupportedRequest,
@@ -108,6 +109,7 @@ __all__ = [
     "Aborted",
     "InputTooLong",
     "OutputTruncated",
+    "OutputRepetition",
     "native_version",
     "native_commit",
     "library_path",
@@ -1112,9 +1114,9 @@ class Session:
         capabilities advertise ``supports_spec_decode`` (-1 = family default,
         0 = disabled, >0 = draft length; silently ignored elsewhere).
 
-        On ``Aborted`` (via :meth:`cancel`) and ``OutputTruncated`` the
-        partial transcript is preserved and attached to the exception as
-        ``partial_result``."""
+        On ``Aborted`` (via :meth:`cancel`) and ``OutputTruncated`` (including
+        its ``OutputRepetition`` subclass) the partial transcript is preserved
+        and attached to the exception as ``partial_result``."""
         self._cancel.clear()
         array, n_samples = _pcm_to_carray(pcm)
         params = _build_run_params(task, language, target_language, timestamps,
@@ -1128,7 +1130,8 @@ class Session:
                    "transcribe_run")
         except (Aborted, OutputTruncated) as exc:
             # The C API preserves the partial transcript on the session for
-            # exactly these two statuses; surface it rather than discard it.
+            # these statuses (OutputRepetition included, as an OutputTruncated
+            # subclass); surface it rather than discard it.
             exc.partial_result = self._materialize()
             raise
         return self._materialize()

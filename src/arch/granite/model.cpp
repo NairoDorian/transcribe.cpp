@@ -20,6 +20,7 @@
 #include "transcribe-log.h"
 #include "transcribe-mel.h"
 #include "transcribe-meta.h"
+#include "transcribe-repetition-guard.h"
 #include "weights.h"
 
 #include <algorithm>
@@ -1261,11 +1262,17 @@ transcribe_status run(transcribe_session *          ctx_base,
     // valid positions get zeroed per step.
     std::vector<uint16_t> step_mask(max_n_kv, 0xFC00);
 
+    bool repeating = false;
     for (int step_i = 0; step_i < max_steps; ++step_i) {
         if (next_id == eos_id) {
             break;
         }
         gen_ids.push_back(next_id);
+        if (transcribe::stop_on_repetition(gen_ids, "granite run")) {
+            cc->mark_repetition_stop();
+            repeating = true;
+            break;
+        }
 
         const int32_t pos      = T_prompt + step_i;  // RoPE position
         const int64_t kv_idx   = pos;                // KV write row
@@ -1302,14 +1309,15 @@ transcribe_status run(transcribe_session *          ctx_base,
     // The decode stopped either at EOS (complete) or at the generation
     // budget / context ceiling (truncated). Surface the latter via
     // transcribe_was_truncated() and a WARN rather than handing back a
-    // silently shortened transcript.
-    if (next_id != eos_id) {
+    // silently shortened transcript; a repetition stop has already done both.
+    if (!repeating && next_id != eos_id) {
         cc->was_truncated = true;
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_WARN,
                             "granite run: output truncated at %d tokens — decode reached the "
                             "generation budget before end-of-stream; the transcript may be "
                             "incomplete.",
                             static_cast<int>(gen_ids.size()));
+        transcribe::trim_repetition_at_budget_stop(gen_ids, "granite run");
     }
 
     // Detokenize.
@@ -1326,7 +1334,7 @@ transcribe_status run(transcribe_session *          ctx_base,
     // caller can distinguish a complete transcript from one cut short. The
     // partial transcript is still attached above for inspection.
     cleanup_gpu();
-    return cc->was_truncated ? TRANSCRIBE_ERR_OUTPUT_TRUNCATED : TRANSCRIBE_OK;
+    return cc->truncation_status();
 }
 
 // Offline batched decode (transcribe_run_batch). Serial mel + Conformer
@@ -1479,21 +1487,8 @@ transcribe_status run_batch_serial(GraniteSession *              cc,
                                    const int *                   n_samples,
                                    int                           n,
                                    const transcribe_run_params * params) {
-    for (int i = 0; i < n; ++i) {
-        if (cc->poll_abort()) {
-            return TRANSCRIBE_ERR_ABORTED;
-        }
-        const transcribe_status st = (pcm[i] == nullptr || n_samples[i] <= 0) ? TRANSCRIBE_ERR_INVALID_ARG :
-                                                                                run(cc, pcm[i], n_samples[i], params);
-        if (st == TRANSCRIBE_OK) {
-            cc->batch_results.push_back(cc->capture_result(st));
-        } else {
-            transcribe_session::ResultSet rs;
-            rs.status = st;
-            cc->batch_results.push_back(std::move(rs));
-        }
-    }
-    return TRANSCRIBE_OK;
+    return transcribe::run_batch_serial(cc, pcm, n_samples, n,
+                                        [&](const float * p, int ns) { return run(cc, p, ns, params); });
 }
 
 }  // namespace
@@ -1838,11 +1833,12 @@ transcribe_status run_batch(transcribe_session *          session,
         finalize_granite_result(cm, params, transcript, audio_ms, rs);
         // Per-utterance truncation parity with single-shot run(): a row cut at
         // the generation budget / KV window before eos reports
-        // TRANSCRIBE_ERR_OUTPUT_TRUNCATED (partial transcript retained). Only
-        // override a TRANSCRIBE_OK status, never a worse one.
+        // TRANSCRIBE_ERR_OUTPUT_TRUNCATED, and one the repetition guard stopped
+        // reports TRANSCRIBE_ERR_OUTPUT_REPETITION (partial transcript retained
+        // either way). Only override a TRANSCRIBE_OK status, never a worse one.
         if (b < static_cast<int>(truncated.size()) && truncated[b] && rs.status == TRANSCRIBE_OK) {
             cc->was_truncated = true;
-            rs.status         = TRANSCRIBE_ERR_OUTPUT_TRUNCATED;
+            rs.status         = transcribe::decode_stop_status(truncated[b]);
         }
         rs.t_mel_us    = mel_us / valid_count;
         rs.t_encode_us = enc_us / valid_count;

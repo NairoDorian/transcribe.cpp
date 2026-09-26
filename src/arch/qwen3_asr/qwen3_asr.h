@@ -77,6 +77,7 @@ const char * bcp47_for_publisher_name(const std::string & name);
 struct DecodePassResult {
     std::string          raw_text;
     bool                 truncated   = false;
+    bool                 repeating   = false;
     int                  n_generated = 0;
     // The generated token ids, trailing EOS stripped — the same sequence
     // `raw_text` was decoded from. Diagnostic (the streaming trace hook);

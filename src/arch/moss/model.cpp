@@ -24,6 +24,7 @@
 #include "transcribe-log.h"
 #include "transcribe-mel.h"
 #include "transcribe-meta.h"
+#include "transcribe-repetition-guard.h"
 #include "weights.h"
 
 #include <algorithm>
@@ -944,6 +945,7 @@ transcribe_status run(transcribe_session *          session,
         per_step_us.reserve(512);
     }
 
+    bool repeating = false;
     while (next_tok != eos_id && static_cast<int32_t>(generated_ids.size()) < gen_budget && cur_past + 1 <= max_n_kv) {
         const int64_t t_i0 = perf_debug ? ggml_time_us() : 0;
         ggml_backend_tensor_set(sb.input_id_in, &next_tok, 0, sizeof(int32_t));
@@ -993,16 +995,22 @@ transcribe_status run(transcribe_session *          session,
         cur_past += 1;
         cc->kv_cache.n    = cur_past + 1;
         cc->kv_cache.head = cur_past + 1;
+        if (next_tok != eos_id && transcribe::stop_on_repetition(generated_ids, "moss run")) {
+            cc->mark_repetition_stop();
+            repeating = true;
+            break;
+        }
         if (cc->poll_abort()) {
             cleanup_gpu();
             return TRANSCRIBE_ERR_ABORTED;
         }
     }
 
-    if (next_tok != eos_id) {
+    if (!repeating && next_tok != eos_id) {
         cc->was_truncated = true;
         log_msg(TRANSCRIBE_LOG_LEVEL_WARN, "moss run: output truncated at %d tokens",
                 static_cast<int>(generated_ids.size()));
+        transcribe::trim_repetition_at_budget_stop(generated_ids, "moss run");
     }
     if (!generated_ids.empty() && generated_ids.back() == eos_id) {
         generated_ids.pop_back();
@@ -1049,7 +1057,7 @@ transcribe_status run(transcribe_session *          session,
     cc->has_result = true;
 
     cleanup_gpu();
-    return cc->was_truncated ? TRANSCRIBE_ERR_OUTPUT_TRUNCATED : TRANSCRIBE_OK;
+    return cc->truncation_status();
 }
 
 // ---------------------------------------------------------------------------
@@ -1079,30 +1087,8 @@ transcribe_status run_batch_serial(MossSession *                 cc,
                                    const int *                   n_samples,
                                    int                           n,
                                    const transcribe_run_params * params) {
-    bool any_truncated = false;
-    for (int i = 0; i < n; ++i) {
-        if (cc->poll_abort()) {
-            return TRANSCRIBE_ERR_ABORTED;
-        }
-        cc->clear_result();
-        cc->t_mel_us      = 0;
-        cc->t_encode_us   = 0;
-        cc->t_decode_us   = 0;
-        cc->was_truncated = false;
-
-        const transcribe_status st = (pcm[i] == nullptr || n_samples[i] <= 0) ? TRANSCRIBE_ERR_INVALID_ARG :
-                                                                                run(cc, pcm[i], n_samples[i], params);
-        any_truncated              = any_truncated || st == TRANSCRIBE_ERR_OUTPUT_TRUNCATED;
-        if (st == TRANSCRIBE_OK || cc->has_result) {
-            cc->batch_results.push_back(cc->capture_result(st));
-        } else {
-            transcribe_session::ResultSet rs;
-            rs.status = st;
-            cc->batch_results.push_back(std::move(rs));
-        }
-    }
-    cc->was_truncated = any_truncated;
-    return TRANSCRIBE_OK;
+    return transcribe::run_batch_serial(cc, pcm, n_samples, n,
+                                        [&](const float * p, int ns) { return run(cc, p, ns, params); });
 }
 
 transcribe_status run_batch(transcribe_session *          session,
@@ -1366,7 +1352,7 @@ transcribe_status run_batch(transcribe_session *          session,
         transcribe_session::ResultSet rs = finalize_utterance(cm, params, generated[b], n_samples[b]);
         if (b < static_cast<int>(truncated.size()) && truncated[b]) {
             cc->was_truncated = true;
-            rs.status         = TRANSCRIBE_ERR_OUTPUT_TRUNCATED;
+            rs.status         = transcribe::decode_stop_status(truncated[b]);
         }
         cc->batch_results.push_back(std::move(rs));
     }

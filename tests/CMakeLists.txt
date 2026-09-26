@@ -281,6 +281,21 @@ transcribe_apply_warnings(transcribe_decode_budget_unit)
 add_test(NAME transcribe_decode_budget_unit COMMAND transcribe_decode_budget_unit)
 
 # -----------------------------------------------------------------------------
+# Greedy-decode repetition guard (pure host, no model)
+
+add_executable(transcribe_repetition_guard_unit
+    repetition_guard_unit.cpp)
+
+target_link_libraries(transcribe_repetition_guard_unit PRIVATE transcribe ggml)
+
+target_include_directories(transcribe_repetition_guard_unit PRIVATE
+    ${CMAKE_SOURCE_DIR}/src)
+
+transcribe_apply_warnings(transcribe_repetition_guard_unit)
+
+add_test(NAME transcribe_repetition_guard_unit COMMAND transcribe_repetition_guard_unit)
+
+# -----------------------------------------------------------------------------
 # MOSS diarized-transcript parser unit test (pure host, no model)
 # -----------------------------------------------------------------------------
 
@@ -347,7 +362,7 @@ add_test(NAME transcribe_conv_pw_promote_unit
 add_executable(transcribe_run_dispatch_unit
     run_dispatch_unit.cpp)
 
-target_link_libraries(transcribe_run_dispatch_unit PRIVATE transcribe)
+target_link_libraries(transcribe_run_dispatch_unit PRIVATE transcribe ggml)
 
 target_include_directories(transcribe_run_dispatch_unit PRIVATE
     ${CMAKE_SOURCE_DIR}/src)

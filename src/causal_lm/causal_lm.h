@@ -371,12 +371,17 @@ struct StepLoopStats {
 };
 
 // Run the lockstep batched greedy decode. Each row steps until it emits
-// `eos_id`, accumulates `max_new` generated tokens, or fills the KV window;
+// `eos_id`, starts repeating (transcribe-repetition-guard.h), accumulates
+// `max_new` generated tokens, or fills the KV window;
 // each emitted token is appended to generated[b]. Finished / invalid rows keep
 // stepping into their own KV slab (a no-op for live rows). Polls
 // session->poll_abort() once per step. The step graph must already be built
 // and allocated on `sched`. Returns TRANSCRIBE_ERR_ABORTED on abort,
 // TRANSCRIBE_ERR_GGUF on a compute failure, else TRANSCRIBE_OK.
+//
+// stop_out (if non-null) receives each row's transcribe::DecodeStop, as
+// in run_batched_encdec_step_loop; a budget-stopped row has its repeating tail
+// trimmed.
 transcribe_status run_batched_step_loop(transcribe_session *                session,
                                         ggml_backend_sched_t                sched,
                                         const StepBatchedIO &               io,
@@ -386,7 +391,7 @@ transcribe_status run_batched_step_loop(transcribe_session *                sess
                                         int                                 max_new,
                                         const StepBatchedState &            state,
                                         std::vector<std::vector<int32_t>> & generated,
-                                        StepLoopStats *                     stats         = nullptr,
-                                        std::vector<char> *                 truncated_out = nullptr);
+                                        StepLoopStats *                     stats    = nullptr,
+                                        std::vector<char> *                 stop_out = nullptr);
 
 }  // namespace transcribe::causal_lm

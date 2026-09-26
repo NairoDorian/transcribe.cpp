@@ -14,9 +14,10 @@ were trained on and warn when you cross it. Whatever the bucket, the library
 never truncates silently: an over-length input is rejected up front with
 `TRANSCRIBE_ERR_INPUT_TOO_LONG`; a transcript that runs into the context or
 generation budget mid-decode returns the hard status
-`TRANSCRIBE_ERR_OUTPUT_TRUNCATED` (with the partial transcript still readable
-and `transcribe_was_truncated()` set); and a soft-window family logs a `WARN`
-and proceeds. Every model reports its usable limit through
+`TRANSCRIBE_ERR_OUTPUT_TRUNCATED`, and one stopped because the output began
+looping returns `TRANSCRIBE_ERR_OUTPUT_REPETITION` (both with the partial
+transcript still readable and `transcribe_was_truncated()` set); and a
+soft-window family logs a `WARN` and proceeds. Every model reports its usable limit through
 `transcribe_capabilities::max_audio_ms` (or, per-session,
 `transcribe_session_get_limits()`) so you can check before you call. (Streaming
 is the one exception to the non-OK truncation rule — see below.)
@@ -100,6 +101,12 @@ more likely. For `canary` and `cohere`, input and output have separate encoder
 and decoder limits; `max_audio_ms` reports the encoder limit, not a recommended
 chunk size.
 
+A greedy decode can also fall into repeating one phrase until the budget runs
+out. The greedy families (`canary`, `canary_qwen`, `cohere`, `funasr_nano`,
+`granite`, `moonshine`, `moonshine_streaming`, `moss`, `qwen3_asr`, `voxtral`)
+have some protection against this, so that you don't infinitely decode
+on sequences which are identical and are obviously looping
+
 ### 3. Soft window — warn and proceed
 
 | Families | Window | Behavior |
@@ -167,12 +174,13 @@ with `TRANSCRIBE_ERR_INPUT_TOO_LONG` (one-shot and batch) or surfaced via
 | Input within limit and decode completes | `TRANSCRIBE_OK` | — | full transcript |
 | Over-length, hard-cap family | `TRANSCRIBE_ERR_INPUT_TOO_LONG` | `ERROR` via callback | no transcript (rejected before the decode) |
 | Generation ran long mid-decode | `TRANSCRIBE_ERR_OUTPUT_TRUNCATED` | `WARN` via callback | partial transcript readable; `transcribe_was_truncated() == true` |
+| Greedy decode started repeating | `TRANSCRIBE_ERR_OUTPUT_REPETITION` | `WARN` via callback | partial transcript readable, repeats dropped; `transcribe_was_truncated() == true` |
 | Over-window, soft-window family | `TRANSCRIBE_OK` | `WARN` via callback | full transcript (accuracy may be degraded) |
 | Chunked / unbounded family | `TRANSCRIBE_OK` | — | full transcript |
 | Cache/graph allocation failed | `TRANSCRIBE_ERR_OOM` | `ERROR` via callback | no transcript (no silent context shrink) |
 
-In `transcribe_run_batch`, `INPUT_TOO_LONG` and `OUTPUT_TRUNCATED` are
-per-utterance statuses (`transcribe_batch_status(session, i)`); the whole-batch
+In `transcribe_run_batch`, `INPUT_TOO_LONG`, `OUTPUT_TRUNCATED`, and
+`OUTPUT_REPETITION` are per-utterance statuses (`transcribe_batch_status(session, i)`); the whole-batch
 call returns `TRANSCRIBE_OK`.
 
 `transcribe_was_truncated(session)` is reset at the top of every
@@ -181,8 +189,8 @@ lifecycle as `transcribe_was_aborted`).
 
 ## Streaming is the exception
 
-`TRANSCRIBE_ERR_OUTPUT_TRUNCATED` is an **offline-only** status
-(`transcribe_run` / `transcribe_run_batch`). An active stream is incremental
+`TRANSCRIBE_ERR_OUTPUT_TRUNCATED` and `TRANSCRIBE_ERR_OUTPUT_REPETITION` are
+**offline-only** statuses (`transcribe_run` / `transcribe_run_batch`). An active stream is incremental
 and has its own terminal-state machine (`transcribe_stream_*`,
 IDLE/ACTIVE/FINISHED/FAILED), and `stream_feed` / `stream_finalize` return the
 status of *that step*, not a verdict on the whole transcript. So when a

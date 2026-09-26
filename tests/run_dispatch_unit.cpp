@@ -1,6 +1,7 @@
 // run_dispatch_unit.cpp - dispatcher-level transcribe_run behavior tests.
 
 #include "transcribe-arch.h"
+#include "transcribe-batch-util.h"
 #include "transcribe-model.h"
 #include "transcribe-session.h"
 #include "transcribe.h"
@@ -508,8 +509,118 @@ void test_release_scratch_after_run_and_batch() {
     g_run_throw = false;
 }
 
+// ---------------------------------------------------------------------------
+// Serial batch fallback truncation: one truncated or repetition-stopped
+// utterance must not mark the rest (the flags are per-run state), and its
+// partial transcript must survive. fake_family_run derives its status from the
+// session flags, as every autoregressive family's run() does.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+transcribe_status fake_family_run(transcribe_session *          session,
+                                  const float *                 pcm,
+                                  int                           n_samples,
+                                  const transcribe_run_params * params) {
+    (void) n_samples;
+    (void) params;
+    const bool repeat   = pcm[0] > 1.5f;
+    const bool truncate = pcm[0] > 0.5f && !repeat;
+    session->clear_result();
+    session->full_text  = repeat ? "looped" : truncate ? "partial" : "complete";
+    session->has_result = true;
+    if (repeat) {
+        session->mark_repetition_stop();
+    } else if (truncate) {
+        session->was_truncated = true;
+    }
+    return session->truncation_status();
+}
+
+transcribe_status fake_family_run_batch(transcribe_session *          session,
+                                        const float * const *         pcm,
+                                        const int *                   n_samples,
+                                        int                           n,
+                                        const transcribe_run_params * params) {
+    return transcribe::run_batch_serial(
+        session, pcm, n_samples, n, [&](const float * p, int ns) { return fake_family_run(session, p, ns, params); });
+}
+
+void check_truncated_then_clean(const transcribe::Arch & arch) {
+    transcribe_model model;
+    model.arch = &arch;
+
+    transcribe_session session;
+    session.model = &model;
+
+    transcribe_run_params params;
+    transcribe_run_params_init(&params);
+
+    const float   repeating = 2.0f, truncating = 1.0f, clean = 0.0f;
+    const float * pcm[4] = { &repeating, &clean, &truncating, &clean };
+    const int     ns[4]  = { 1, 1, 1, 1 };
+    CHECK(transcribe_run_batch(&session, pcm, ns, 4, &params) == TRANSCRIBE_OK);
+    CHECK(transcribe_batch_n_results(&session) == 4);
+    CHECK(transcribe_batch_status(&session, 0) == TRANSCRIBE_ERR_OUTPUT_REPETITION);
+    CHECK(std::strcmp(transcribe_batch_full_text(&session, 0), "looped") == 0);
+    CHECK(transcribe_batch_status(&session, 1) == TRANSCRIBE_OK);
+    CHECK(std::strcmp(transcribe_batch_full_text(&session, 1), "complete") == 0);
+    CHECK(transcribe_batch_status(&session, 2) == TRANSCRIBE_ERR_OUTPUT_TRUNCATED);
+    CHECK(std::strcmp(transcribe_batch_full_text(&session, 2), "partial") == 0);
+    CHECK(transcribe_batch_status(&session, 3) == TRANSCRIBE_OK);
+    CHECK(std::strcmp(transcribe_batch_full_text(&session, 3), "complete") == 0);
+    CHECK(transcribe_was_truncated(&session));
+
+    // Single-shot: the repetition stop is its own status, keeps its partial,
+    // and does not leak into the next run.
+    CHECK(transcribe_run(&session, &repeating, 1, &params) == TRANSCRIBE_ERR_OUTPUT_REPETITION);
+    CHECK(std::strcmp(transcribe_full_text(&session), "looped") == 0);
+    CHECK(transcribe_was_truncated(&session));
+    CHECK(transcribe_run(&session, &clean, 1, &params) == TRANSCRIBE_OK);
+    CHECK(!transcribe_was_truncated(&session));
+}
+
+void test_batch_serial_truncation_is_per_utterance() {
+    // Family run_batch hook falling back to its serial path.
+    const transcribe::Arch family_arch = {
+        "fake-family-serial",
+        nullptr,
+        nullptr,
+        fake_family_run,
+        fake_family_run_batch,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+    };
+    check_truncated_then_clean(family_arch);
+
+    // No run_batch hook: the dispatcher's generic serial fallback.
+    const transcribe::Arch dispatcher_arch = {
+        "fake-dispatcher-serial",
+        nullptr,
+        nullptr,
+        fake_family_run,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+    };
+    check_truncated_then_clean(dispatcher_arch);
+}
+
+}  // namespace
+
 int main() {
     test_no_run_hook_clears_and_not_implemented();
+    test_batch_serial_truncation_is_per_utterance();
     test_release_scratch_after_run_and_batch();
     test_run_validate_failure_preserves_snapshot();
     test_run_validate_success_clears_and_runs();

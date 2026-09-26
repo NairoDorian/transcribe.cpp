@@ -24,6 +24,7 @@
 #include "transcribe-activity.h"
 #include "transcribe-arch.h"
 #include "transcribe-backend.h"
+#include "transcribe-batch-util.h"
 #include "transcribe-build-info.h"  // configure-time provenance for transcribe_version()
 #include "transcribe-loader.h"
 #include "transcribe-log.h"
@@ -159,6 +160,8 @@ extern "C" const char * transcribe_status_string(int status) {
             return "input audio too long for model context";
         case TRANSCRIBE_ERR_OUTPUT_TRUNCATED:
             return "output truncated: decode hit the context/generation cap before end-of-stream";
+        case TRANSCRIBE_ERR_OUTPUT_REPETITION:
+            return "output repetition: decode stopped when the output began repeating itself";
         default:
             return "unknown status";
     }
@@ -1931,6 +1934,7 @@ static transcribe_status transcribe_stream_begin_impl(struct transcribe_session 
     session->t_decode_us                      = 0;
     session->was_aborted                      = false;
     session->was_truncated                    = false;
+    session->stopped_on_repetition            = false;
     session->stream_state                     = TRANSCRIBE_STREAM_ACTIVE;
     session->stream_commit_policy             = commit_policy;
     session->stream_stable_prefix_agreement_n = stable_prefix_agreement_n;
@@ -2413,16 +2417,17 @@ static transcribe_status run_one_inner(struct transcribe_session *          sess
         *committed = true;
     }
     session->clear_result();
-    session->t_mel_us      = 0;
-    session->t_encode_us   = 0;
-    session->t_decode_us   = 0;
-    session->was_aborted   = false;
-    session->was_truncated = false;
+    session->t_mel_us              = 0;
+    session->t_encode_us           = 0;
+    session->t_decode_us           = 0;
+    session->was_aborted           = false;
+    session->was_truncated         = false;
+    session->stopped_on_repetition = false;
     // Force stream_state to IDLE: clear_result deliberately preserves
     // lifecycle state, but a well-formed transcribe_run subsumes any
     // prior FINISHED/FAILED stream — after a one-shot run the context
     // is no longer meaningfully in a streaming lifecycle.
-    session->stream_state  = TRANSCRIBE_STREAM_IDLE;
+    session->stream_state          = TRANSCRIBE_STREAM_IDLE;
 
     if (session->model == nullptr || session->model->arch == nullptr || session->model->arch->run == nullptr) {
         return TRANSCRIBE_ERR_NOT_IMPLEMENTED;
@@ -2554,12 +2559,13 @@ static transcribe_status transcribe_run_batch_impl(struct transcribe_session *  
 
     // Past this point we commit to producing a fresh batch result.
     session->clear_result();
-    session->t_mel_us      = 0;
-    session->t_encode_us   = 0;
-    session->t_decode_us   = 0;
-    session->was_aborted   = false;
-    session->was_truncated = false;
-    session->stream_state  = TRANSCRIBE_STREAM_IDLE;
+    session->t_mel_us              = 0;
+    session->t_encode_us           = 0;
+    session->t_decode_us           = 0;
+    session->was_aborted           = false;
+    session->was_truncated         = false;
+    session->stopped_on_repetition = false;
+    session->stream_state          = TRANSCRIBE_STREAM_IDLE;
     session->batch_results.clear();
 
     // Release the compute scratch once the batch has run, whichever path it
@@ -2586,36 +2592,11 @@ static transcribe_status transcribe_run_batch_impl(struct transcribe_session *  
 
     // Generic serial fallback: run each utterance in turn and snapshot it.
     // Correct for every family; only the per-dispatch device throughput of
-    // a real run_batch() is forgone.
+    // a real run_batch() is forgone. run_one_inner re-validates the shared
+    // params (idempotent) before the family run().
     session->batch_results.reserve(static_cast<size_t>(n));
-    transcribe_status batch_status = TRANSCRIBE_OK;
-    for (int i = 0; i < n; ++i) {
-        if (session->poll_abort()) {
-            batch_status = TRANSCRIBE_ERR_ABORTED;
-            break;
-        }
-        // run_one_inner clears the scratch slot and writes this utterance's
-        // result; it re-validates the shared params (idempotent) and
-        // validates this utterance's pcm[i] / n_samples[i].
-        const transcribe_status st = run_one_inner(session, pcm[i], n_samples[i], params);
-        if (st == TRANSCRIBE_OK) {
-            // capture_result (not a local field-copy) so every result field —
-            // including per-utterance timings and raw_text — reaches the
-            // batch snapshot without a second list to keep in sync.
-            session->batch_results.push_back(session->capture_result(st));
-        } else {
-            // Malformed-input early returns preserve the previous scratch
-            // slot, so do NOT snapshot it — record an explicit empty
-            // failure for this utterance instead.
-            transcribe_session::ResultSet rs;
-            rs.status = st;
-            session->batch_results.push_back(std::move(rs));
-            if (st == TRANSCRIBE_ERR_ABORTED) {
-                batch_status = TRANSCRIBE_ERR_ABORTED;
-                break;
-            }
-        }
-    }
+    const transcribe_status batch_status = transcribe::run_batch_serial(
+        session, pcm, n_samples, n, [&](const float * p, int ns) { return run_one_inner(session, p, ns, params); });
 
     // On abort the loop can break early, leaving fewer than n entries;
     // synthesize any missing slots so the result-set view always exposes n

@@ -23,6 +23,7 @@
 #include "transcribe-log.h"
 #include "transcribe-mel.h"
 #include "transcribe-meta.h"
+#include "transcribe-repetition-guard.h"
 #include "weights.h"
 
 #include <algorithm>
@@ -1246,6 +1247,10 @@ transcribe_status run(transcribe_session *          session,
 
                 if (next_token != eos_id) {
                     generated_ids.push_back(next_token);
+                    if (transcribe::stop_on_repetition(generated_ids, "cohere run")) {
+                        cc->mark_repetition_stop();
+                        break;
+                    }
                 }
             }
         } else {
@@ -1330,6 +1335,10 @@ transcribe_status run(transcribe_session *          session,
 
                 if (next_token != eos_id) {
                     generated_ids.push_back(next_token);
+                    if (transcribe::stop_on_repetition(generated_ids, "cohere run")) {
+                        cc->mark_repetition_stop();
+                        break;
+                    }
                 }
             }
         }
@@ -1346,6 +1355,9 @@ transcribe_status run(transcribe_session *          session,
                                 "incomplete.",
                                 static_cast<int>(generated_ids.size()));
         }
+        if (cc->was_truncated && !cc->stopped_on_repetition) {
+            transcribe::trim_repetition_at_budget_stop(generated_ids, "cohere run");
+        }
 
         // Build the result. max_timestamp_kind == NONE means text but no
         // alignment data: full_text plus one segment (text == full_text,
@@ -1357,7 +1369,7 @@ transcribe_status run(transcribe_session *          session,
     // and stays readable (like an aborted run), but we surface the truncation
     // rather than reporting a clean OK.
     cleanup_gpu();
-    return cc->was_truncated ? TRANSCRIBE_ERR_OUTPUT_TRUNCATED : TRANSCRIBE_OK;
+    return cc->truncation_status();
 }
 
 // ===========================================================================
@@ -1479,21 +1491,8 @@ transcribe_status run_batch_serial(CohereSession *               cc,
                                    const int *                   n_samples,
                                    int                           n,
                                    const transcribe_run_params * params) {
-    for (int i = 0; i < n; ++i) {
-        if (cc->poll_abort()) {
-            return TRANSCRIBE_ERR_ABORTED;
-        }
-        const transcribe_status st = (pcm[i] == nullptr || n_samples[i] <= 0) ? TRANSCRIBE_ERR_INVALID_ARG :
-                                                                                run(cc, pcm[i], n_samples[i], params);
-        if (st == TRANSCRIBE_OK) {
-            cc->batch_results.push_back(cc->capture_result(st));
-        } else {
-            transcribe_session::ResultSet rs;
-            rs.status = st;
-            cc->batch_results.push_back(std::move(rs));
-        }
-    }
-    return TRANSCRIBE_OK;
+    return transcribe::run_batch_serial(cc, pcm, n_samples, n,
+                                        [&](const float * p, int ns) { return run(cc, p, ns, params); });
 }
 
 transcribe_status run_batch(transcribe_session *          session,
@@ -1779,7 +1778,7 @@ transcribe_status run_batch(transcribe_session *          session,
         // otherwise-OK status, never a worse one.
         if (rs.status == TRANSCRIBE_OK && b < static_cast<int>(truncated.size()) && truncated[b]) {
             cc->was_truncated = true;
-            rs.status         = TRANSCRIBE_ERR_OUTPUT_TRUNCATED;
+            rs.status         = transcribe::decode_stop_status(truncated[b]);
         }
         rs.t_mel_us    = mel_us / valid_count;
         rs.t_encode_us = enc_us / valid_count;

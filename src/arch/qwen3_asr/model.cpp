@@ -22,6 +22,7 @@
 #include "transcribe-log.h"
 #include "transcribe-mel.h"
 #include "transcribe-meta.h"
+#include "transcribe-repetition-guard.h"
 #include "weights.h"
 
 #include <algorithm>
@@ -1441,6 +1442,7 @@ transcribe_status run_decode_pass(transcribe_session *          session,
     int64_t       t_step_comp_us    = 0;
     int64_t       t_step_get_us     = 0;
     const int64_t t_step_loop_start = ggml_time_us();
+    bool          repeating         = false;
     int           n_graph_runs      = 0;
     if (k_drafts == 0) {
         while (next_tok != eos_id && static_cast<int32_t>(generated_ids.size()) < max_new && cur_past + 1 <= max_n_kv) {
@@ -1484,6 +1486,12 @@ transcribe_status run_decode_pass(transcribe_session *          session,
             cc->kv_cache.n    = cur_past + 1;
             cc->kv_cache.head = cur_past + 1;
             t_step_get_us += ggml_time_us() - t_comp1;
+            if (next_tok != eos_id &&
+                transcribe::stop_on_repetition(generated_ids, "qwen3_asr decode",
+                                               kv_reuse ? TRANSCRIBE_LOG_LEVEL_DEBUG : TRANSCRIBE_LOG_LEVEL_WARN)) {
+                repeating = true;
+                break;
+            }
         }
     } else {
         // ---- 1-gram-lookup speculative decode (mechanism as in ----
@@ -1670,6 +1678,12 @@ transcribe_status run_decode_pass(transcribe_session *          session,
             cc->kv_cache.n    = cur_past + 1;
             cc->kv_cache.head = cur_past + 1;
             t_step_get_us += ggml_time_us() - t_comp1;
+            if (next_tok != eos_id &&
+                transcribe::stop_on_repetition(generated_ids, "qwen3_asr decode",
+                                               kv_reuse ? TRANSCRIBE_LOG_LEVEL_DEBUG : TRANSCRIBE_LOG_LEVEL_WARN)) {
+                repeating = true;
+                break;
+            }
         }
     }
     t_step_loop_us = ggml_time_us() - t_step_loop_start;
@@ -1681,6 +1695,10 @@ transcribe_status run_decode_pass(transcribe_session *          session,
     // expected end of a chunk that still has audio behind it, so it is NOT
     // logged or flagged here.
     const bool truncated = next_tok != eos_id;
+    if (truncated && !repeating) {
+        transcribe::trim_repetition_at_budget_stop(generated_ids, "qwen3_asr decode",
+                                                   kv_reuse ? TRANSCRIBE_LOG_LEVEL_DEBUG : TRANSCRIBE_LOG_LEVEL_WARN);
+    }
 
     // Map granular counters to the debug-print shape. With graph reuse all
     // per-step overhead collapses to tensor_set; build/alloc/ctx_reset are
@@ -1744,6 +1762,7 @@ transcribe_status run_decode_pass(transcribe_session *          session,
 
     out->raw_text    = std::move(raw_text);
     out->truncated   = truncated;
+    out->repeating   = repeating;
     out->n_generated = static_cast<int>(generated_ids.size());
     out->gen_ids     = generated_ids;
     return TRANSCRIBE_OK;
@@ -1816,7 +1835,10 @@ transcribe_status run(transcribe_session *          session,
 
     cc->raw_text      = pass.raw_text;  // pre-envelope text, via transcribe_raw_text
     cc->was_truncated = pass.truncated;
-    if (pass.truncated) {
+    if (pass.repeating) {
+        cc->mark_repetition_stop();
+    }
+    if (pass.truncated && !pass.repeating) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_WARN,
                             "qwen3_asr run: output truncated at %d tokens — decode reached the "
                             "generation budget before end-of-stream; the transcript may be "
@@ -1862,7 +1884,7 @@ transcribe_status run(transcribe_session *          session,
 
     // A truncated decode returns OUTPUT_TRUNCATED; the partial transcript above
     // stays readable (like an aborted run).
-    return pass.truncated ? TRANSCRIBE_ERR_OUTPUT_TRUNCATED : TRANSCRIBE_OK;
+    return cc->truncation_status();
 }
 
 // ===========================================================================
@@ -2236,21 +2258,8 @@ transcribe_status run_batch_serial(QwenAsrSession *              cc,
                                    const int *                   n_samples,
                                    int                           n,
                                    const transcribe_run_params * params) {
-    for (int i = 0; i < n; ++i) {
-        if (cc->poll_abort()) {
-            return TRANSCRIBE_ERR_ABORTED;
-        }
-        const transcribe_status st = (pcm[i] == nullptr || n_samples[i] <= 0) ? TRANSCRIBE_ERR_INVALID_ARG :
-                                                                                run(cc, pcm[i], n_samples[i], params);
-        if (st == TRANSCRIBE_OK) {
-            cc->batch_results.push_back(cc->capture_result(st));
-        } else {
-            transcribe_session::ResultSet rs;
-            rs.status = st;
-            cc->batch_results.push_back(std::move(rs));
-        }
-    }
-    return TRANSCRIBE_OK;
+    return transcribe::run_batch_serial(cc, pcm, n_samples, n,
+                                        [&](const float * p, int ns) { return run(cc, p, ns, params); });
 }
 
 }  // namespace
@@ -2456,7 +2465,7 @@ transcribe_status run_batch(transcribe_session *          session,
         // Per-utterance truncation parity with the single-shot path.
         if (b < static_cast<int>(truncated.size()) && truncated[b]) {
             cc->was_truncated = true;
-            rs.status         = TRANSCRIBE_ERR_OUTPUT_TRUNCATED;
+            rs.status         = transcribe::decode_stop_status(truncated[b]);
         }
         rs.t_mel_us    = mel_us / valid_count;
         rs.t_encode_us = enc_us / valid_count;

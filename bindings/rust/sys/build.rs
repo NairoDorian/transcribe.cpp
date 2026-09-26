@@ -360,6 +360,9 @@ fn main() {
     }
     if is_cuda {
         cfg.define("TRANSCRIBE_CUDA", "ON");
+        // Explicit so an existing CMake cache (configured OFF) is flipped too;
+        // TRANSCRIBE_CMAKE_ARGS can still pass -DGGML_CUDA_GRAPHS=OFF.
+        cfg.define("GGML_CUDA_GRAPHS", "ON");
         if let Some(arch) = &cuda_arch {
             println!(
                 "cargo:warning=transcribe-cpp-sys: [CUDA DEV] Auto-detected local GPU -> targeting {arch} (fast single-arch build)"

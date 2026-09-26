@@ -1313,6 +1313,28 @@ transcribe_status run_decode_pass(transcribe_session *          session,
         k_drafts = std::min(static_cast<int>(draft_seed->size()), QWEN3_ASR_SPEC_K_MAX);
     }
 
+    // Prior-transcript drafting (experimental, TRANSCRIBE_SPEC_PRIOR_TEXT): a
+    // transcript of the same audio from another model (e.g. parakeet in a
+    // multi-STT setup) is tokenized once and used as a draft corpus aligned by
+    // a moving cursor. Same exact-greedy acceptance as the 1-gram lookup — a
+    // token is committed only when this model's own argmax produced it — so
+    // the prior can only change speed, never which tokens can be emitted
+    // (numerics caveat of the verify graph below still applies).
+    std::vector<int32_t> prior_ids;
+    if (const std::string pt = transcribe::env::utf8("TRANSCRIBE_SPEC_PRIOR_TEXT"); !pt.empty()) {
+        if (cm->tok.encode(pt, prior_ids) != TRANSCRIBE_OK) {
+            prior_ids.clear();
+        }
+        // Never feed an id the embedding table does not have.
+        const int32_t n_vocab = cm->hparams.dec_vocab_size;
+        prior_ids.erase(std::remove_if(prior_ids.begin(), prior_ids.end(),
+                                       [n_vocab](int32_t id) { return id < 0 || id >= n_vocab; }),
+                        prior_ids.end());
+        if (!prior_ids.empty() && k_drafts == 0) {
+            k_drafts = QWEN3_ASR_SPEC_K_MAX;
+        }
+    }
+
     // Build the step graph ONCE and reuse every step, sized for the actual
     // workload (T_prompt written + up to max_new generated). Metal's flash-attn
     // kernels dispatch ~30% faster (M4 Max) when K/V ne[1] is a power of 2, so
@@ -1484,7 +1506,13 @@ transcribe_status run_decode_pass(transcribe_session *          session,
         // Where the next token to be fed sits in the seed's frame: 0 on the
         // first run (the prefill produced the token the seed starts at), and
         // advanced by every commitment so later runs keep the same alignment.
-        int                      seed_pos = 0;
+        int                      seed_pos     = 0;
+        // Prior-transcript cursor: prior_ids index just after the last
+        // committed token's aligned position. The lookup only searches a short
+        // window ahead so one divergent token cannot jump the alignment far.
+        int                      prior_cursor = 0;
+        int                      prior_hits   = 0;
+        constexpr int            kPriorWindow = 24;
 
         while (next_tok != eos_id && static_cast<int32_t>(generated_ids.size()) < max_new &&
                cur_past + T_verify <= max_n_kv) {
@@ -1492,6 +1520,33 @@ transcribe_status run_decode_pass(transcribe_session *          session,
 
             const auto it           = last_pos_by_tok.find(next_tok);
             const int  draft_origin = (it != last_pos_by_tok.end()) ? it->second : -1;
+            int        prior_origin = -1;
+            if (!prior_ids.empty()) {
+                // Align on the last two committed tokens (bigram) — frequent
+                // tokens like "," or " die" make a single-token match
+                // ambiguous and jump the cursor — and fall back to the first
+                // single-token match. The window reaches a few tokens back so
+                // a cursor that jumped ahead can recover.
+                const int32_t prev_tok = all_ids.size() >= 2 ? all_ids[all_ids.size() - 2] : -1;
+                const int     beg      = std::max(1, prior_cursor - 4);
+                const int     end      = std::min(static_cast<int>(prior_ids.size()), prior_cursor + kPriorWindow);
+                int           uni      = -1;
+                for (int p = beg - 1; p < end; ++p) {
+                    if (prior_ids[static_cast<size_t>(p)] != next_tok) {
+                        continue;
+                    }
+                    if (p > 0 && prior_ids[static_cast<size_t>(p - 1)] == prev_tok) {
+                        prior_origin = p;
+                        break;
+                    }
+                    if (uni < 0 && p >= prior_cursor - 1) {
+                        uni = p;
+                    }
+                }
+                if (prior_origin < 0) {
+                    prior_origin = uni;
+                }
+            }
 
             in_ids[0]    = next_tok;
             positions[0] = cur_past;
@@ -1505,7 +1560,10 @@ transcribe_status run_decode_pass(transcribe_session *          session,
                 const int  seed_index = seed_pos + c;
                 const int  src        = (draft_origin >= 0) ? (draft_origin + c) : -1;
                 const bool from_seed  = seeded && seed_index < static_cast<int>(draft_seed->size());
-                in_ids[c] = from_seed ? (*draft_seed)[static_cast<size_t>(seed_index)] :
+                const int  prior_src  = prior_origin >= 0 ? prior_origin + c : -1;
+                const bool from_prior = prior_src >= 0 && prior_src < static_cast<int>(prior_ids.size());
+                in_ids[c] = from_seed  ? (*draft_seed)[static_cast<size_t>(seed_index)] :
+                            from_prior ? prior_ids[static_cast<size_t>(prior_src)] :
                             (src >= 0 && src < static_cast<int>(all_ids.size())) ? all_ids[static_cast<size_t>(src)] :
                                                                                    next_tok;
                 positions[c] = cur_past + c;
@@ -1574,6 +1632,10 @@ transcribe_status run_decode_pass(transcribe_session *          session,
 
             cur_past += n_commit;
             seed_pos += n_commit;
+            if (prior_origin >= 0) {
+                prior_cursor = prior_origin + n_commit;
+                prior_hits += n_commit - 1;
+            }
             cc->kv_cache.n    = cur_past + 1;
             cc->kv_cache.head = cur_past + 1;
             t_step_get_us += ggml_time_us() - t_comp1;

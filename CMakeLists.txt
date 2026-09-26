@@ -418,6 +418,10 @@ set(GGML_VULKAN   ${TRANSCRIBE_VULKAN} CACHE BOOL "" FORCE)
 set(GGML_CUDA     ${TRANSCRIBE_CUDA}   CACHE BOOL "" FORCE)
 set(GGML_HIP      ${TRANSCRIBE_HIP}    CACHE BOOL "" FORCE)
 set(GGML_BLAS OFF CACHE BOOL "" FORCE)
+# CUDA graphs: autoregressive decoders run a small graph per token, so launch
+# overhead dominates; graphs measured +15% decode on R2T2 (RTX 4070). ggml
+# defaults them OFF ("llama.cpp only"). Not FORCE: -DGGML_CUDA_GRAPHS=OFF wins.
+set(GGML_CUDA_GRAPHS ON CACHE BOOL "ggml: use CUDA graphs")
 
 # HIP needs position-independent code even in the default static posture.
 # hipcc does not pick up the distro toolchain's default-PIE codegen the way the

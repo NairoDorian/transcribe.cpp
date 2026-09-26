@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 
 namespace transcribe::causal_lm {
@@ -218,6 +219,50 @@ int prefill_chunk_size() {
     return chunk;
 }
 
+namespace {
+
+// Q/K/V projection: one packed mul_mat split by strided views when the
+// block carries attn_qkv_w, else three mul_mats. Outputs keep the separate
+// path's shape ([dim, T, ...]) but may be non-contiguous.
+void project_qkv(ggml_context *    ctx,
+                 const BlockView & view,
+                 ggml_tensor *     x_norm,
+                 int64_t           q_dim,
+                 int64_t           kv_dim,
+                 ggml_tensor **    Q,
+                 ggml_tensor **    K,
+                 ggml_tensor **    V) {
+    if (view.attn_qkv_w == nullptr) {
+        *Q = mul_mat_f32acc(ctx, view.attn_q_w, x_norm);
+        *K = mul_mat_f32acc(ctx, view.attn_k_w, x_norm);
+        *V = mul_mat_f32acc(ctx, view.attn_v_w, x_norm);
+        return;
+    }
+    ggml_tensor * y  = mul_mat_f32acc(ctx, view.attn_qkv_w, x_norm);  // [q+2kv, T, B]
+    const size_t  es = ggml_element_size(y);
+    *Q               = ggml_view_3d(ctx, y, q_dim, y->ne[1], y->ne[2], y->nb[1], y->nb[2], 0);
+    *K               = ggml_view_3d(ctx, y, kv_dim, y->ne[1], y->ne[2], y->nb[1], y->nb[2], es * q_dim);
+    *V               = ggml_view_3d(ctx, y, kv_dim, y->ne[1], y->ne[2], y->nb[1], y->nb[2], es * (q_dim + kv_dim));
+}
+
+// [dim, T] (maybe strided) -> [head_dim, n_h, T, 1].
+ggml_tensor * as_heads(ggml_context * ctx, ggml_tensor * t, int64_t head_dim, int64_t n_h, int64_t T) {
+    if (ggml_is_contiguous(t)) {
+        return ggml_reshape_4d(ctx, t, head_dim, n_h, T, 1);
+    }
+    return ggml_view_4d(ctx, t, head_dim, n_h, T, 1, ggml_element_size(t) * head_dim, t->nb[1], t->nb[1] * T, 0);
+}
+
+// [head_dim, n_h, T, 1] (maybe strided) -> [dim, T].
+ggml_tensor * as_rows(ggml_context * ctx, ggml_tensor * t, int64_t dim, int64_t T) {
+    if (ggml_is_contiguous(t)) {
+        return ggml_reshape_2d(ctx, t, dim, T);
+    }
+    return ggml_view_2d(ctx, t, dim, T, t->nb[2], 0);
+}
+
+}  // namespace
+
 // Block forward — prefill.
 ggml_tensor * block_prefill(ggml_context *      ctx,
                             ggml_cgraph *       gf,
@@ -248,13 +293,14 @@ ggml_tensor * block_prefill(ggml_context *      ctx,
 
     // Q/K/V projections (bias-free on Qwen3). Packing into one mul_mat
     // consistently regresses on Metal; left separate.
-    ggml_tensor * Q = mul_mat_f32acc(ctx, view.attn_q_w, x_norm);
-    ggml_tensor * K = mul_mat_f32acc(ctx, view.attn_k_w, x_norm);
-    ggml_tensor * V = mul_mat_f32acc(ctx, view.attn_v_w, x_norm);
+    ggml_tensor * Q = nullptr;
+    ggml_tensor * K = nullptr;
+    ggml_tensor * V = nullptr;
+    project_qkv(ctx, view, x_norm, q_dim, kv_dim, &Q, &K, &V);
 
-    Q = ggml_reshape_4d(ctx, Q, head_dim, n_heads, T_seq, 1);
-    K = ggml_reshape_4d(ctx, K, head_dim, n_kv_heads, T_seq, 1);
-    V = ggml_reshape_4d(ctx, V, head_dim, n_kv_heads, T_seq, 1);
+    Q = as_heads(ctx, Q, head_dim, n_heads, T_seq);
+    K = as_heads(ctx, K, head_dim, n_kv_heads, T_seq);
+    V = as_heads(ctx, V, head_dim, n_kv_heads, T_seq);
 
     // Per-head Q/K RMSNorm is a Qwen3 feature; Llama-style decoders ship no
     // q_norm/k_norm tensors, so the call site leaves these slots null and we
@@ -399,13 +445,14 @@ ggml_tensor * block_step(ggml_context *      ctx,
 
     ggml_tensor * x_norm = rms_norm(ctx, x, view.norm_attn_w, rms_eps);
 
-    ggml_tensor * Q = mul_mat_f32acc(ctx, view.attn_q_w, x_norm);
-    ggml_tensor * K = mul_mat_f32acc(ctx, view.attn_k_w, x_norm);
-    ggml_tensor * V = mul_mat_f32acc(ctx, view.attn_v_w, x_norm);
+    ggml_tensor * Q = nullptr;
+    ggml_tensor * K = nullptr;
+    ggml_tensor * V = nullptr;
+    project_qkv(ctx, view, x_norm, q_dim, kv_dim, &Q, &K, &V);
 
-    Q = ggml_reshape_4d(ctx, Q, head_dim, n_heads, 1, 1);
-    K = ggml_reshape_4d(ctx, K, head_dim, n_kv_heads, 1, 1);
-    V = ggml_reshape_4d(ctx, V, head_dim, n_kv_heads, 1, 1);
+    Q = as_heads(ctx, Q, head_dim, n_heads, 1);
+    K = as_heads(ctx, K, head_dim, n_kv_heads, 1);
+    V = as_heads(ctx, V, head_dim, n_kv_heads, 1);
 
     if (view.attn_q_norm != nullptr) {
         Q = ggml_mul(ctx, ggml_rms_norm(ctx, Q, rms_eps), view.attn_q_norm);
@@ -428,8 +475,8 @@ ggml_tensor * block_step(ggml_context *      ctx,
         ggml_tensor * k_layer = ggml_view_2d(ctx, kv_cache.self_k, kv_dim, n_ctx, k_elem * kv_dim, layer_off_k);
         ggml_tensor * v_layer = ggml_view_2d(ctx, kv_cache.self_v, kv_dim, n_ctx, v_elem * kv_dim, layer_off_v);
 
-        ggml_tensor * K_row = ggml_reshape_2d(ctx, K, kv_dim, 1);
-        ggml_tensor * V_row = ggml_reshape_2d(ctx, V, kv_dim, 1);
+        ggml_tensor * K_row = as_rows(ctx, K, kv_dim, 1);
+        ggml_tensor * V_row = as_rows(ctx, V, kv_dim, 1);
 
         ggml_build_forward_expand(gf, ggml_set_rows(ctx, k_layer, K_row, kv_idx));
         ggml_build_forward_expand(gf, ggml_set_rows(ctx, v_layer, V_row, kv_idx));
@@ -516,13 +563,14 @@ ggml_tensor * block_step_n(ggml_context *      ctx,
 
     ggml_tensor * x_norm = rms_norm(ctx, x, view.norm_attn_w, rms_eps);
 
-    ggml_tensor * Q = mul_mat_f32acc(ctx, view.attn_q_w, x_norm);
-    ggml_tensor * K = mul_mat_f32acc(ctx, view.attn_k_w, x_norm);
-    ggml_tensor * V = mul_mat_f32acc(ctx, view.attn_v_w, x_norm);
+    ggml_tensor * Q = nullptr;
+    ggml_tensor * K = nullptr;
+    ggml_tensor * V = nullptr;
+    project_qkv(ctx, view, x_norm, q_dim, kv_dim, &Q, &K, &V);
 
-    Q = ggml_reshape_4d(ctx, Q, head_dim, n_heads, T_seq, 1);
-    K = ggml_reshape_4d(ctx, K, head_dim, n_kv_heads, T_seq, 1);
-    V = ggml_reshape_4d(ctx, V, head_dim, n_kv_heads, T_seq, 1);
+    Q = as_heads(ctx, Q, head_dim, n_heads, T_seq);
+    K = as_heads(ctx, K, head_dim, n_kv_heads, T_seq);
+    V = as_heads(ctx, V, head_dim, n_kv_heads, T_seq);
 
     if (view.attn_q_norm != nullptr) {
         Q = ggml_mul(ctx, ggml_rms_norm(ctx, Q, rms_eps), view.attn_q_norm);
@@ -544,8 +592,8 @@ ggml_tensor * block_step_n(ggml_context *      ctx,
         ggml_tensor * k_layer = ggml_view_2d(ctx, kv_cache.self_k, kv_dim, n_ctx, k_elem * kv_dim, layer_off_k);
         ggml_tensor * v_layer = ggml_view_2d(ctx, kv_cache.self_v, kv_dim, n_ctx, v_elem * kv_dim, layer_off_v);
 
-        ggml_tensor * K_rows = ggml_reshape_2d(ctx, K, kv_dim, T_seq);
-        ggml_tensor * V_rows = ggml_reshape_2d(ctx, V, kv_dim, T_seq);
+        ggml_tensor * K_rows = as_rows(ctx, K, kv_dim, T_seq);
+        ggml_tensor * V_rows = as_rows(ctx, V, kv_dim, T_seq);
 
         ggml_build_forward_expand(gf, ggml_set_rows(ctx, k_layer, K_rows, kv_idx));
         ggml_build_forward_expand(gf, ggml_set_rows(ctx, v_layer, V_rows, kv_idx));
@@ -896,6 +944,78 @@ transcribe_status pack_gate_up(ggml_backend_t                   backend,
         ggml_backend_tensor_set(gate_up, buf.data(), 0, gate_bytes);
         ggml_backend_tensor_get(e.up_w, buf.data(), 0, up_bytes);
         ggml_backend_tensor_set(gate_up, buf.data(), gate_bytes, up_bytes);
+    }
+    return TRANSCRIBE_OK;
+}
+
+bool qkv_pack_wanted(ggml_backend_t backend) {
+    if (backend == nullptr || transcribe::env::flag("TRANSCRIBE_NO_QKV_PACK")) {
+        return false;
+    }
+    ggml_backend_dev_t dev = ggml_backend_get_device(backend);
+    if (dev == nullptr) {
+        return false;
+    }
+    const char * reg = ggml_backend_reg_name(ggml_backend_dev_backend_reg(dev));
+    return reg != nullptr && (std::strcmp(reg, "CUDA") == 0 || std::strcmp(reg, "ROCm") == 0);
+}
+
+transcribe_status pack_qkv(ggml_backend_t                backend,
+                           const std::vector<QkvEntry> & entries,
+                           PackedGateUpHandles &         out_handles,
+                           const char *                  error_tag) {
+    if (backend == nullptr || entries.empty()) {
+        return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+    ggml_init_params p{};
+    p.mem_size      = entries.size() * ggml_tensor_overhead() + 1024;
+    p.mem_buffer    = nullptr;
+    p.no_alloc      = true;
+    out_handles.ctx = ggml_init(p);
+    if (out_handles.ctx == nullptr) {
+        return TRANSCRIBE_ERR_OOM;
+    }
+    int n_packed = 0;
+    for (const auto & e : entries) {
+        if (e.q_w == nullptr || e.k_w == nullptr || e.v_w == nullptr || e.qkv_w_out == nullptr ||
+            e.q_w->type != e.k_w->type || e.q_w->type != e.v_w->type || e.q_w->ne[0] != e.k_w->ne[0] ||
+            e.q_w->ne[0] != e.v_w->ne[0] || e.k_w->ne[1] != e.v_w->ne[1]) {
+            continue;
+        }
+        *e.qkv_w_out = ggml_new_tensor_2d(out_handles.ctx, e.q_w->type, e.q_w->ne[0], e.q_w->ne[1] + 2 * e.k_w->ne[1]);
+        ++n_packed;
+    }
+    if (n_packed == 0) {
+        return TRANSCRIBE_OK;  // nothing packable (mixed types); the separate path stays
+    }
+    out_handles.buffer = ggml_backend_alloc_ctx_tensors(out_handles.ctx, backend);
+    if (out_handles.buffer == nullptr) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "%s: pack_qkv backend buffer alloc failed", error_tag);
+        for (const auto & e : entries) {
+            if (e.qkv_w_out != nullptr) {
+                *e.qkv_w_out = nullptr;
+            }
+        }
+        return TRANSCRIBE_ERR_OOM;
+    }
+    ggml_backend_buffer_set_usage(out_handles.buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+    std::vector<uint8_t> buf;
+    for (const auto & e : entries) {
+        if (e.qkv_w_out == nullptr || *e.qkv_w_out == nullptr) {
+            continue;
+        }
+        size_t off = 0;
+        for (ggml_tensor * src : { e.q_w, e.k_w, e.v_w }) {
+            const size_t n = ggml_nbytes(src);
+            buf.resize(n);
+            ggml_backend_tensor_get(src, buf.data(), 0, n);
+            ggml_backend_tensor_set(*e.qkv_w_out, buf.data(), off, n);
+            off += n;
+        }
+        if (off != ggml_nbytes(*e.qkv_w_out)) {
+            log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "%s: pack_qkv size mismatch", error_tag);
+            return TRANSCRIBE_ERR_GGUF;
+        }
     }
     return TRANSCRIBE_OK;
 }

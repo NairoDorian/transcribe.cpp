@@ -17,6 +17,10 @@ void apply_env_overrides(bool & encoder_use_flash, bool & decoder_use_flash) {
         encoder_use_flash = true;
         decoder_use_flash = true;
     }
+    // Encoder-only override, applied last: TRANSCRIBE_ENCODER_FLASH=0|1.
+    if (const char * v = transcribe::env::str("TRANSCRIBE_ENCODER_FLASH")) {
+        encoder_use_flash = v[0] != '0';
+    }
 }
 
 }  // namespace transcribe::flash

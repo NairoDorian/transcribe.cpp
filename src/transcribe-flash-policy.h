@@ -16,7 +16,7 @@ namespace transcribe::flash {
 // overrides to a pair of encoder/decoder flash flags. Either override forces
 // both flags in the same direction; if both are set, FORCE wins. The flags
 // are in/out: updated in-place if an override is set, left untouched
-// otherwise.
+// otherwise. TRANSCRIBE_ENCODER_FLASH=0|1 then sets the encoder flag alone.
 void apply_env_overrides(bool & encoder_use_flash, bool & decoder_use_flash);
 
 }  // namespace transcribe::flash

@@ -358,6 +358,7 @@ struct QwenAsrModel final : public transcribe_model {
     transcribe::BackendPlan                    plan;
     ggml_backend_buffer_t                      backend_buffer = nullptr;
     transcribe::causal_lm::PackedGateUpHandles packed_gate_up;
+    transcribe::causal_lm::PackedGateUpHandles packed_qkv;
 
     std::optional<transcribe::MelFrontend> mel;
 

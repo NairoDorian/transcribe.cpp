@@ -60,6 +60,7 @@ QwenAsrModel::~QwenAsrModel() {
         backend_buffer = nullptr;
     }
     packed_gate_up.free();
+    packed_qkv.free();
     for (auto it = plan.scheduler_list.rbegin(); it != plan.scheduler_list.rend(); ++it) {
         safe_backend_free(*it);
     }
@@ -353,6 +354,23 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
         }
     }
 
+    // Pack Q|K|V into one matvec on CUDA (see QwenAsrDecBlock). Costs one
+    // extra copy of the attention input projections (~130 MB for 1.7B Q4_K);
+    // a failure here only disables the fused path.
+    if (transcribe::causal_lm::qkv_pack_wanted(m->plan.primary)) {
+        std::vector<transcribe::causal_lm::QkvEntry> entries;
+        entries.reserve(m->weights.dec_blocks.size());
+        for (auto & b : m->weights.dec_blocks) {
+            entries.push_back({ b.attn_q_w, b.attn_k_w, b.attn_v_w, &b.attn_qkv_w });
+        }
+        if (transcribe::causal_lm::pack_qkv(m->plan.primary, entries, m->packed_qkv, "qwen3_asr") != TRANSCRIBE_OK) {
+            for (auto & b : m->weights.dec_blocks) {
+                b.attn_qkv_w = nullptr;
+            }
+            m->packed_qkv.free();
+        }
+    }
+
     m->t_load_us = ggml_time_us() - t_load_start;
     *out_model   = m.release();
     return TRANSCRIBE_OK;
@@ -374,7 +392,13 @@ transcribe_status init_context(transcribe_model *                model,
     cc->kv_type   = params->kv_type;
     cc->n_ctx     = transcribe_session_params_n_ctx(params);
 
-    cc->encoder_use_flash = false;
+    // Encoder flash-attn: off by default, but on CUDA it is 5 % faster
+    // (RTX 4070, R2T2: 48 -> 45 ms encode) with identical transcripts.
+    {
+        ggml_backend_dev_t dev = ggml_backend_get_device(static_cast<QwenAsrModel *>(model)->plan.primary);
+        const char *       reg = dev != nullptr ? ggml_backend_reg_name(ggml_backend_dev_backend_reg(dev)) : nullptr;
+        cc->encoder_use_flash  = reg != nullptr && std::strcmp(reg, "CUDA") == 0;
+    }
     cc->decoder_use_flash = true;
     transcribe::flash::apply_env_overrides(cc->encoder_use_flash, cc->decoder_use_flash);
 
@@ -1281,8 +1305,18 @@ transcribe_status run_decode_pass(transcribe_session *          session,
     // pass, which costs ~1.5x a single step on CPU (T=2 leaves the matvec
     // fast path) and break-even on CUDA. Worth re-testing per workload via
     // --spec-k-drafts; repetitive long-form dictation accepts more.
-    constexpr int QWEN3_ASR_SPEC_K_MAX = 8;
-    int           k_drafts             = 0;
+    //
+    // Draft length and kernels (CUDA, RTX 4070, R2T2 1.7B): verify columns
+    // T = k+1 <= 8 run the MMVQ kernel, whose per-column math is the same as
+    // the T = 1 step, so the output stays byte-identical to k = 0; its cost
+    // grows ~0.6 ms per extra column. T >= 9 switches to MMQ (tensor cores),
+    // which verifies 16 columns for less than MMVQ does 8 but rounds
+    // differently, so a near-tie argmax can flip. Measured with a parakeet
+    // prior: k=5 1.84x decode (identical), k=15 2.38x (not byte-identical).
+    constexpr int QWEN3_ASR_SPEC_K_MAX       = 16;
+    constexpr int QWEN3_ASR_SPEC_K_SEED_MAX  = 8;  // streaming seed: unchanged
+    constexpr int QWEN3_ASR_SPEC_K_PRIOR_DEF = 5;  // largest cheap k that stays byte-identical
+    int           k_drafts                   = 0;
     if (params != nullptr &&
         params->struct_size >= offsetof(transcribe_run_params, spec_k_drafts) + sizeof(params->spec_k_drafts)) {
         const int requested = params->spec_k_drafts;
@@ -1310,7 +1344,7 @@ transcribe_status run_decode_pass(transcribe_session *          session,
     // in later runs instead of restarting at the prompt boundary.
     const bool seeded = draft_seed != nullptr && !draft_seed->empty();
     if (seeded) {
-        k_drafts = std::min(static_cast<int>(draft_seed->size()), QWEN3_ASR_SPEC_K_MAX);
+        k_drafts = std::min(static_cast<int>(draft_seed->size()), QWEN3_ASR_SPEC_K_SEED_MAX);
     }
 
     // Prior-transcript drafting (experimental, TRANSCRIBE_SPEC_PRIOR_TEXT): a
@@ -1331,7 +1365,7 @@ transcribe_status run_decode_pass(transcribe_session *          session,
                                        [n_vocab](int32_t id) { return id < 0 || id >= n_vocab; }),
                         prior_ids.end());
         if (!prior_ids.empty() && k_drafts == 0) {
-            k_drafts = QWEN3_ASR_SPEC_K_MAX;
+            k_drafts = QWEN3_ASR_SPEC_K_PRIOR_DEF;
         }
     }
 

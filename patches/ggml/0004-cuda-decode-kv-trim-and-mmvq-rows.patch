@@ -1,0 +1,33 @@
+diff --git a/src/ggml-cuda/fattn-common.cuh b/src/ggml-cuda/fattn-common.cuh
+index 6d1ce52d..558c9bca 100644
+--- a/src/ggml-cuda/fattn-common.cuh
++++ b/src/ggml-cuda/fattn-common.cuh
+@@ -1109,7 +1109,10 @@ void launch_fattn(
+     // Optional optimization where the mask is scanned to determine whether part of the calculation can be skipped.
+     // Only worth the overhead if there is at lease one FATTN_KQ_STRIDE x FATTN_KQ_STRIDE square to be skipped or
+     //     multiple sequences of possibly different lengths.
+-    if (!use_sparse && mask && K->ne[1] % FATTN_KQ_STRIDE == 0 && (Q->ne[1] >= 1024 || Q->ne[3] > 1)) {
++    // transcribe.cpp: also for decode-sized Q (ne[1] <= ncols1): a padded KV window
++    // (graph built once for max length, tail masked) is then trimmed per step.
++    if (!use_sparse && mask && K->ne[1] % FATTN_KQ_STRIDE == 0 &&
++        (Q->ne[1] >= 1024 || Q->ne[3] > 1 || (Q->ne[1] <= ncols1 && K->ne[1] >= 2*FATTN_KQ_STRIDE))) {
+         const int64_t s31 = mask->nb[1] / sizeof(half2);
+         const int64_t s33 = mask->nb[3] / sizeof(half2);
+ 
+diff --git a/src/ggml-cuda/mmvq.cu b/src/ggml-cuda/mmvq.cu
+index cdc4fd0c..d2c32dd3 100644
+--- a/src/ggml-cuda/mmvq.cu
++++ b/src/ggml-cuda/mmvq.cu
+@@ -1110,6 +1110,12 @@ static void mul_mat_vec_q_switch_ncols_dst(
+         // Trigger when the full thread block covers all K blocks in a single loop iteration and few threads remain idle.
+         const int  nwarps = calc_nwarps(type, c_ncols_dst, table_id);
+         bool       use    = nwarps > 1 && blocks_per_row_x < nwarps * blocks_per_iter_1warp;
++        // transcribe.cpp: also when one block iteration covers K exactly (K=2048 Q2_K/Q4_K):
++        // one vec_dot per thread is latency-bound; 4 rows per block measured -38 % on a
++        // 151936-row Q2_K logits matvec (RTX 4070). Small row counts regress, so gate on rows.
++        if (nwarps > 1 && blocks_per_row_x == nwarps * blocks_per_iter_1warp && nrows_x >= 2048) {
++            use = true;
++        }
+ 
+         constexpr std::array<ggml_type, 2> iq_slow_turing = {
+             GGML_TYPE_IQ3_XXS,

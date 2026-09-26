@@ -41,6 +41,7 @@ causal_lm::BlockView to_block_view(const QwenAsrDecBlock & b) {
     v.attn_o_w      = b.attn_o_w;
     v.attn_q_norm   = b.attn_q_norm;
     v.attn_k_norm   = b.attn_k_norm;
+    v.attn_qkv_w    = b.attn_qkv_w;
     v.ffn_gate_up_w = b.ffn_gate_up_w;
     v.ffn_down_w    = b.ffn_down_w;
     return v;

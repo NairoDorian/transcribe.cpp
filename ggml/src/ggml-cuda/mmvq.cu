@@ -1110,6 +1110,12 @@ static void mul_mat_vec_q_switch_ncols_dst(
         // Trigger when the full thread block covers all K blocks in a single loop iteration and few threads remain idle.
         const int  nwarps = calc_nwarps(type, c_ncols_dst, table_id);
         bool       use    = nwarps > 1 && blocks_per_row_x < nwarps * blocks_per_iter_1warp;
+        // transcribe.cpp: also when one block iteration covers K exactly (K=2048 Q2_K/Q4_K):
+        // one vec_dot per thread is latency-bound; 4 rows per block measured -38 % on a
+        // 151936-row Q2_K logits matvec (RTX 4070). Small row counts regress, so gate on rows.
+        if (nwarps > 1 && blocks_per_row_x == nwarps * blocks_per_iter_1warp && nrows_x >= 2048) {
+            use = true;
+        }
 
         constexpr std::array<ggml_type, 2> iq_slow_turing = {
             GGML_TYPE_IQ3_XXS,

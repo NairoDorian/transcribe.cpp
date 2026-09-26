@@ -15,6 +15,7 @@
 #include "transcribe-session.h"
 #include "transcribe.h"
 
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -645,6 +646,111 @@ void init_streaming_model(transcribe_model & model) {
     model.arch                    = &sequence_arch();
     model.caps.supports_streaming = true;
     model.caps.max_timestamp_kind = TRANSCRIBE_TIMESTAMPS_NONE;
+}
+
+// A family that buffers audio into fixed chunks and keeps the session audio
+// cursors the way a streaming family must (input advances by every fed slice;
+// committed trails it by what is still buffered) — the contract the
+// dispatcher's silence fast path reads. It never publishes text, so the
+// fast path's tentative-text condition always holds and only the cursor and
+// silence conditions decide.
+constexpr int k_gate_chunk_samples = 1024;
+int64_t       g_gate_fed_samples   = 0;
+int64_t       g_gate_buffered      = 0;
+
+transcribe_status gate_stream_begin(transcribe_session * session,
+                                    const transcribe_run_params *,
+                                    const transcribe_stream_params *) {
+    (void) session;
+    g_gate_fed_samples = 0;
+    g_gate_buffered    = 0;
+    return TRANSCRIBE_OK;
+}
+
+transcribe_status gate_stream_feed(transcribe_session * session,
+                                   const float *,
+                                   int n_samples,
+                                   transcribe_stream_update *) {
+    g_gate_fed_samples += n_samples;
+    g_gate_buffered = (g_gate_buffered + n_samples) % k_gate_chunk_samples;
+    session->stream_audio_input_us += static_cast<int64_t>(n_samples) * 1000000LL / 16000LL;
+    session->stream_audio_committed_us = session->stream_audio_input_us - g_gate_buffered * 1000000LL / 16000LL;
+    return TRANSCRIBE_OK;
+}
+
+transcribe_status gate_stream_finalize(transcribe_session *, transcribe_stream_update *) {
+    return TRANSCRIBE_OK;
+}
+
+const transcribe::Arch & gate_arch() {
+    static const transcribe::Arch arch = {
+        "fake-gate",
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        gate_stream_begin,
+        gate_stream_feed,
+        gate_stream_finalize,
+        nullptr,
+        fake_accepts_no_ext,
+    };
+    return arch;
+}
+
+// The silence fast path must only ever discard silence: a skipped slice never
+// reaches the family. Regression for R2T2 streams that lost the words after a
+// pause at some chunk sizes (the family left the cursors equal over a
+// non-empty buffer, and a slice was skipped when EITHER the VAD was not
+// speaking OR its energy was low).
+void test_activity_gate_only_skips_silence_with_nothing_buffered() {
+    transcribe_model model;
+    model.arch                    = &gate_arch();
+    model.caps.supports_streaming = true;
+    model.caps.max_timestamp_kind = TRANSCRIBE_TIMESTAMPS_NONE;
+    transcribe_session session;
+    session.model = &model;
+
+    transcribe_stream_params sp;
+    transcribe_stream_params_init(&sp);
+    CHECK(sp.enable_vad);
+    CHECK(transcribe_stream_begin(&session, nullptr, &sp) == TRANSCRIBE_OK);
+
+    float silence[256] = {};
+    float tone[256];
+    for (int i = 0; i < 256; ++i) {
+        tone[i] = 0.5f * static_cast<float>(std::sin(2.0 * 3.14159265358979 * 440.0 * i / 16000.0));
+    }
+    transcribe_stream_update upd;
+
+    // 1. Silence with nothing buffered is skipped: the fast path's purpose.
+    transcribe_stream_update_init(&upd);
+    CHECK(transcribe_stream_feed(&session, silence, 256, &upd) == TRANSCRIBE_OK);
+    CHECK(g_gate_fed_samples == 0);
+    CHECK(upd.input_received_ms == 16);
+
+    // 2. An audible slice the VAD has not (yet) called speech still reaches
+    //    the family: one frame cannot flip the VAD, so this is the onset case.
+    transcribe_stream_update_init(&upd);
+    CHECK(transcribe_stream_feed(&session, tone, 256, &upd) == TRANSCRIBE_OK);
+    CHECK(g_gate_fed_samples == 256);
+    CHECK(g_gate_buffered == 256);
+
+    // 3. Silence while the family holds buffered audio also reaches it, until
+    //    the buffer drains to empty ...
+    for (int i = 0; i < 3; ++i) {
+        transcribe_stream_update_init(&upd);
+        CHECK(transcribe_stream_feed(&session, silence, 256, &upd) == TRANSCRIBE_OK);
+    }
+    CHECK(g_gate_fed_samples == 1024);
+    CHECK(g_gate_buffered == 0);
+
+    // ... after which silence is skipped again.
+    transcribe_stream_update_init(&upd);
+    CHECK(transcribe_stream_feed(&session, silence, 256, &upd) == TRANSCRIBE_OK);
+    CHECK(g_gate_fed_samples == 1024);
+    CHECK(transcribe_stream_finalize(&session, nullptr) == TRANSCRIBE_OK);
 }
 
 void test_stream_text_on_finalize_policy() {
@@ -1587,5 +1693,6 @@ int main() {
     test_begin_copies_param_strings_out();
     test_begin_accepts_min_prefix_run_params();
     test_two_sessions_independent_streams();
+    test_activity_gate_only_skips_silence_with_nothing_buffered();
     return g_failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

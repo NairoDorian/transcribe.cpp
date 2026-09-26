@@ -481,6 +481,27 @@ void fill_update(const QwenAsrSession * cc, transcribe_stream_update * update, b
     update->is_final           = is_final;
 }
 
+// Keep the session-level audio cursors the dispatcher's silence fast path
+// reads. That path skips a frame (it never reaches the family) only when
+// stream_audio_committed_us == stream_audio_input_us, i.e. when the family has
+// nothing buffered. R2T2 used to leave both at zero, so the equality held
+// permanently: whenever tentative text happened to be empty at a pause, the
+// quiet frames after it were skipped, ticks stopped, and the words after the
+// pause were never decoded — which, depending on how the chunk size lined up
+// with the pause, looked like a 3-5x "faster" stream at some cadences.
+//
+// `fed_samples` is what this call handed the family (0 on finalize). Input
+// advances by it on the dispatcher's own timeline, which also counts the
+// frames the fast path skipped; committed trails input by exactly the audio
+// still waiting in st.buffer, so the two are equal only when nothing is
+// buffered.
+void sync_session_cursors(QwenAsrSession * cc, int64_t fed_samples) {
+    const R2T2StreamState & st = cc->r2t2;
+    cc->stream_audio_input_us += fed_samples * 1000000LL / 16000LL;
+    const int64_t buffered_us     = static_cast<int64_t>(st.buffer.size()) * 1000000LL / 16000LL;
+    cc->stream_audio_committed_us = cc->stream_audio_input_us - buffered_us;
+}
+
 // True when the accumulated audio is long enough for the mel front-end to
 // produce frames.
 //
@@ -742,7 +763,11 @@ transcribe_status r2t2_stream_feed(transcribe_session *       ctx,
     // The dispatcher's VAD fast path already handles the silence case; this
     // path just consumes audio and only pays for a decode when a whole tick is
     // buffered.
-    if (const transcribe_status status = drain_chunks(cc, /*final_flush=*/false, update); status != TRANSCRIBE_OK) {
+    const transcribe_status status = drain_chunks(cc, /*final_flush=*/false, update);
+    // Even on failure: the samples were received, and a cursor pair left equal
+    // over a non-empty buffer is exactly what let the fast path drop speech.
+    sync_session_cursors(cc, n_samples);
+    if (status != TRANSCRIBE_OK) {
         return status;
     }
 
@@ -765,7 +790,9 @@ transcribe_status r2t2_stream_finalize(transcribe_session * ctx, transcribe_stre
     // Flush the trailing partial chunk through one final decode. Skipping it
     // would drop the tail of every utterance whose length is not a whole
     // number of chunks, which is nearly all of them.
-    if (const transcribe_status status = drain_chunks(cc, /*final_flush=*/true, update); status != TRANSCRIBE_OK) {
+    const transcribe_status status = drain_chunks(cc, /*final_flush=*/true, update);
+    sync_session_cursors(cc, 0);
+    if (status != TRANSCRIBE_OK) {
         return status;
     }
 

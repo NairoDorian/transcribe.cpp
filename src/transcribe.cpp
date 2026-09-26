@@ -2075,12 +2075,21 @@ static transcribe_status transcribe_stream_feed_impl(struct transcribe_session *
     };
 
     // Fast-path: if native VAD is enabled, audio activity gate is not disabled,
-    // and either silence energy OR native VAD not speaking:
-    // advance timeline and bypass expensive mel + model encoder pass.
+    // the family has nothing buffered (committed == input — a family that
+    // streams must keep these two cursors, see sync_session_cursors in
+    // arch/qwen3_asr/r2t2-stream.cpp), and the slice is silence by BOTH
+    // measures — native VAD not speaking AND energy below the activity floor —
+    // advance the timeline and bypass the expensive mel + encoder pass.
+    //
+    // Both, not either: a skipped slice never reaches the family, so this must
+    // only ever discard silence. With "either", the audible onset of a word
+    // was dropped whenever the VAD had not flipped to speaking yet, and a
+    // quiet consonant was dropped mid-speech whenever it dipped under the
+    // energy floor.
     if (session->enable_vad && n_samples >= 256 && !transcribe::is_activity_gate_disabled() &&
         session->stream_audio_committed_us == session->stream_audio_input_us &&
-        session->stream_tentative_text.empty() &&
-        (!session->stream_vad.is_speaking() || !transcribe::is_audio_active(pcm, static_cast<size_t>(n_samples)))) {
+        session->stream_tentative_text.empty() && !session->stream_vad.is_speaking() &&
+        !transcribe::is_audio_active(pcm, static_cast<size_t>(n_samples))) {
         const int64_t slice_us = (static_cast<int64_t>(n_samples) * 1000000LL) / 16000LL;
         session->stream_audio_input_us += slice_us;
         session->stream_audio_committed_us += slice_us;

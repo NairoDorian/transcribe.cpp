@@ -43,13 +43,20 @@ larger.
 `patches/ggml/0003-tq1_g128-ternary.patch`). You need a transcribe.cpp build that
 includes it; stock llama.cpp / ggml cannot read these files.
 
-| Backend | Ternary kernel |
-|---|---|
-| CPU x86-64 | AVX2 dot product (scalar fallback without AVX2) |
-| CPU ARM64 / Android | NEON dot product (ARMv8, no dot-product extension needed) |
-| CUDA | native mat-vec kernel (batch ≤ 8) + dequantize-to-F16 tensor-core GEMM (encoder) |
-| Vulkan | native mat-vec shader, tiled mat-mul (incl. coopmat / coopmat2), dequant, get_rows |
-| Metal | runs the ternary matmuls on the CPU backend (unified memory); a Metal kernel is future work |
+At load time the ternary weights are re-laid-out **losslessly** (same codes, same fp16
+scales) into the in-memory format that is fastest on the backend — the file on disk
+stays 1.75 bits/weight:
+
+| Backend | In-memory layout (default) | Kernels |
+|---|---|---|
+| CPU x86-64 / ARM64 (Android) | Q4_0 (4.5 bpw) | ggml CPU_REPACK GEMM (AVX2; ARM dotprod / i8mm) |
+| CUDA | Q2_0 (2.25 bpw) | MMQ int8 tensor cores, MMVQ |
+| Vulkan | Q4_0 | tiled mat-mul incl. coopmat / coopmat2, mat-vec |
+| Metal | Q4_0 | Metal mul_mm / mul_mv (unmeasured) |
+
+`TRANSCRIBE_TERNARY_RUNTIME=q4_0|q2_0|native` overrides the choice; `native` keeps
+TQ1_G128 in memory (1.75 bpw) and uses the dedicated ternary kernels (CPU AVX2/NEON,
+CUDA, Vulkan) — smallest memory, slower.
 
 ## Usage
 
@@ -80,9 +87,21 @@ Same recipe as parakeet-ultra's card (FLEURS French test, 676 utterances, greedy
 CUDA, batch 1). The three files are indistinguishable; the gap to parakeet-ultra
 (6.42 %) is the model's own ternary compression, not the conversion — the C++ output
 matches Moondream's weights run in transformers tensor for tensor.
-- **Speed** (RTX 4070 Laptop / same laptop CPU, TQ1_F16): CUDA 72× realtime, Vulkan
-  131× realtime (after the one-time shader compile), CPU 6× realtime — on CPU 1.8× faster
-  than the same weights expanded to F32, because it reads 7× fewer weight bytes.
+
+## Speed
+
+Measured with `transcribe-bench` on a 29.3 s clip (`samples/german.wav`), warm, mean of
+3 iterations, RTX 4070 Laptop GPU (8 GB) and its laptop x86 CPU (AVX2), transcribe.cpp
+after the 2026-09-26 optimization round (see
+`docs/porting/parakeet-optimization-2026-09-26.md` in the repo). "×" = times faster than
+realtime.
+
+| File | CUDA | Vulkan | CPU |
+|---|---|---|---|
+| TQ1_Q8_0 | 109 ms — **256×** | 136 ms — **196×** | 1.40 s — **21×** |
+
+Encoder / decoder split on CUDA: 40 ms / 60 ms. Accuracy of the optimized paths was
+re-measured (FLEURS-fr: CUDA 9.94 %, CPU 9.93 %) and is unchanged.
 
 ## Differences from the parent checkpoint
 

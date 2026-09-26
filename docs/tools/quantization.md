@@ -201,8 +201,14 @@ lossless for checkpoints in that format (first user: parakeet-redux; see
   and passes existing TQ1_G128 tensors through byte-for-byte under every
   preset, re-typing only the dense tensors.
 - Kernels: CPU (generic, AVX2, NEON), CUDA (mat-vec + dequant/cuBLAS),
-  Vulkan (mat-vec, tiled mat-mul incl. coopmat2, dequant, get_rows). Metal
-  has no kernel; the scheduler runs those matmuls on the CPU backend.
+  Vulkan (mat-vec, tiled mat-mul incl. coopmat2, dequant, get_rows).
+- Runtime layout: by default the loader re-lays TQ1_G128 out losslessly at load
+  time (`load_common::retype_ternary_for_runtime`): Q4_0 on CPU (repacked GEMM),
+  Vulkan and Metal; Q2_0 on CUDA. `TRANSCRIBE_TERNARY_RUNTIME=q4_0|q2_0|native`
+  overrides; `native` keeps the 1.75-bpw type in memory.
+- CPU primary: eligible weights also go to ggml's CPU_REPACK buffer
+  (`load_common::alloc_cpu_repack_weights`, `TRANSCRIBE_NO_CPU_REPACK=1` disables)
+  — this speeds up every quant with a repacked kernel on the ISA, not only ternary.
 - Rows must be a multiple of 256 weights. Conformer pointwise kernels in this
   type are stored 2-D and always take the direct `mul_mat` path.
 - Tests: `tests/ternary_tq1_g128_unit.cpp`, `ggml/tests/test-backend-ops`

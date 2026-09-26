@@ -78,6 +78,24 @@ Open ASR Leaderboard 7-set average 5.80 % WER (v3: 6.26 %); FLEURS 25-language a
 9.55 % (v3: 11.62 %); MUSAN noise 5.82 % (v3: 6.72 %); TED-LIUM long-form 1.94 %
 (v3: 2.71 %).
 
+## Speed
+
+Measured with `transcribe-bench` on a 29.3 s clip (`samples/german.wav`), warm, mean of
+3 iterations, RTX 4070 Laptop GPU (8 GB) and its laptop x86 CPU (AVX2), transcribe.cpp
+after the 2026-09-26 optimization round (see
+`docs/porting/parakeet-optimization-2026-09-26.md` in the repo). "×" = times faster than
+realtime.
+
+| File | CUDA | Vulkan | CPU |
+|---|---|---|---|
+| Q8_0 | 133 ms — **212×** | 130 ms — **190×** | 1.92 s — **15×** |
+| Q4_K_M | 110 ms — **253×** | 200 ms — **137×** | 1.13 s — **26×** |
+
+On CPU, K-quants and Q4_0 use ggml's repacked GEMM kernels (x86 AVX2: Q4_K; ARM
+dotprod/i8mm: also Q5_K, Q6_K, Q8_0), which is why Q4_K_M is the fastest CPU file here.
+Accuracy of the optimized paths was re-measured (FLEURS-fr: Q8_0 on CUDA 6.40 %,
+Q4_K_M on CPU 6.77 %) and is unchanged.
+
 ## Differences from the parent checkpoint
 
 - The 6 `vad_head.*` tensors (≈213 K parameters) are omitted. They belong to

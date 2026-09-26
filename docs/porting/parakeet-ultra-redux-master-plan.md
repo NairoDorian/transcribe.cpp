@@ -117,9 +117,10 @@ compromise.
 
 - **Commit and push** the fork (converter, ggml patch, loader, tests, docs) so the
   reproduction instructions in the HF cards resolve.
-- Metal kernel for `TQ1_G128` (today: CPU fallback over unified memory).
-- A dot-product (`vdotq_s32`) NEON variant and an x86 AVX-512/VNNI variant would be
-  faster; current kernels are correct and portable.
+- Metal: redux runs as Q4_0 on Metal's kernels by default; unmeasured (no Apple hardware here).
+- Optimization round 2026-09-26 (CUDA 2×, CPU up to 3.2×, Android build): see
+  `docs/porting/parakeet-optimization-2026-09-26.md`; method in `docs/tools/profiling-nsys.md`.
+- Decoder (≈57 ms on every backend, host-bound) is now the largest GPU cost — next target.
 - ZER0 (Handy_V2): must ship a transcribe library built with patch 0003 before listing
   redux; ultra works with any current build.
 - Stage 6/7 (publication benchmarks on the reference rigs, full WER sweeps across
@@ -138,7 +139,7 @@ hashes are the published Hub state. ZER0's own ranking fields (`speed_score`,
 [
   {
     "id": "Nairod785/parakeet-ultra-gguf",
-    "revision": "906393870d67d285b9a2201b750f101ef11e59ef",
+    "revision": "a99010fd0dd7f80883ff4813ad4a8026fbeacf10",
     "slug": "parakeet-ultra-0.6b",
     "name": "Parakeet Ultra 0.6B",
     "architecture": "parakeet",
@@ -217,7 +218,7 @@ hashes are the published Hub state. ZER0's own ranking fields (`speed_score`,
   },
   {
     "id": "Nairod785/parakeet-redux-gguf",
-    "revision": "ff6b0dd210b7f5462e5f451b1e00b0bdc05d2bac",
+    "revision": "704423df32623a49369592f15346ca14baa4fe3c",
     "slug": "parakeet-redux-0.6b",
     "name": "Parakeet Redux 0.6B (native ternary)",
     "architecture": "parakeet",

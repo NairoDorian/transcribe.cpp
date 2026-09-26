@@ -58,11 +58,38 @@ that has already bitten other ggml forks.
 | CPU ARM64 / Android | NEON: `vmulq_u8`/`vmull_u8` trit extraction, `vmull_s8` + `vpadalq_s16` accumulation; plain ARMv8 (verified bit-exact against the scalar reference under SIMDe; ggml-cpu cross-compiles for arm64-v8a with NDK 30) |
 | CUDA | `dequantize` → F16 + cuBLAS tensor-core GEMM for encoder-sized batches; native `vec_dot_tq1_g128_q8_1` mat-vec (`dp4a`) for batches ≤ 8 |
 | Vulkan | dedicated mat-vec shader, branch in the shared tiled mat-mul shader, coopmat2 decode, dequant and get_rows shaders |
-| Metal | no kernel yet: the scheduler runs these matmuls on the CPU backend over unified memory |
+| Metal | no native TQ1_G128 kernel; by default the weights run as Q4_0 on Metal's own kernels (see below) |
 
 `test-backend-ops` registers the type (full mul_mat shape sweep), and
 `tests/ternary_tq1_g128_unit.cpp` checks lossless packing, the CPU kernel against an
 integer reference, and `mul_mat` on every backend in the build.
+
+### Runtime layouts (what actually runs by default)
+
+The native kernels above decode trits inside the dot product, which ggml's CPU
+`mul_mat` calls once per (weight row × audio frame) — ~370 decodes per weight per
+encoder call. Measurement showed it is faster to re-lay the weights out **losslessly at
+load time** into a type with mature GEMM kernels, keeping the 1.75-bpw file:
+
+* ternary `w = s·(c−1)` is exactly **Q4_0** with `q = c + 7`, `d = s` (four 32-blocks
+  per group) — `ggml_tq1_g128_to_q4_0`;
+* and exactly **Q2_0** with `q = c`, `d = s` (two 64-blocks per group) —
+  `ggml_tq1_g128_to_q2_0`.
+
+`load_common::retype_ternary_for_runtime` picks per backend (encoder ms on the 29.3 s
+clip, RTX 4070 Laptop):
+
+| Backend | Q4_0 | Q2_0 | native TQ1_G128 | default |
+|---|---|---|---|---|
+| CPU (x86 AVX2) | **1327** (CPU_REPACK GEMM) | ~2700 | ~4400 | Q4_0 |
+| CUDA | 52 | **38** | 47 | Q2_0 |
+| Vulkan | **66** | 133 | 114 | Q4_0 |
+| Metal | — | — | — | Q4_0 (unmeasured) |
+
+`TRANSCRIBE_TERNARY_RUNTIME=q4_0|q2_0|native` overrides. The patch also adds an AVX2
+`ggml_vec_dot_q2_0_q8_0` (x86 previously used the scalar fallback). Accuracy with the
+default layouts was re-measured: FLEURS-fr 9.93 % (CPU) / 9.94 % (CUDA) vs 9.91 %
+before — unchanged.
 
 ## 3. Conversion (`scripts/convert-parakeet.py`)
 

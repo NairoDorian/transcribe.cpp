@@ -26,7 +26,15 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import common  # noqa: E402
 import sync_capabilities  # noqa: E402
 
-QUANT_ORDER = ("F32", "BF16", "F16", "Q8_0", "Q6_K", "Q5_K_M", "Q4_K_M")
+# GGUFs with native ternary tensors (GGML_TYPE_TQ1_G128, e.g. parakeet-redux)
+# are unreadable by stock gguf-py until the downstream type is registered.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from lib.ternary import register_gguf_tq1_g128  # noqa: E402
+
+register_gguf_tq1_g128()
+
+QUANT_ORDER = ("F32", "BF16", "F16", "Q8_0", "Q6_K", "Q5_K_M", "Q4_K_M",
+               "TQ1_F16", "TQ1_Q8_0", "TQ1_Q4_K")
 LICENSE_DISPLAY = {"apache-2.0": "Apache-2.0", "mit": "MIT", "cc-by-4.0": "CC-BY-4.0",
                    "cc-by-nc-4.0": "CC-BY-NC-4.0", "cc-by-nc-sa-4.0": "CC-BY-NC-SA-4.0"}
 

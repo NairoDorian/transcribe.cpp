@@ -1,0 +1,39 @@
+{
+  "schema": "transcribe-catalog-v1",
+  "variant": "parakeet-redux-0.6b",
+  "family": "parakeet",
+  "display_name": "Parakeet Redux 0.6B",
+  "params": 627052166,
+  "license": {
+    "spdx": "cc-by-4.0",
+    "display": "CC-BY-4.0"
+  },
+  "upstream_repo": "moondream/parakeet-redux",
+  "upstream_commit": "2bf1286",
+  "published_repo": "Nairod785/parakeet-redux-gguf",
+  "docs_page": "parakeet.md",
+  "languages": [
+    "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu",
+    "it", "lv", "lt", "mt", "pl", "pt", "ro", "ru", "sk", "sl", "es", "sv",
+    "uk"
+  ],
+  "language_tag_form": "bare-bcp47",
+  "long_form_strategy": "chunked-unbounded",
+  "capabilities": {
+    "transcribe": {"supported":true,"verified":true},
+    "translate": {"supported":false},
+    "lang_detect": {"supported":true,"verified":true},
+    "timestamps": {"supported":true,"verified":true,"granularities":["token"]},
+    "streaming": {"supported":false},
+    "diarize": {"supported":false},
+    "batching": {"supported":true,"verified":true}
+  },
+  "downloads": [
+    {"quant":"TQ1_F16","filename":"parakeet-redux-0.6b-TQ1_F16.gguf","size_bytes":179312288},
+    {"quant":"TQ1_Q8_0","filename":"parakeet-redux-0.6b-TQ1_Q8_0.gguf","size_bytes":159121504},
+    {"quant":"TQ1_Q4_K","filename":"parakeet-redux-0.6b-TQ1_Q4_K.gguf","size_bytes":156696672}
+  ],
+  "accuracy_benchmarks": [],
+  "headline_benchmark": null,
+  "speed_benchmarks": []
+}

@@ -180,6 +180,53 @@ VARIANT_PROFILES: dict[str, dict] = {
         "license_name": "Creative Commons Attribution 4.0",
         "license_link": "https://creativecommons.org/licenses/by/4.0/",
     },
+    # Moondream post-trainings of v3, published as transformers
+    # ParakeetForTDT safetensors (no .nemo). Same topology and the same
+    # 8192-token SentencePiece vocab as v3; load_hf_safetensors_model()
+    # renames the HF tensors back to NeMo names so the tables below
+    # apply unchanged. The checkpoints also carry a 6-tensor VAD head
+    # (vad_head.*) used only by Moondream's Photon runtime; it is dropped.
+    "parakeet-ultra-0.6b": {
+        "variant": "tdt-0.6b-ultra",
+        "display_name": "Parakeet Ultra 0.6B",
+        "version": "ultra",
+        "size_label": "0.6B",
+        "head_kind": "tdt",
+        "expected_vocab_size": 8192,
+        "languages": V3_LANGUAGES,
+        "lang_detect": True,
+        "author": "Moondream",
+        "organization": "moondream",
+        "license": "cc-by-4.0",
+        "license_name": "Creative Commons Attribution 4.0",
+        "license_link": "https://creativecommons.org/licenses/by/4.0/",
+        "source_format": "hf_safetensors",
+    },
+    # Ternary (thrush-ternary-v2) sibling of parakeet-ultra: the 264
+    # encoder linears / pointwise convs ship as packed base-3 codes plus
+    # per-128 F16 scales. They are repacked losslessly into the native
+    # GGML_TYPE_TQ1_G128 (1.75 bpw, patches/ggml/0003) and run on ternary
+    # kernels; every other tensor keeps its upstream dtype (F16 matrices,
+    # F32 norms/biases), so the GGUF is the size of the source checkpoint.
+    "parakeet-redux-0.6b": {
+        "variant": "tdt-0.6b-redux",
+        "display_name": "Parakeet Redux 0.6B",
+        "version": "redux",
+        "size_label": "0.6B",
+        "head_kind": "tdt",
+        "expected_vocab_size": 8192,
+        "languages": V3_LANGUAGES,
+        "lang_detect": True,
+        "author": "Moondream",
+        "organization": "moondream",
+        "license": "cc-by-4.0",
+        "license_name": "Creative Commons Attribution 4.0",
+        "license_link": "https://creativecommons.org/licenses/by/4.0/",
+        "source_format": "hf_safetensors",
+        "keep_source_dtypes": True,
+        "output_label": "TQ1_F16",
+        "file_type": LlamaFileType.MOSTLY_F16,
+    },
     # 1.1B English-only TDT. Predates the v2/v3 split; the upstream
     # repo carries no version suffix, so general.version is "v1".
     "parakeet-tdt-1.1b": {
@@ -400,6 +447,13 @@ VARIANT_PROFILES: dict[str, dict] = {
 }
 
 
+# HF repo basenames that do not carry the size suffix the variant slug uses.
+REPO_SLUG_ALIASES: dict[str, str] = {
+    "parakeet-ultra": "parakeet-ultra-0.6b",
+    "parakeet-redux": "parakeet-redux-0.6b",
+}
+
+
 # ---------------------------------------------------------------------------
 # NeMo model loading
 # ---------------------------------------------------------------------------
@@ -566,6 +620,353 @@ def load_nemo_model(model_spec: str, prefer_direct: bool = False):
     print(f"  loading directly from .nemo: {nemo_path}")
     cfg, sd, sp_proto = _load_nemo_archive_directly(nemo_path)
     return _DirectNemoArchive(cfg, sd, sp_proto)
+
+
+# ---------------------------------------------------------------------------
+# HF transformers safetensors loading (ParakeetForTDT checkpoints)
+# ---------------------------------------------------------------------------
+#
+# Checkpoints published as transformers ParakeetForTDT (moondream/parakeet-*)
+# ship model.safetensors + config.json + tokenizer.json and no .nemo. The
+# loader below renames the HF tensors back to their NeMo names (the inverse
+# of transformers' convert_nemo_to_hf rename; every HF tensor has exactly one
+# NeMo counterpart with the same shape) and synthesizes the NeMo cfg fields
+# read_hparams / resolve_runtime_hparams consume, so convert() runs the same
+# tables and checks it runs for .nemo sources.
+
+# (HF regex, NeMo replacement). Applied first-match; a key no rule and no
+# passthrough pattern accepts is a hard error.
+_HF_TO_NEMO_RENAMES: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"^encoder\.subsampling\.layers\.(\d+)\."), r"encoder.pre_encode.conv.\1."),
+    (re.compile(r"^encoder\.subsampling\.linear\."),        "encoder.pre_encode.out."),
+    (re.compile(r"^(encoder\.layers\.\d+)\.self_attn\.q_proj\."),          r"\1.self_attn.linear_q."),
+    (re.compile(r"^(encoder\.layers\.\d+)\.self_attn\.k_proj\."),          r"\1.self_attn.linear_k."),
+    (re.compile(r"^(encoder\.layers\.\d+)\.self_attn\.v_proj\."),          r"\1.self_attn.linear_v."),
+    (re.compile(r"^(encoder\.layers\.\d+)\.self_attn\.o_proj\."),          r"\1.self_attn.linear_out."),
+    (re.compile(r"^(encoder\.layers\.\d+)\.self_attn\.relative_k_proj\."), r"\1.self_attn.linear_pos."),
+    (re.compile(r"^(encoder\.layers\.\d+)\.self_attn\.bias_u$"),           r"\1.self_attn.pos_bias_u"),
+    (re.compile(r"^(encoder\.layers\.\d+)\.self_attn\.bias_v$"),           r"\1.self_attn.pos_bias_v"),
+    (re.compile(r"^(encoder\.layers\.\d+)\.conv\.norm\."),                 r"\1.conv.batch_norm."),
+    (re.compile(r"^decoder\.embedding\."),         "decoder.prediction.embed."),
+    (re.compile(r"^decoder\.lstm\."),              "decoder.prediction.dec_rnn.lstm."),
+    (re.compile(r"^decoder\.decoder_projector\."), "joint.pred."),
+    (re.compile(r"^encoder_projector\."),          "joint.enc."),
+    (re.compile(r"^joint\.head\."),                "joint.joint_net.2."),
+]
+# Encoder-block tensors whose HF and NeMo names coincide.
+_HF_PASSTHROUGH = re.compile(
+    r"^encoder\.layers\.\d+\."
+    r"(norm_(feed_forward1|feed_forward2|self_att|conv|out)"
+    r"|feed_forward[12]\.linear[12]"
+    r"|conv\.(pointwise_conv[12]|depthwise_conv))"
+    r"\.(weight|bias)$"
+)
+# Moondream Photon's VAD head; not part of the ASR graph.
+_HF_DROPPED_PREFIXES = ("vad_head.",)
+
+
+def _hf_to_nemo_name(key: str) -> str:
+    for pat, repl in _HF_TO_NEMO_RENAMES:
+        if pat.search(key):
+            return pat.sub(repl, key)
+    if _HF_PASSTHROUGH.match(key):
+        return key
+    raise KeyError(f"unmapped HF tensor name: {key!r}")
+
+
+def _hf_to_nemo_cfg(hf: dict, joint_hidden: int) -> dict:
+    """Synthesize the NeMo cfg subset read_hparams() and
+    resolve_runtime_hparams() consume from a ParakeetForTDT config.json.
+
+    config.json does not describe the frontend at all (there is no
+    preprocessor_config.json either). transformers' ParakeetFeatureExtractor
+    defaults — 25 ms / 10 ms windows, 512-point FFT, slaney mel bank to
+    Nyquist, per-feature normalization, pre-emphasis 0.97 — are exactly
+    NeMo's AudioToMelSpectrogramPreprocessor settings for v3, so the v3
+    values are emitted. dither=1e-5 is v3's metadata value; neither the HF
+    extractor nor the C++ frontend applies dither at inference.
+    """
+    if hf.get("model_type") != "parakeet_tdt":
+        raise ValueError(f"expected model_type 'parakeet_tdt', got {hf.get('model_type')!r}")
+    enc = hf["encoder_config"]
+    # The C++ graph hard-codes these FastConformer choices; refuse a
+    # checkpoint that departs from them rather than emit a GGUF that
+    # loads but computes something else.
+    fixed = {
+        "hidden_act": "silu",
+        "subsampling_conv_kernel_size": 3,
+        "subsampling_conv_stride": 2,
+    }
+    for k, want in fixed.items():
+        if enc.get(k) != want:
+            raise ValueError(f"encoder_config.{k}={enc.get(k)!r}; converter supports {want!r}")
+    if int(enc["intermediate_size"]) % int(enc["hidden_size"]) != 0:
+        raise ValueError("encoder intermediate_size is not a multiple of hidden_size")
+    durations = [int(d) for d in hf["durations"]]
+    return {
+        "encoder": {
+            "n_layers":                  int(enc["num_hidden_layers"]),
+            "d_model":                   int(enc["hidden_size"]),
+            "n_heads":                   int(enc["num_attention_heads"]),
+            "ff_expansion_factor":       int(enc["intermediate_size"]) // int(enc["hidden_size"]),
+            "conv_kernel_size":          int(enc["conv_kernel_size"]),
+            "subsampling_factor":        int(enc["subsampling_factor"]),
+            "subsampling_conv_channels": int(enc["subsampling_conv_channels"]),
+            "pos_emb_max_len":           int(enc["max_position_embeddings"]),
+            "xscaling":                  bool(enc.get("scale_input", False)),
+            "att_context_size":          [-1, -1],
+            "att_context_style":         "regular",
+            "conv_norm_type":            "batch_norm",
+        },
+        "preprocessor": {
+            "_target_":      "nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor",
+            "sample_rate":   16000,
+            "window_size":   0.025,
+            "window_stride": 0.01,
+            "features":      int(enc["num_mel_bins"]),
+            "n_fft":         512,
+            "window":        "hann",
+            "normalize":     "per_feature",
+            "dither":        1e-5,
+        },
+        # config.json's vocab_size counts the blank; NeMo's does not.
+        "decoder": {
+            "vocab_size": int(hf["vocab_size"]) - 1,
+            "prednet": {
+                "pred_hidden":     int(hf["decoder_hidden_size"]),
+                "pred_rnn_layers": int(hf["num_decoder_layers"]),
+            },
+        },
+        "joint": {
+            "num_extra_outputs": len(durations),
+            "jointnet": {
+                "joint_hidden": joint_hidden,
+                "activation":   str(hf["hidden_act"]),
+            },
+        },
+        "decoding": {
+            "durations": durations,
+            "greedy": {"max_symbols": int(hf["max_symbols_per_step"])},
+        },
+    }
+
+
+def extract_tokenizer_hf(tokenizer_json: dict, blank_piece: str = "<blank>"):
+    """GGUF tokenizer payload from a transformers tokenizer.json produced
+    from a SentencePiece BPE model (the moondream parakeets carry v3's
+    8192-piece vocab in this form; no tokenizer.model is shipped).
+
+    Rebuilds what extract_tokenizer() reads off the SPM proto: pieces in id
+    order; SPM-BPE scores (0 for the user-defined pieces that occupy the
+    first ids, `n_user - id` for merged pieces — verified piece-for-piece
+    and score-for-score against NVIDIA's v3 GGUF); UNKNOWN for unk, BYTE
+    for <0xNN> fallback pieces, CONTROL for language tags; then the
+    trailing <blank>, which the tokenizer.json lists as an added token.
+    """
+    model = tokenizer_json["model"]
+    if model.get("type") != "BPE":
+        raise ValueError(f"tokenizer.json model type {model.get('type')!r}; expected BPE")
+    vocab: dict[str, int] = model["vocab"]
+    n = len(vocab)
+    by_id = {i: p for p, i in vocab.items()}
+    if sorted(by_id) != list(range(n)):
+        raise ValueError("tokenizer.json vocab ids are not contiguous 0..n-1")
+
+    added = {int(a["id"]): a["content"] for a in tokenizer_json.get("added_tokens", [])}
+    if added.get(n) != blank_piece:
+        raise ValueError(f"expected added token {blank_piece!r} at id {n}, got {added.get(n)!r}")
+    user_ids = sorted(i for i in added if i < n)
+    n_user = len(user_ids)
+    if user_ids != list(range(n_user)):
+        raise ValueError("user-defined pieces are not the leading ids; SPM score rule does not apply")
+    for i in user_ids:
+        if by_id[i] != added[i]:
+            raise ValueError(f"added token {added[i]!r} disagrees with vocab piece {by_id[i]!r} at id {i}")
+
+    unk_piece = model.get("unk_token")
+    tokens: list[str] = []
+    scores: list[float] = []
+    types: list[int] = []
+    for i in range(n):
+        piece = by_id[i]
+        if piece == unk_piece:
+            ttype = TOKEN_TYPE_UNKNOWN
+        elif re.fullmatch(r"<0x[0-9A-F]{2}>", piece):
+            ttype = TOKEN_TYPE_BYTE
+        elif _is_lang_tag(piece):
+            ttype = TOKEN_TYPE_CONTROL
+        else:
+            ttype = TOKEN_TYPE_NORMAL
+        tokens.append(piece)
+        scores.append(0.0 if i < n_user else float(n_user - i))
+        types.append(ttype)
+
+    tokens.append(blank_piece)
+    scores.append(0.0)
+    types.append(TOKEN_TYPE_CONTROL)
+
+    return {
+        "tokens":   tokens,
+        "scores":   scores,
+        "types":    types,
+        "unk_id":   vocab.get(unk_piece) if unk_piece is not None else None,
+        "bos_id":   None,
+        "eos_id":   None,
+        "blank_id": n,
+    }
+
+
+class _TernaryWeight:
+    """A ternary linear / pointwise-conv weight kept in its native form:
+    GGML_TYPE_TQ1_G128 row bytes (scripts/lib/ternary.py pack_tq1_g128) plus
+    the logical [out, in] shape. Written to the GGUF as-is; never dequantized."""
+
+    def __init__(self, packed: np.ndarray, out_features: int, in_features: int):
+        self.packed = packed
+        self.shape = (out_features, in_features)
+
+
+class _HFSafetensorsModel:
+    """NeMo-shaped stand-in for a transformers ParakeetForTDT checkpoint.
+    Exposes the surface convert() consumes: .cfg (plain dict), .state_dict()
+    (NeMo names; fp32 torch tensors, or _TernaryWeight for ternary modules),
+    .src_dtype (upstream storage dtype per NeMo name), .tokenizer_payload,
+    and .joint / .encoder = None (resolve_runtime_hparams reads cfg /
+    state_dict)."""
+
+    joint = None
+    encoder = None
+
+    def __init__(self, cfg: dict, state_dict: dict, tokenizer_payload: dict,
+                 src_dtype: dict[str, str]):
+        self.cfg = cfg
+        self._sd = state_dict
+        self.tokenizer_payload = tokenizer_payload
+        self.src_dtype = src_dtype
+
+    def state_dict(self):
+        return self._sd
+
+    def eval(self):
+        return self
+
+
+def load_hf_safetensors_model(model_spec: str, revision: str | None = None) -> _HFSafetensorsModel:
+    """Load a ParakeetForTDT safetensors checkpoint (HF repo id or local
+    dir). thrush-ternary-v2 tensors (<m>.qweight + <m>.scales, declared in
+    ternary.json) are repacked losslessly into GGML_TYPE_TQ1_G128 bytes
+    (codes and fp16 scales copied exactly; scripts/lib/ternary.py). Each
+    module's zero-code fraction is checked against ternary.json and its
+    shape against the declared in/out features."""
+    import json
+    import torch
+    from safetensors.torch import load_file
+    from lib.ternary import (
+        DEFAULT_GROUP_SIZE,
+        TQ1_G128_BLOCK,
+        pack_tq1_g128,
+        unpack_thrush_codes,
+    )
+
+    local = Path(model_spec).expanduser()
+
+    def fetch(name: str, required: bool = True) -> Path | None:
+        if local.is_dir():
+            p = local / name
+            if p.exists():
+                return p
+            if required:
+                raise FileNotFoundError(f"{local}: missing {name}")
+            return None
+        from huggingface_hub import hf_hub_download
+        from huggingface_hub.errors import EntryNotFoundError
+        try:
+            return Path(hf_hub_download(model_spec, name, revision=revision))
+        except EntryNotFoundError:
+            if required:
+                raise
+            return None
+
+    print(f"Loading Parakeet HF safetensors: {model_spec}"
+          f"{f' @ {revision}' if revision else ''}")
+    hf_cfg = json.loads(fetch("config.json").read_text(encoding="utf-8"))
+    tok_json = json.loads(fetch("tokenizer.json").read_text(encoding="utf-8"))
+    raw = load_file(str(fetch("model.safetensors")), device="cpu")
+
+    ternary_path = fetch("ternary.json", required=False)
+    ternary_spec: dict[str, dict] = {}
+    group_size = DEFAULT_GROUP_SIZE
+    if ternary_path is not None:
+        tj = json.loads(ternary_path.read_text(encoding="utf-8"))
+        if tj.get("format") != "thrush-ternary-v2":
+            raise ValueError(f"unsupported ternary format {tj.get('format')!r}")
+        group_size = int(tj["quant"]["group_size"])
+        ternary_spec = {m["name"]: m for m in tj["quantized_modules"]}
+
+    sd: dict[str, "torch.Tensor | _TernaryWeight"] = {}
+    src_dtype: dict[str, str] = {}
+    n_ternary = 0
+    n_dropped = 0
+    for key in sorted(raw):
+        value = raw[key]
+        if key.startswith(_HF_DROPPED_PREFIXES):
+            n_dropped += 1
+            continue
+        if key.endswith(".scales"):
+            continue  # consumed with its .qweight sibling
+        if key.endswith(".qweight"):
+            base = key[: -len(".qweight")]
+            spec = ternary_spec.get(base)
+            if spec is None:
+                raise KeyError(f"{key!r} is packed but not declared in ternary.json")
+            if int(spec.get("group_size", group_size)) != group_size:
+                raise ValueError(f"{base}: per-module group_size differs from quant.group_size")
+            if spec.get("has_bias"):
+                raise ValueError(f"{base}: ternary modules with bias are not handled")
+            in_f, out_f = int(spec["in_features"]), int(spec["out_features"])
+            if group_size != 128 or in_f % TQ1_G128_BLOCK:
+                raise ValueError(f"{base}: TQ1_G128 needs group 128 and in_features % 256 == 0 "
+                                 f"(got group {group_size}, in {in_f})")
+            codes = unpack_thrush_codes(value.numpy(), in_features=in_f)
+            if codes.shape[0] != out_f:
+                raise ValueError(f"{base}: {codes.shape[0]} rows, ternary.json says {out_f}")
+            # code 1 <=> weight 0 (scales are never 0 in these checkpoints,
+            # but counting codes keeps the check independent of that)
+            zf = float(np.count_nonzero(codes == 1) / codes.size)
+            if abs(zf - float(spec["zero_fraction"])) > 1e-6:
+                raise ValueError(
+                    f"{base}: zero-code fraction {zf:.7f} != ternary.json "
+                    f"{spec['zero_fraction']:.7f} (pack format misread?)"
+                )
+            scales = raw[base + ".scales"].numpy()
+            if scales.dtype != np.float16:
+                raise ValueError(f"{base}: scales are {scales.dtype}, expected float16")
+            # Pointwise convs (as_conv1d) are stored 2-D [out, in] like
+            # linears: quant blocks run along the input axis, and the
+            # parakeet loader accepts quantized pointwise kernels as 2-D.
+            name = _hf_to_nemo_name(base + ".weight")
+            sd[name] = _TernaryWeight(pack_tq1_g128(codes, scales), out_f, in_f)
+            src_dtype[name] = "TQ1_G128"
+            n_ternary += 1
+            continue
+        t = value
+        name = _hf_to_nemo_name(key)
+        if t.is_floating_point():
+            src_dtype[name] = {torch.float16: "F16", torch.bfloat16: "BF16"}.get(t.dtype, "F32")
+            t = t.to(torch.float32)  # F16 -> F32 is exact
+        if name in sd:
+            raise KeyError(f"two HF tensors map to {name!r}")
+        sd[name] = t
+
+    if n_ternary != len(ternary_spec):
+        missing = sorted(set(ternary_spec) - {k[: -len(".qweight")] for k in raw if k.endswith(".qweight")})
+        raise ValueError(f"ternary.json declares {len(ternary_spec)} modules, found {n_ternary} packed: {missing[:5]}")
+    print(f"  {len(sd)} tensors (NeMo names), {n_ternary} kept ternary (TQ1_G128), "
+          f"{n_dropped} vad_head tensors dropped")
+
+    joint_hidden = int(sd["joint.enc.weight"].shape[0])
+    cfg = _hf_to_nemo_cfg(hf_cfg, joint_hidden)
+    return _HFSafetensorsModel(cfg, sd, extract_tokenizer_hf(tok_json), src_dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -1294,10 +1695,8 @@ def tensor_to_fp32_numpy(t) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-def convert(model_spec: str, out_path: Path, repo_id: str | None = None) -> None:
-    from omegaconf import OmegaConf
-
-    print(f"Output dtype: {REFERENCE_DTYPE_LABEL} (source/reference dtype)")
+def convert(model_spec: str, out_path: Path, repo_id: str | None = None,
+            revision: str | None = None) -> None:
 
     # The output slug is the canonical variant key. main() always sets
     # out_path = models/<slug>/<slug>-<REFDTYPE>.gguf, so the slug is
@@ -1311,6 +1710,7 @@ def convert(model_spec: str, out_path: Path, repo_id: str | None = None) -> None
             f"known variants: {sorted(VARIANT_PROFILES)}"
         )
     profile = VARIANT_PROFILES[slug]
+    print(f"Output dtype: {profile.get('output_label', REFERENCE_DTYPE_LABEL)} (source/reference dtype)")
     head_kind = profile["head_kind"]
     prefer_direct = bool(profile.get("prefer_direct_load", False))
     drop_aux_ctc = "tdt_ctc" in slug  # hybrid checkpoints carry an aux CTC head we drop
@@ -1322,9 +1722,14 @@ def convert(model_spec: str, out_path: Path, repo_id: str | None = None) -> None
           f"{', prompt=on' if has_prompt else ''}"
           f"{', spk_kernels=on' if has_spk_kernels else ''})")
 
-    model = load_nemo_model(model_spec, prefer_direct=prefer_direct)
+    if profile.get("source_format") == "hf_safetensors":
+        model = load_hf_safetensors_model(model_spec, revision=revision)
+        config = model.cfg
+    else:
+        from omegaconf import OmegaConf
 
-    config = OmegaConf.to_container(model.cfg, resolve=True)
+        model = load_nemo_model(model_spec, prefer_direct=prefer_direct)
+        config = OmegaConf.to_container(model.cfg, resolve=True)
     hp = read_hparams(config)
     resolve_runtime_hparams(hp, model, config, head_kind)
 
@@ -1408,11 +1813,14 @@ def convert(model_spec: str, out_path: Path, repo_id: str | None = None) -> None
     # SPM instance NeMo hands out through model.tokenizer.tokenizer has
     # vocab_size monkey-patched to a property-like int on some builds,
     # which breaks the extract_tokenizer() contract.
-    import sentencepiece as spm
-    proto = model.tokenizer.tokenizer.serialized_model_proto()
-    sp = spm.SentencePieceProcessor()
-    sp.LoadFromSerializedProto(proto)
-    tok = extract_tokenizer(sp)
+    if isinstance(model, _HFSafetensorsModel):
+        tok = model.tokenizer_payload
+    else:
+        import sentencepiece as spm
+        proto = model.tokenizer.tokenizer.serialized_model_proto()
+        sp = spm.SentencePieceProcessor()
+        sp.LoadFromSerializedProto(proto)
+        tok = extract_tokenizer(sp)
     if len(tok["tokens"]) != hp["pred_vocab"]:
         raise ValueError(
             f"tokenizer length mismatch: {len(tok['tokens'])} tokens "
@@ -1450,7 +1858,7 @@ def convert(model_spec: str, out_path: Path, repo_id: str | None = None) -> None
         basename=profile.get("basename", "parakeet-tdt"),
         size_label=profile["size_label"],
         version=profile["version"],
-        file_type=REFERENCE_FILE_TYPE,
+        file_type=profile.get("file_type", REFERENCE_FILE_TYPE),
         languages=profile["languages"],
         author=profile.get("author", "NVIDIA"),
         organization=profile.get("organization", "nvidia"),
@@ -1690,14 +2098,34 @@ def convert(model_spec: str, out_path: Path, repo_id: str | None = None) -> None
     n_added = 0
     bytes_out = 0
 
+    # Native-ternary sources (parakeet-redux) keep every tensor in the
+    # dtype the checkpoint stores it in, so the GGUF is no larger than the
+    # source: ternary modules as TQ1_G128, F16 matrices as F16. The loader
+    # requires fp32 for 1-D tensors and the attention position biases.
+    keep_src_dtypes = bool(profile.get("keep_source_dtypes"))
+    src_dtype = getattr(model, "src_dtype", {}) or {}
+    tq1_g128_dtype = None
+
     def add(nemo_name: str, gguf_name: str) -> None:
-        nonlocal n_added, bytes_out
+        nonlocal n_added, bytes_out, tq1_g128_dtype
         if nemo_name not in sd_keys:
             raise KeyError(f"state_dict missing tensor: {nemo_name!r}")
-        arr = tensor_to_fp32_numpy(sd[nemo_name])
-        writer.add_tensor(gguf_name, arr)
+        value = sd[nemo_name]
+        if isinstance(value, _TernaryWeight):
+            if tq1_g128_dtype is None:
+                from lib.ternary import gguf_tq1_g128_dtype
+                tq1_g128_dtype = gguf_tq1_g128_dtype()
+            writer.add_tensor(gguf_name, value.packed, raw_dtype=tq1_g128_dtype)
+            nbytes = int(value.packed.nbytes)
+        else:
+            arr = tensor_to_fp32_numpy(value)
+            if (keep_src_dtypes and src_dtype.get(nemo_name) == "F16" and arr.ndim >= 2
+                    and not nemo_name.endswith((".pos_bias_u", ".pos_bias_v"))):
+                arr = arr.astype(np.float16)  # exact: the values came from F16
+            writer.add_tensor(gguf_name, arr)
+            nbytes = int(arr.nbytes)
         consumed.add(nemo_name)
-        bytes_out += int(arr.nbytes)
+        bytes_out += nbytes
         n_added += 1
 
     def add_combined(nemo_a: str, nemo_b: str, gguf_name: str) -> None:
@@ -1874,6 +2302,12 @@ def main(argv: list[str]) -> int:
         help="HF repo id used to derive the output slug when converting "
              "from a local path. Ignored if out_path is given.",
     )
+    p.add_argument(
+        "--revision",
+        type=str,
+        default=None,
+        help="HF revision to pin (HF safetensors sources only).",
+    )
     args = p.parse_args(argv[1:])
 
     out_path = args.out_path
@@ -1888,13 +2322,15 @@ def main(argv: list[str]) -> int:
             )
             return 2
         slug = slug_from_repo_id(repo_id)
-        out_path = REPO_ROOT / "models" / slug / gguf_name(slug, REFERENCE_DTYPE_LABEL)
+        slug = REPO_SLUG_ALIASES.get(slug, slug)
+        label = VARIANT_PROFILES.get(slug, {}).get("output_label", REFERENCE_DTYPE_LABEL)
+        out_path = REPO_ROOT / "models" / slug / gguf_name(slug, label)
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
     repo_id = args.repo_id
     if repo_id is None and "/" in args.model and not Path(args.model).exists():
         repo_id = args.model
-    convert(args.model, out_path, repo_id=repo_id)
+    convert(args.model, out_path, repo_id=repo_id, revision=args.revision)
     return 0
 
 

@@ -1,0 +1,42 @@
+# Spec for the HF README of Nairod785/parakeet-ultra-gguf.
+# Prose only; numbers and metadata come from catalog/<variant>.json. See README.md.
+
+pin_date: 2026-09-26
+
+validation:
+  reference: HF transformers (ParakeetForTDT)
+  commit: a9fa7fc
+  date: 2026-09-26
+
+pipeline_tag: automatic-speech-recognition
+tags:
+  - gguf
+  - transcribe.cpp
+  - asr
+  - speech-to-text
+  - parakeet
+  - conformer
+  - rnnt
+  - tdt
+  - multilingual
+
+summary: |
+  Moondream's full-precision post-training of NVIDIA's parakeet-tdt-0.6b-v3:
+  the same FastConformer encoder and TDT transducer decoder, the same
+  25-language vocabulary, with better accuracy upstream reports on English,
+  European languages, noisy audio and long-form speech. Takes 16 kHz mono
+  audio and produces a punctuated, cased transcript with optional
+  token-level timestamps. Not a streaming model and does not translate.
+
+  The GGUF is structurally identical to the v3 GGUF (same 697 tensors,
+  tokenizer and hyperparameters), so it runs on transcribe.cpp's stock
+  parakeet runtime. Moondream's Photon-only VAD head (6 tensors) is dropped.
+  See CONVERSION.md in this repo for how the files were produced and how to
+  reproduce them.
+
+wer:
+  notes: |
+    Greedy transducer decoding, no external LM. Upstream self-reported
+    figures (Open ASR Leaderboard 7-set average 5.80% WER vs 6.26% for v3;
+    FLEURS 25-language average 9.55% vs 11.62%) are Moondream's own and were
+    not re-measured here.

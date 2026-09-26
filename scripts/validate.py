@@ -256,6 +256,9 @@ def find_cli(repo: Path) -> Path:
     for candidate in [
         repo / "build" / "bin" / "transcribe-cli",
         repo / "build" / "transcribe-cli",
+        # Multi-config generators (Visual Studio) nest per configuration.
+        repo / "build" / "bin" / "Release" / "transcribe-cli.exe",
+        repo / "build" / "bin" / "RelWithDebInfo" / "transcribe-cli.exe",
     ]:
         if candidate.exists():
             return candidate

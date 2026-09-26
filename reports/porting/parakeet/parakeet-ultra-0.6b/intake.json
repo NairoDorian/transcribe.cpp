@@ -1,0 +1,140 @@
+{
+  "schema_version": "transcribe-intake-v1",
+  "family": "parakeet",
+  "hf_repo": "moondream/parakeet-ultra",
+  "hf_revision": "73175eb7aeb0d82f1e2a6b53b3aabc10a90bcd0b",
+  "sources": {
+    "config": {
+      "kind": "hf_file",
+      "path": "config.json",
+      "status": "found"
+    },
+    "preprocessor": {
+      "kind": "reference_code",
+      "path": "nvidia/parakeet-tdt-0.6b-v3, efeemece/avena-parakeet-ultra",
+      "status": "found",
+      "detail": "Frontend configuration verified against canonical NeMo v3 and avena-parakeet-ultra (pre_emphasis=0.97)"
+    },
+    "tokenizer_json": {
+      "kind": "hf_file",
+      "path": "tokenizer.json",
+      "status": "found"
+    },
+    "safetensors_metadata": {
+      "kind": "hf_api",
+      "path": "HfApi.get_safetensors_metadata",
+      "status": "found",
+      "detail": "header-only floating dtype distribution; F16=356, F32=349, I64=24"
+    }
+  },
+  "variants": [
+    {
+      "name": "parakeet-ultra-0.6b",
+      "memory_gb": 2.5,
+      "files": [
+        "model.safetensors",
+        "config.json",
+        "tokenizer.json"
+      ]
+    }
+  ],
+  "config": {
+    "architecture_candidates": [
+      "encoder-transducer"
+    ],
+    "key_fields": {
+      "architectures": [
+        "ParakeetForTDT"
+      ],
+      "model_type": "parakeet_tdt",
+      "hidden_act": "relu",
+      "vocab_size": 8193,
+      "encoder.n_layers": 24,
+      "encoder.d_model": 1024,
+      "encoder.n_heads": 8,
+      "encoder.conv_kernel_size": 9,
+      "encoder.subsampling_factor": 8,
+      "decoder.pred_hidden": 640,
+      "decoder.pred_rnn_layers": 2,
+      "joint.durations": [0, 1, 2, 3, 4]
+    }
+  },
+  "dtype": {
+    "expected": "float32",
+    "source": "config",
+    "evidence": "Config declares float32; base weights stored as F16 and normalizations/biases as F32 in safetensors. Emitted reference GGUF will be F32/F16.",
+    "details": {
+      "config_declared": "float32",
+      "header_distribution": {
+        "I64": 24,
+        "F32": 349,
+        "F16": 356
+      }
+    }
+  },
+  "frontend": {
+    "sample_rate": 16000,
+    "n_mels": 128,
+    "hop_length": 160,
+    "fft_size": 512,
+    "window": "hann_periodic",
+    "normalization": "per_feature",
+    "preemphasis": 0.97,
+    "dither": 1e-05,
+    "center": true,
+    "padding_mode": "reflect",
+    "mel_filterbank_norm": "slaney"
+  },
+  "tokenizer": {
+    "type": "bpe",
+    "vocab_size": 8192,
+    "special_tokens": {
+      "pad": 2,
+      "blank": 8192,
+      "decoder_start": 8192
+    },
+    "has_language_tokens": false,
+    "vocab_sha256": "7c21c04ff6ff2f806ca43a8420479091479c805d2b7952825ae2acc4fec9424d"
+  },
+  "capabilities": {
+    "languages": [
+      "bg", "hr", "cs", "da", "nl",
+      "en", "et", "fi", "fr", "de",
+      "el", "hu", "it", "lv", "lt",
+      "mt", "pl", "pt", "ro", "ru",
+      "sk", "sl", "es", "sv", "uk"
+    ],
+    "language_detection": true,
+    "translation": false,
+    "timestamps": ["token", "word", "segment"],
+    "streaming": false,
+    "speaker_diarization": false
+  },
+  "upstream_benchmarks": [
+    {
+      "dataset": "Open ASR Leaderboard (7 English sets avg)",
+      "language": "en",
+      "metric": "wer",
+      "score": 5.80,
+      "score_unit": "percent",
+      "source": "https://huggingface.co/moondream/parakeet-ultra"
+    },
+    {
+      "dataset": "FLEURS (25 European languages avg)",
+      "language": null,
+      "metric": "wer",
+      "score": 9.55,
+      "score_unit": "percent",
+      "source": "https://huggingface.co/moondream/parakeet-ultra"
+    }
+  ],
+  "reference_framework": "transformers",
+  "reference_rationale": "moondream/parakeet-ultra ships in HuggingFace safetensors format (ParakeetForTDT). NeMo v3 serves as structural cross-check, but HF transformers provides the canonical open-source evaluation path.",
+  "architecture_pattern": "encoder-transducer",
+  "known_risks": [
+    "Checkpoint lacks .nemo archive; converter must read safetensors directly rather than through NeMo ASRModel.",
+    "Contains 6 vad_head.* tensors (~213K parameters) used by Moondream Photon for segmenting audio, which must be explicitly dropped during conversion.",
+    "Pre-emphasis must be 0.97 as established by avena-parakeet-ultra and canonical NeMo v3, not 0.0."
+  ],
+  "intake_gaps": []
+}

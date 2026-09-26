@@ -1,0 +1,41 @@
+{
+  "schema": "transcribe-catalog-v1",
+  "variant": "parakeet-ultra-0.6b",
+  "family": "parakeet",
+  "display_name": "Parakeet Ultra 0.6B",
+  "params": 627052166,
+  "license": {
+    "spdx": "cc-by-4.0",
+    "display": "CC-BY-4.0"
+  },
+  "upstream_repo": "moondream/parakeet-ultra",
+  "upstream_commit": "73175eb",
+  "published_repo": "Nairod785/parakeet-ultra-gguf",
+  "docs_page": "parakeet.md",
+  "languages": [
+    "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu",
+    "it", "lv", "lt", "mt", "pl", "pt", "ro", "ru", "sk", "sl", "es", "sv",
+    "uk"
+  ],
+  "language_tag_form": "bare-bcp47",
+  "long_form_strategy": "chunked-unbounded",
+  "capabilities": {
+    "transcribe": {"supported":true,"verified":true},
+    "translate": {"supported":false},
+    "lang_detect": {"supported":true,"verified":true},
+    "timestamps": {"supported":true,"verified":true,"granularities":["token"]},
+    "streaming": {"supported":false},
+    "diarize": {"supported":false},
+    "batching": {"supported":true,"verified":true}
+  },
+  "downloads": [
+    {"quant":"F16","filename":"parakeet-ultra-0.6b-F16.gguf","size_bytes":1255869984},
+    {"quant":"Q8_0","filename":"parakeet-ultra-0.6b-Q8_0.gguf","size_bytes":739508704},
+    {"quant":"Q6_K","filename":"parakeet-ultra-0.6b-Q6_K.gguf","size_bytes":610342368},
+    {"quant":"Q5_K_M","filename":"parakeet-ultra-0.6b-Q5_K_M.gguf","size_bytes":548946400},
+    {"quant":"Q4_K_M","filename":"parakeet-ultra-0.6b-Q4_K_M.gguf","size_bytes":485425632}
+  ],
+  "accuracy_benchmarks": [],
+  "headline_benchmark": null,
+  "speed_benchmarks": []
+}

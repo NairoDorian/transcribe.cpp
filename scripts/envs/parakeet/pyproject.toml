@@ -1,24 +1,72 @@
 [project]
 name = "transcribe-parakeet-env"
 version = "0.1.0"
-description = "Python env for Parakeet TDT reference dumps via NeMo"
+description = "Python env for Parakeet reference dumps (NeMo) and Moondream HF safetensors conversion"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-    "torch>=2.2",
-    "nemo-toolkit[asr] @ git+https://github.com/NVIDIA-NeMo/NeMo.git@6967f48fda2a",
     "huggingface-hub>=0.20",
     "soundfile>=0.12",
     "numpy>=1.26",
     "sentencepiece>=0.2",
     "gguf>=0.10.0",
+    # NeMo lane (darwin/linux): reference dumps + conversion for the
+    # nvidia/parakeet-* .nemo checkpoints. The torch requirement here is a
+    # floor only - the per-platform torch versions/indexes are set by
+    # `tool.uv.override-dependencies` below.
+    "torch>=2.2",
+    "nemo-toolkit[asr] @ git+https://github.com/NVIDIA-NeMo/NeMo.git@6967f48fda2a ; sys_platform != 'win32'",
+    # HuggingFace lane (windows): NeMo does not install on win32, so the
+    # moondream/parakeet-{ultra,redux} HF-safetensors variants are served
+    # by transformers instead. transformers>=5 is required - ParakeetForTDT
+    # (model_type "parakeet_tdt") only exists from the 5.x line; 4.x ships
+    # ParakeetForCTC only.
+    "transformers>=5.17 ; sys_platform == 'win32'",
+    "safetensors>=0.8 ; sys_platform == 'win32'",
+    "omegaconf>=2.3.1 ; sys_platform == 'win32'",
+    "librosa>=0.11.0",
 ]
 
-# NeMo main maps torch by platform: darwin->pypi (CPU), linux->cu129,
-# windows->cpu. Restrict to the two we actually run on (laptop dumps
-# on darwin, Modal sweeps on linux/cuda) so the resolver picks one
-# torch source per split and the cpu/cu129 indexes do not collide.
+[[tool.uv.index]]
+name = "pytorch-nightly-cu134"
+url = "https://download.pytorch.org/whl/nightly/cu134"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-nightly-cu134", marker = "sys_platform == 'win32'" },
+    { index = "pytorch-cu129", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
+]
+
 [tool.uv]
 environments = [
     "sys_platform == 'darwin'",
     "sys_platform == 'linux'",
+    "sys_platform == 'win32'",
+]
+# NeMo's own metadata ships per-platform torch requirements that each pin an
+# index (darwin->cpu, linux->cu129, win32->cpu). The win32 one collides with
+# the nightly source above, so torch is overridden wholesale: these three
+# specs replace every torch requirement in the graph (ours and NeMo's), and
+# `tool.uv.sources` then assigns exactly one index per platform split:
+#   darwin -> PyTorch cpu index    (NeMo laptop lane)
+#   linux  -> PyTorch cu129 index  (NeMo Modal lane, unchanged)
+#   win32  -> nightly cu134 index  (host toolkit is CUDA 13.4)
+# The win32 spec uses a `.dev0` lower bound - an explicit pre-release in the
+# specifier is what lets uv accept nightly builds for torch only, while every
+# other package keeps the default `if-necessary` pre-release policy.
+override-dependencies = [
+    "torch>=2.6.0 ; sys_platform == 'darwin'",
+    "torch>=2.6.0 ; sys_platform == 'linux'",
+    "torch>=2.15.0.dev0 ; sys_platform == 'win32'",
 ]

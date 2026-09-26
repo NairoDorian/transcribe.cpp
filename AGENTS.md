@@ -16,6 +16,13 @@ coding agents.
 uv run --project scripts/envs/<family> scripts/<script>.py ...
 ```
 
+- **Backlog (deferred, not started):** every env under `scripts/envs/` should
+  eventually get its dependencies bumped to latest — and where the env uses
+  PyTorch, to the nightly CUDA index matching the local toolkit (the parakeet
+  port env is the reference for this: `https://download.pytorch.org/whl/nightly/cu134`
+  for a CUDA 13.4 host). Do this as a dedicated refresh pass later; never mix
+  fleet-wide dep bumps into a behavior-change commit.
+
 ## Build
 
 - After C++ changes, run:

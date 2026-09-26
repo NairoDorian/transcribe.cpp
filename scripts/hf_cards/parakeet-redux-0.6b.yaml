@@ -1,0 +1,41 @@
+# Spec for the HF README of Nairod785/parakeet-redux-gguf.
+# Prose only; numbers and metadata come from catalog/<variant>.json. See README.md.
+
+pin_date: 2026-09-26
+
+validation:
+  reference: HF transformers (ParakeetForTDT)
+  commit: a9fa7fc
+  date: 2026-09-26
+
+pipeline_tag: automatic-speech-recognition
+tags:
+  - gguf
+  - transcribe.cpp
+  - asr
+  - speech-to-text
+  - parakeet
+  - conformer
+  - rnnt
+  - tdt
+  - multilingual
+
+summary: |
+  Moondream's ternary (thrush-ternary-v2) sibling of parakeet-ultra: the 264
+  encoder linear and pointwise-conv weights are stored upstream as base-3
+  codes {-1, 0, +1} with one FP16 scale per 128 weights (178 MB checkpoint).
+  Takes 16 kHz mono audio and produces a punctuated, cased transcript with
+  optional token-level timestamps across the 25 v3 languages. Not a
+  streaming model and does not translate.
+
+  transcribe.cpp has no ternary kernels, so the ternary weights are
+  dequantized exactly (w = scale * (code - 1)) at conversion time and the
+  model runs on the stock parakeet runtime. The GGUFs are therefore the
+  same size as parakeet-ultra's; the gain over re-quantizing ultra is the
+  ternary-trained weights, not file size. See CONVERSION.md in this repo.
+
+wer:
+  notes: |
+    Greedy transducer decoding, no external LM. Upstream reports accuracy
+    close to parakeet-ultra; not re-measured here beyond the table above.
+    Expect slightly weaker punctuation and casing than ultra on some inputs.

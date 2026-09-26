@@ -25,6 +25,7 @@
 #include "conformer/conformer.h"
 #include "ggml.h"
 #include "transcribe-debug.h"
+#include "transcribe-env.h"
 #include "transcribe-flash-policy.h"
 #include "transcribe-log.h"
 #include "weights.h"
@@ -538,6 +539,11 @@ EncoderBuild build_encoder_graph(ggml_context *                     ctx,
         // the relative-position mask to F16. Parakeet has no attention decoder.
         bool enc_use_flash = true, dec_use_flash = false;
         transcribe::flash::apply_env_overrides(enc_use_flash, dec_use_flash);
+        // Only where the backend fuses the per-head rel-pos mask (not CUDA).
+        if (enc_use_flash && !transcribe::env::flag("TRANSCRIBE_FORCE_FLASH") &&
+            !conf::flash_supports_rel_pos_mask(backend_name, hp.enc_d_model / hp.enc_n_heads, hp.enc_n_heads)) {
+            enc_use_flash = false;
+        }
         bparams.use_flash          = enc_use_flash;
         bparams.policy             = policy;
         bparams.att_context_left   = hp.enc_att_context_left;
@@ -862,6 +868,11 @@ EncoderBuild build_encoder_graph_streaming(ggml_context *            ctx,
     // decoder, so the decoder flag is a throwaway.
     bool enc_use_flash = true, dec_use_flash = false;
     transcribe::flash::apply_env_overrides(enc_use_flash, dec_use_flash);
+    // Only where the backend fuses the per-head rel-pos mask (not CUDA).
+    if (enc_use_flash && !transcribe::env::flag("TRANSCRIBE_FORCE_FLASH") &&
+        !conf::flash_supports_rel_pos_mask(backend_name, hp.enc_d_model / hp.enc_n_heads, hp.enc_n_heads)) {
+        enc_use_flash = false;
+    }
     bparams.use_flash          = enc_use_flash;
     bparams.policy             = policy;
     // No att_context_left/right: ChunkedLimited derives the band entirely

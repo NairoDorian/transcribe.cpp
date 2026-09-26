@@ -141,6 +141,15 @@ bool resolve_conv_direct(const char * direct_env, const char * no_direct_env, bo
 // f32 weights. Metal and CPU prefer direct.
 bool detect_direct_pw(const char * backend);
 
+// True when `backend` (a ggml backend/device name, e.g. "CUDA0") runs the
+// fused FLASH_ATTN_EXT the rel-pos attention builds — F16 K/V and a
+// per-head [T_k, T_q, n_head] F16 mask — natively. When it does not (CUDA's
+// flash attention only takes a mask shared by all heads), the scheduler
+// would run attention on the CPU in every block with a round trip each;
+// callers use the manual mul_mat + soft_max path instead, which every
+// backend runs natively. Probed once per (backend, head_dim, n_head).
+bool flash_supports_rel_pos_mask(const char * backend, int head_dim, int n_head);
+
 // Scalar knobs for the block forward. All fields required except the
 // optional local-attention window (att_context_left / att_context_right).
 struct BlockParams {

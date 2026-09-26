@@ -145,6 +145,28 @@
         "TRANSCRIBE_BUILD_TESTS": "OFF",
         "TRANSCRIBE_BUILD_EXAMPLES": "ON"
       }
+    },
+    {
+      "name": "android-arm64",
+      "displayName": "Android arm64-v8a (CPU runtime-dispatched variants + Vulkan)",
+      "description": "Shared libtranscribe for Android phones. ggml's CPU backend is built as every Android variant (armv8.0, armv8.2 dotprod[+fp16], armv8.6 i8mm, armv9 SVE2/SME) and the best one is loaded at runtime, so dot-product / int8-matmul GEMMs and CPU_REPACK tiles are used where the SoC has them. Vulkan targets Adreno/Mali/Xclipse GPUs. Needs ANDROID_NDK (r27+) in the environment; for Vulkan, VULKAN_SDK for vulkan.hpp headers and the host glslc.",
+      "binaryDir": "${sourceDir}/build-android-arm64",
+      "generator": "Ninja",
+      "toolchainFile": "$env{ANDROID_NDK}/build/cmake/android.toolchain.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ANDROID_ABI": "arm64-v8a",
+        "ANDROID_PLATFORM": "android-28",
+        "TRANSCRIBE_BUILD_SHARED": "ON",
+        "TRANSCRIBE_GGML_BACKEND_DL": "ON",
+        "GGML_CPU_ALL_VARIANTS": "ON",
+        "GGML_NATIVE": "OFF",
+        "GGML_OPENMP": "OFF",
+        "TRANSCRIBE_USE_OPENMP": "OFF",
+        "TRANSCRIBE_USE_SYSTEM_BLAS": "OFF",
+        "TRANSCRIBE_VULKAN": "ON",
+        "TRANSCRIBE_BUILD_TESTS": "OFF"
+      }
     }
   ]
 }

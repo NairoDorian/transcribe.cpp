@@ -9,6 +9,7 @@
 
 #include "conformer/conformer.h"
 
+#include "ggml-backend.h"
 #include "ggml.h"
 #include "transcribe-env.h"
 #include "transcribe-log.h"
@@ -18,6 +19,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <mutex>
+#include <string>
+#include <tuple>
 #include <vector>
 
 namespace transcribe::conformer {
@@ -340,6 +345,41 @@ bool resolve_conv_direct(const char * direct_env, const char * no_direct_env, bo
     return backend_default;
 }
 
+bool flash_supports_rel_pos_mask(const char * backend, int head_dim, int n_head) {
+    if (backend == nullptr) {
+        return true;
+    }
+    static std::mutex                                        mu;
+    static std::map<std::tuple<std::string, int, int>, bool> cache;
+    const auto                  key = std::make_tuple(std::string(backend), head_dim, n_head);
+    std::lock_guard<std::mutex> lock(mu);
+    if (auto it = cache.find(key); it != cache.end()) {
+        return it->second;
+    }
+    bool               ok  = true;  // unknown device: keep the historical default
+    ggml_backend_dev_t dev = ggml_backend_dev_by_name(backend);
+    if (dev != nullptr) {
+        ggml_init_params ip   = { 8 * ggml_tensor_overhead(), nullptr, /*no_alloc=*/true };
+        ggml_context *   pctx = ggml_init(ip);
+        const int64_t    T    = 256;  // any encoder length; mask rows already padded
+        ggml_tensor *    q    = ggml_new_tensor_3d(pctx, GGML_TYPE_F32, head_dim, T, n_head);
+        ggml_tensor *    k    = ggml_new_tensor_3d(pctx, GGML_TYPE_F16, head_dim, T, n_head);
+        ggml_tensor *    v    = ggml_new_tensor_3d(pctx, GGML_TYPE_F16, head_dim, T, n_head);
+        ggml_tensor *    m    = ggml_new_tensor_3d(pctx, GGML_TYPE_F16, T, T, n_head);
+        ggml_tensor *    fa   = ggml_flash_attn_ext(pctx, q, k, v, m, 1.0f, 0.0f, 0.0f);
+        ok                    = ggml_backend_dev_supports_op(dev, fa);
+        ggml_free(pctx);
+        if (!ok) {
+            log_msg(TRANSCRIBE_LOG_LEVEL_INFO,
+                    "conformer: %s has no fused flash attention for per-head rel-pos masks; "
+                    "using the manual attention path",
+                    backend);
+        }
+    }
+    cache.emplace(key, ok);
+    return ok;
+}
+
 bool detect_direct_pw(const char * backend) {
     // Vulkan defaults to im2col: on AMD Renoir, im2col + mul_mat measured
     // ~200 ms/encode faster than direct for f32 weights. Metal/CPU prefer
@@ -374,13 +414,19 @@ ggml_tensor * conv_module(ggml_context * ctx, ggml_tensor * x, const BlockView &
 
     // Quantized kernels (e.g. ternary TQ1_G128) have no im2col path; they always
     // take the direct mul_mat, whatever the backend default.
-    if (policy.direct_pw || ggml_is_quantized(b.conv_pw1_w->type)) {
+    // The im2col branch below is single-utterance (its GLU views pin ne[2] = 1),
+    // so batched graphs (B > 1) always take the direct path as well.
+    if (policy.direct_pw || B > 1 || ggml_is_quantized(b.conv_pw1_w->type)) {
         // Pointwise conv 1 as direct mul_mat in [d_model, T, B] layout.
         // Kernel ne=[1, d_model, 2*d_model] → reshape to [d_model, 2*d_model].
         // Force F32 accumulation for F16 weights (see mul_mat_f32acc in
         // causal_lm.cpp for the CUDA COMPUTE_16F saturation rationale).
         {
-            ggml_tensor * pw1 = ggml_reshape_2d(ctx, b.conv_pw1_w, d_model, 2 * d_model);
+            // 2-D (quantized) kernels are used as-is: no view, so a CPU_REPACK
+            // weight stays eligible for the repacked GEMM.
+            ggml_tensor * pw1 = ggml_n_dims(b.conv_pw1_w) == 2 ?
+                                    b.conv_pw1_w :
+                                    ggml_reshape_2d(ctx, b.conv_pw1_w, d_model, 2 * d_model);
             x                 = ggml_mul_mat(ctx, pw1, x);  // [2*d_model, T, B]
             if (b.conv_pw1_w->type == GGML_TYPE_F16) {
                 ggml_prec_set_acc(x, GGML_PREC_F32);
@@ -393,12 +439,18 @@ ggml_tensor * conv_module(ggml_context * ctx, ggml_tensor * x, const BlockView &
         // GLU: split ne[0] in half, gate * sigmoid(value). The views carry
         // the batch axis (ne[2]) so the split is per-utterance.
         {
-            const int64_t T     = x->ne[1];
-            const int64_t half  = x->ne[0] / 2;
-            ggml_tensor * gate  = ggml_view_3d(ctx, x, half, T, B, x->nb[1], x->nb[2],
-                                               /*offset=*/0);
-            ggml_tensor * value = ggml_view_3d(ctx, x, half, T, B, x->nb[1], x->nb[2], half * ggml_element_size(x));
-            x                   = ggml_mul(ctx, gate, ggml_sigmoid(ctx, value));
+            const int64_t T    = x->ne[1];
+            const int64_t half = x->ne[0] / 2;
+            ggml_tensor * gate = ggml_view_3d(ctx, x, half, T, B, x->nb[1], x->nb[2],
+                                              /*offset=*/0);
+            // sigmoid runs on the whole contiguous tensor and the value half
+            // is viewed out of the result: unary kernels on CUDA require
+            // contiguous input, and a sigmoid on the strided view would make
+            // the scheduler run it on the CPU in every block.
+            ggml_tensor * sig  = ggml_sigmoid(ctx, x);
+            ggml_tensor * value =
+                ggml_view_3d(ctx, sig, half, T, B, sig->nb[1], sig->nb[2], half * ggml_element_size(sig));
+            x = ggml_mul(ctx, gate, value);
         }
         // x ne = [d_model, T, B]
 
@@ -526,14 +578,15 @@ ggml_tensor * conv_module(ggml_context * ctx, ggml_tensor * x, const BlockView &
 
     x = ggml_silu(ctx, x);
 
-    if (policy.direct_pw || ggml_is_quantized(b.conv_pw2_w->type)) {
+    if (policy.direct_pw || B > 1 || ggml_is_quantized(b.conv_pw2_w->type)) {
         // Transpose back: [T, d_model] -> [d_model, T].
         x = ggml_cont(ctx, ggml_permute(ctx, x, 1, 0, 2, 3));
 
         // Pointwise conv 2 as direct mul_mat in [d_model, T] layout. See
         // the pw1 comment above for the F16 / CUDA COMPUTE_16F rationale.
-        ggml_tensor * pw2 = ggml_reshape_2d(ctx, b.conv_pw2_w, d_model, d_model);
-        x                 = ggml_mul_mat(ctx, pw2, x);
+        ggml_tensor * pw2 =
+            ggml_n_dims(b.conv_pw2_w) == 2 ? b.conv_pw2_w : ggml_reshape_2d(ctx, b.conv_pw2_w, d_model, d_model);
+        x = ggml_mul_mat(ctx, pw2, x);
         if (b.conv_pw2_w->type == GGML_TYPE_F16) {
             ggml_prec_set_acc(x, GGML_PREC_F32);
         }

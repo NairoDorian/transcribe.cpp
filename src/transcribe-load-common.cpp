@@ -15,6 +15,7 @@
 #    include "ggml-metal.h"
 #endif
 #include "transcribe-backend.h"
+#include "transcribe-env.h"
 #include "transcribe-log.h"
 #include "transcribe-path.h"
 
@@ -27,7 +28,132 @@
 #include <stdexcept>
 #include <vector>
 
+extern "C" void ggml_tq1_g128_to_q2_0(const void * x, void * y, int64_t k);
+extern "C" void ggml_tq1_g128_to_q4_0(const void * x, void * y, int64_t k);
+
 namespace transcribe::load_common {
+
+size_t retype_ternary_for_runtime(ggml_context * ctx_meta, ggml_type default_target) {
+    if (ctx_meta == nullptr) {
+        return 0;
+    }
+    ggml_type target = default_target;
+    if (const char * v = std::getenv("TRANSCRIBE_TERNARY_RUNTIME"); v != nullptr && *v != '\0') {
+        if (std::strcmp(v, "native") == 0) {
+            target = GGML_TYPE_TQ1_G128;
+        } else if (std::strcmp(v, "q2_0") == 0) {
+            target = GGML_TYPE_Q2_0;
+        } else if (std::strcmp(v, "q4_0") == 0) {
+            target = GGML_TYPE_Q4_0;
+        } else {
+            log_msg(TRANSCRIBE_LOG_LEVEL_WARN,
+                    "ternary: ignoring TRANSCRIBE_TERNARY_RUNTIME=%s (want q4_0|q2_0|native)", v);
+        }
+    }
+    if (target == GGML_TYPE_TQ1_G128) {
+        return 0;
+    }
+    size_t n = 0;
+    for (ggml_tensor * t = ggml_get_first_tensor(ctx_meta); t != nullptr; t = ggml_get_next_tensor(ctx_meta, t)) {
+        if (t->type != GGML_TYPE_TQ1_G128 || t->data != nullptr || t->buffer != nullptr) {
+            continue;
+        }
+        t->type  = target;
+        t->nb[0] = ggml_type_size(t->type);
+        t->nb[1] = ggml_row_size(t->type, t->ne[0]);
+        for (int d = 2; d < GGML_MAX_DIMS; ++d) {
+            t->nb[d] = t->nb[d - 1] * t->ne[d - 1];
+        }
+        ++n;
+    }
+    if (n > 0) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_INFO,
+                "ternary: running %zu TQ1_G128 tensor(s) as %s (lossless re-layout; "
+                "TRANSCRIBE_TERNARY_RUNTIME=q4_0|q2_0|native overrides)",
+                n, ggml_type_name(target));
+    }
+    return n;
+}
+
+ggml_backend_buffer_t alloc_cpu_repack_weights(const BackendPlan & plan,
+                                               ggml_context *      ctx_meta,
+                                               bool (*eligible)(const ggml_tensor *),
+                                               const char * error_tag) {
+    if (ctx_meta == nullptr || plan.primary == nullptr || plan.primary_kind != BackendKind::Cpu ||
+        transcribe::env::flag("TRANSCRIBE_NO_CPU_REPACK")) {
+        return nullptr;
+    }
+    ggml_backend_dev_t dev = ggml_backend_get_device(plan.primary);
+    ggml_backend_reg_t reg = dev != nullptr ? ggml_backend_dev_backend_reg(dev) : nullptr;
+    auto get_extra         = reg != nullptr ? (ggml_backend_dev_get_extra_bufts_t) ggml_backend_reg_get_proc_address(
+                                                  reg, "ggml_backend_dev_get_extra_bufts") :
+                                              nullptr;
+    if (get_extra == nullptr) {
+        return nullptr;
+    }
+    ggml_backend_buffer_type_t repack = nullptr;
+    for (ggml_backend_buffer_type_t * b = get_extra(dev); b != nullptr && *b != nullptr; ++b) {
+        if (std::strcmp(ggml_backend_buft_name(*b), "CPU_REPACK") == 0) {
+            repack = *b;
+        }
+    }
+    if (repack == nullptr) {
+        return nullptr;
+    }
+
+    std::vector<ggml_tensor *> cand;
+    const size_t               align = ggml_backend_buft_get_alignment(repack);
+    size_t                     total = 0;
+    for (ggml_tensor * t = ggml_get_first_tensor(ctx_meta); t != nullptr; t = ggml_get_next_tensor(ctx_meta, t)) {
+        if (t->data == nullptr && t->view_src == nullptr && ggml_n_dims(t) == 2 && eligible(t)) {
+            cand.push_back(t);
+            total += GGML_PAD(ggml_backend_buft_get_alloc_size(repack, t), align);
+        }
+    }
+    if (cand.empty()) {
+        return nullptr;
+    }
+    ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(repack, total);
+    if (buf == nullptr) {
+        return nullptr;  // fall back to the regular buffer
+    }
+    ggml_tallocr ta     = ggml_tallocr_new(buf);
+    size_t       n_kept = 0;
+    size_t       bytes  = 0;
+    for (ggml_tensor * t : cand) {
+        if (ggml_tallocr_alloc(&ta, t) != GGML_STATUS_SUCCESS || t->extra == nullptr) {
+            // ggml has no repacked kernel for this tensor here: hand it back.
+            t->data   = nullptr;
+            t->buffer = nullptr;
+            t->extra  = nullptr;
+            continue;
+        }
+        ++n_kept;
+        bytes += ggml_nbytes(t);
+    }
+    if (n_kept == 0) {
+        ggml_backend_buffer_free(buf);
+        return nullptr;
+    }
+    ggml_backend_buffer_set_usage(buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+    log_msg(TRANSCRIBE_LOG_LEVEL_INFO, "%s: %zu weight tensor(s) (%.1f MB) use CPU_REPACK GEMM kernels", error_tag,
+            n_kept, bytes / 1e6);
+    return buf;
+}
+
+ggml_type ternary_runtime_default(const BackendPlan & plan) {
+    // Measured on parakeet-redux (RTX 4070 Laptop, 29 s clip, encoder ms):
+    //   CUDA    Q2_0 38   native 47   Q4_0 52   -> Q2_0 (also least VRAM)
+    //   Vulkan  Q4_0 66   native 114  Q2_0 133  -> Q4_0
+    //   CPU     Q4_0 1327 (CPU_REPACK GEMM)  Q2_0 ~2700  native ~4400 -> Q4_0
+    // Metal / ROCm / others are unmeasured: Q4_0 has the most mature kernels.
+    switch (plan.primary_kind) {
+        case BackendKind::Cuda:
+            return GGML_TYPE_Q2_0;
+        default:
+            return GGML_TYPE_Q4_0;
+    }
+}
 
 // GPUs below MTLGPUFamilyApple7 (Intel iGPUs, AMD dGPUs on Intel Macs) have
 // no simdgroup matrix multiply; ggml's fallback matmul kernels silently
@@ -506,7 +632,24 @@ transcribe_status stream_tensor_data(const std::string &  path,
         // activation in src0.
         const uint8_t * upload       = staging.data();
         size_t          upload_bytes = nbytes;
-        if (convert) {
+        if (convert && src_type == GGML_TYPE_TQ1_G128 && (t->type == GGML_TYPE_Q2_0 || t->type == GGML_TYPE_Q4_0)) {
+            // Lossless block re-layout planned by retype_ternary_for_runtime().
+            const int64_t n_elem = ggml_nelements(t);
+            if (src_bytes != ggml_row_size(GGML_TYPE_TQ1_G128, t->ne[0]) * (size_t) ggml_nrows(t)) {
+                log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "%s: tensor \"%s\": TQ1_G128 size mismatch", error_tag, t->name);
+                return TRANSCRIBE_ERR_GGUF;
+            }
+            if (converted.size() < nbytes) {
+                converted.resize(nbytes);
+            }
+            if (t->type == GGML_TYPE_Q4_0) {
+                ggml_tq1_g128_to_q4_0(staging.data(), converted.data(), n_elem);
+            } else {
+                ggml_tq1_g128_to_q2_0(staging.data(), converted.data(), n_elem);
+            }
+            upload = converted.data();
+            ++n_converted;
+        } else if (convert) {
             const ggml_type_traits * src_traits = ggml_get_type_traits(src_type);
             const ggml_type_traits * dst_traits = ggml_get_type_traits(t->type);
             const int64_t            n_elem     = ggml_nelements(t);

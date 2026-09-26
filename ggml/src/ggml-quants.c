@@ -2500,6 +2500,66 @@ void dequantize_row_tq1_g128(const block_tq1_g128 * GGML_RESTRICT x, float * GGM
     }
 }
 
+// Lossless re-layout TQ1_G128 -> Q2_0: each 128-weight group becomes two
+// 64-weight Q2_0 blocks with the group's scale (Q2_0: w = (q - 1) * d, codes
+// 0..2 used). Lets ternary checkpoints run on Q2_0's kernels at 2.25 bpw.
+// Codes (0, 1, 2) of group g of a TQ1_G128 block, in element order.
+static void tq1_g128_group_codes(const block_tq1_g128 * GGML_RESTRICT x, int g, uint8_t * GGML_RESTRICT c) {
+    const uint8_t pow3[5] = {1, 3, 9, 27, 81};
+    const uint8_t * qs = x->qs + 24*g;
+    const uint8_t * qh = x->qh + 2*g;
+    for (int n = 0; n < 5; ++n) {
+        for (int m = 0; m < 16; ++m) { const uint8_t q = qs[m] * pow3[n];      c[m + 16*n]     = ((uint16_t) q * 3) >> 8; }
+        for (int m = 0; m < 8;  ++m) { const uint8_t q = qs[16 + m] * pow3[n]; c[80 + m + 8*n] = ((uint16_t) q * 3) >> 8; }
+    }
+    for (int n = 0; n < 4; ++n) {
+        for (int j = 0; j < 2; ++j) { const uint8_t q = qh[j] * pow3[n]; c[120 + j + 2*n] = ((uint16_t) q * 3) >> 8; }
+    }
+}
+
+// Lossless re-layout TQ1_G128 -> Q4_0: q = code + 7 (weight -1/0/+1 -> 7/8/9),
+// d = the group scale; four 32-weight Q4_0 blocks per group. 4.5 bpw in
+// memory, but Q4_0 has repacked GEMM kernels on x86 AVX2 and ARM
+// dotprod/i8mm, so ternary checkpoints run at the fastest CPU path ggml has.
+void ggml_tq1_g128_to_q4_0(const void * GGML_RESTRICT vx, void * GGML_RESTRICT vy, int64_t k) {
+    assert(k % QK_K == 0);
+    const block_tq1_g128 * GGML_RESTRICT x = vx;
+    block_q4_0           * GGML_RESTRICT y = vy;
+    uint8_t c[QK_TQ1_G128];
+    for (int64_t i = 0; i < k / QK_K; ++i) {
+        for (int g = 0; g < 2; ++g) {
+            tq1_g128_group_codes(&x[i], g, c);
+            for (int h = 0; h < 4; ++h) {
+                block_q4_0 * b = &y[i*8 + g*4 + h];
+                b->d = x[i].d[g];
+                for (int j = 0; j < QK4_0/2; ++j) {
+                    b->qs[j] = (uint8_t) ((c[h*QK4_0 + j] + 7) | ((c[h*QK4_0 + j + QK4_0/2] + 7) << 4));
+                }
+            }
+        }
+    }
+}
+
+void ggml_tq1_g128_to_q2_0(const void * GGML_RESTRICT vx, void * GGML_RESTRICT vy, int64_t k) {
+    assert(k % QK_K == 0);
+    const block_tq1_g128 * GGML_RESTRICT x = vx;
+    block_q2_0           * GGML_RESTRICT y = vy;
+    for (int64_t i = 0; i < k / QK_K; ++i) {
+        for (int g = 0; g < 2; ++g) {
+            uint8_t c[QK_TQ1_G128];
+            tq1_g128_group_codes(&x[i], g, c);
+            for (int h = 0; h < 2; ++h) {
+                block_q2_0 * b = &y[i*4 + g*2 + h];
+                b->d = x[i].d[g];
+                for (int j = 0; j < QK2_0/4; ++j) {
+                    const uint8_t * cc = c + h*QK2_0 + 4*j;
+                    b->qs[j] = (uint8_t) (cc[0] | (cc[1] << 2) | (cc[2] << 4) | (cc[3] << 6));
+                }
+            }
+        }
+    }
+}
+
 size_t quantize_tq1_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
     (void)quant_weights; // not used
     const size_t row_size = ggml_row_size(GGML_TYPE_TQ1_0, n_per_row);

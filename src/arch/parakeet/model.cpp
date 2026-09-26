@@ -127,6 +127,10 @@ ParakeetModel::~ParakeetModel() {
         ggml_free(ctx_meta);
         ctx_meta = nullptr;
     }
+    if (cpu_repack_buffer != nullptr) {
+        safe_buffer_free(cpu_repack_buffer);
+        cpu_repack_buffer = nullptr;
+    }
     if (backend_buffer != nullptr) {
         safe_buffer_free(backend_buffer);
         backend_buffer = nullptr;
@@ -555,8 +559,34 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
     m->backend         = ggml_backend_name(m->plan.primary);
     m->primary_backend = m->plan.primary;
 
-    // Allocate a backend buffer for every tensor in ctx_meta on the
-    // primary backend; the weight bytes are streamed in below.
+    // Ternary checkpoints (TQ1_G128) pick an in-memory layout per backend;
+    // must happen before allocation (see transcribe-load-common.h).
+    transcribe::load_common::retype_ternary_for_runtime(m->ctx_meta,
+                                                        transcribe::load_common::ternary_runtime_default(m->plan));
+
+    // CPU primary: the encoder's linear weights go to ggml's CPU_REPACK
+    // buffer (repacked GEMM) when ggml has a kernel for their type here.
+    // Only tensors consumed directly as MUL_MAT src0 on the device graph are
+    // eligible; predictor / joint weights are also read on the host.
+    m->cpu_repack_buffer = transcribe::load_common::alloc_cpu_repack_weights(
+        m->plan, m->ctx_meta,
+        [](const ggml_tensor * t) {
+            const char * n = ggml_get_name(t);
+            if (std::strcmp(n, "enc.pre_encode.out.weight") == 0) {
+                return true;
+            }
+            if (std::strncmp(n, "enc.blocks.", 11) != 0) {
+                return false;
+            }
+            // Pointwise kernels qualify only in their 2-D (quantized) form,
+            // which conformer::conv_module consumes without a view.
+            return std::strstr(n, ".ff1.linear") != nullptr || std::strstr(n, ".ff2.linear") != nullptr ||
+                   std::strstr(n, ".attn.linear_") != nullptr || std::strstr(n, ".conv.pointwise") != nullptr;
+        },
+        "parakeet");
+
+    // Allocate a backend buffer for every remaining tensor in ctx_meta on
+    // the primary backend; the weight bytes are streamed in below.
     ggml_backend_buffer_t weights_buffer = alloc_ctx_tensors_with_reclaim(m->plan.primary, m->ctx_meta);
     if (weights_buffer == nullptr) {
         gguf_free(gguf_data);

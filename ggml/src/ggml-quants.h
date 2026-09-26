@@ -92,6 +92,10 @@ GGML_API size_t quantize_tq1_0(const float * GGML_RESTRICT src, void * GGML_REST
 GGML_API size_t quantize_tq1_g128(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
 // Pack exact ternary codes (0, 1, 2 = weight -1, 0, +1; k values) and their
 // per-128 fp16 scales (k/128 values) into TQ1_G128 blocks. Lossless.
+// Lossless TQ1_G128 -> Q2_0 re-layout (k weights; k % 256 == 0).
+// Lossless TQ1_G128 -> Q4_0 re-layout (k weights; k % 256 == 0).
+GGML_API void ggml_tq1_g128_to_q4_0(const void * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
+GGML_API void ggml_tq1_g128_to_q2_0(const void * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
 GGML_API void ggml_tq1_g128_pack_codes(const uint8_t * GGML_RESTRICT codes, const ggml_fp16_t * GGML_RESTRICT scales, void * GGML_RESTRICT y, int64_t k);
 GGML_API size_t quantize_tq2_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
 

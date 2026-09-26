@@ -100,6 +100,40 @@ transcribe_status init_backends(transcribe_backend_request requested,
 // I/O or tensor-not-found failure. On failure ctx_meta's tensors
 // may be partially populated; the caller should discard the
 // whole model state on error.
+// Ternary weights are stored as GGML_TYPE_TQ1_G128 (1.75 bpw on disk) and
+// can run in one of three lossless in-memory layouts (same codes, same fp16
+// scales):
+//   GGML_TYPE_Q4_0      4.5 bpw — repacked GEMM on x86 AVX2 / ARM dotprod+i8mm,
+//                       CUDA MMQ, Vulkan, Metal (fastest compute)
+//   GGML_TYPE_Q2_0      2.25 bpw — CUDA MMQ/MMVQ, Vulkan, Metal, CPU AVX2/NEON
+//   GGML_TYPE_TQ1_G128  1.75 bpw — native ternary kernels (smallest memory)
+// default_target is the caller's per-backend choice; the environment
+// variable TRANSCRIBE_TERNARY_RUNTIME=q4_0|q2_0|native overrides it. Call on
+// ctx_meta after the backend plan is known and BEFORE allocating: only the
+// planned type changes, stream_tensor_data() converts while streaming.
+// Returns the number of tensors retyped.
+size_t retype_ternary_for_runtime(ggml_context * ctx_meta, ggml_type default_target);
+
+// On a CPU primary backend, place the eligible weights in ggml's CPU_REPACK
+// buffer type: at upload they are re-laid-out into interleaved tiles and
+// MUL_MAT runs ggml's repacked GEMM (x86 AVX2: Q4_0, Q4_K, IQ4_NL, MXFP4;
+// ARM dotprod/i8mm: also Q5_K, Q6_K, Q8_0), which decodes each weight once per
+// tile of activations instead of once per activation row. ggml decides per
+// tensor (type, ISA, shape); tensors it does not repack are handed back
+// unallocated for the regular buffer. Call after the planned types are final
+// (retype_ternary_for_runtime) and before allocating the rest of ctx_meta.
+// `eligible` must only accept 2-D weights consumed directly as MUL_MAT src0
+// (no views, no host reads). Returns nullptr when nothing was repacked, the
+// primary is not a CPU, or TRANSCRIBE_NO_CPU_REPACK=1.
+ggml_backend_buffer_t alloc_cpu_repack_weights(const BackendPlan & plan,
+                                               ggml_context *      ctx_meta,
+                                               bool (*eligible)(const ggml_tensor *),
+                                               const char * error_tag);
+
+// Per-backend default for retype_ternary_for_runtime (measured; see
+// docs/tools/quantization.md "Native ternary weights").
+ggml_type ternary_runtime_default(const BackendPlan & plan);
+
 transcribe_status stream_tensor_data(const std::string &  path,
                                      const gguf_context * gguf_data,
                                      ggml_context *       ctx_meta,

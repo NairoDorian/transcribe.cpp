@@ -87,7 +87,11 @@ struct ParakeetModel final : public transcribe_model {
     // scheduler_list owns the backends; the destructor frees them in
     // reverse order.
     transcribe::BackendPlan plan;
-    ggml_backend_buffer_t   backend_buffer = nullptr;
+    ggml_backend_buffer_t   backend_buffer    = nullptr;
+    // Encoder linear weights repacked for ggml's CPU GEMM kernels (CPU
+    // primary only; see load_common::alloc_cpu_repack_weights). Freed with
+    // backend_buffer.
+    ggml_backend_buffer_t   cpu_repack_buffer = nullptr;
 
     // Fused BN parameters live in a separate ggml context + buffer,
     // computed at load time from the raw BN tensors. Freed in dtor.

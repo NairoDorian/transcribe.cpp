@@ -86,11 +86,11 @@ def run_meeting(meeting: str, masked: bool, strict_fp32: bool = False) -> dict:
     ]
     if strict_fp32:
         cmd.append("--strict-fp32")
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     tail = "\n".join((proc.stdout + "\n" + proc.stderr).splitlines()[-30:])
     if proc.returncode != 0:
         return {"meeting": meeting, "masked": masked, "ok": False, "log": tail}
-    seglst = json.loads(pathlib.Path(out, "seglst.json").read_text())
+    seglst = json.loads(pathlib.Path(out, "seglst.json").read_text(encoding="utf-8"))
     return {"meeting": meeting, "masked": masked, "ok": True, "seglst": seglst, "log": tail}
 
 
@@ -101,7 +101,7 @@ def main(meetings: str = "", modes: str = "both", strict_fp32: bool = False):
     else:
         manifest = REPO / "samples" / "diar" / "ami-ihm-test.manifest.jsonl"
         ids = sorted(
-            {json.loads(l)["id"].split(".")[0] for l in manifest.read_text().splitlines() if l.strip()}
+            {json.loads(l)["id"].split(".")[0] for l in manifest.read_text(encoding="utf-8").splitlines() if l.strip()}
         )
     mode_list = [True, False] if modes == "both" else [modes == "masked"]
 
@@ -121,7 +121,7 @@ def main(meetings: str = "", modes: str = "both", strict_fp32: bool = False):
         out_dir = REPO / "reports" / "cpwer" / f"nemo-{mode_name}{suffix}"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"{res['meeting']}.seglst.json"
-        out_path.write_text(json.dumps(res["seglst"], indent=1) + "\n")
+        out_path.write_text(json.dumps(res["seglst"], indent=1) + "\n", encoding="utf-8")
         n_ok += 1
         print(f"ok   {res['meeting']} [{mode_name}]: {len(res['seglst'])} segments -> {out_path.relative_to(REPO)}")
     print(f"{n_ok}/{len(cells)} cells succeeded")

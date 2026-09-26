@@ -28,10 +28,10 @@ mean of 3–5 iterations. WER: FLEURS-fr test, 676 utterances, greedy, CUDA/CPU 
 
 | Path | Before | After |
 |---|---|---|
-| redux, CUDA (Q2_0 layout + manual attention) | 9.91 % | 9.94 % |
-| redux, CPU (Q4_0 layout + CPU_REPACK) | 9.91 % | 9.93 % |
-| ultra Q8_0, CUDA | 6.40 % | 6.40 % |
-| ultra Q4_K_M, CPU (CPU_REPACK) | 6.73 % | 6.77 % |
+| redux, CUDA (Q2_0 layout + manual attention) | 8.32 % | 8.34 % |
+| redux, CPU (Q4_0 layout + CPU_REPACK) | 8.32 % | 8.34 % |
+| ultra Q8_0, CUDA | 4.62 % | 4.63 % |
+| ultra Q4_K_M, CPU (CPU_REPACK) | 4.98 % | 4.99 % |
 
 All within the bootstrap CIs (±0.7 pp). `validate.py compare` stays 18/18 with exact
 transcripts for both models; the redux encoder output moved closer to the reference

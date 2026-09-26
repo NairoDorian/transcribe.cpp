@@ -296,8 +296,8 @@ def main() -> int:
             "valid_out_len": scfg.valid_out_len,
         },
     }
-    (out_dir / "config_echo.json").write_text(json.dumps(echo, indent=2, default=str) + "\n")
-    (out_dir / "seglst.json").write_text(json.dumps(seglst, indent=2) + "\n")
+    (out_dir / "config_echo.json").write_text(json.dumps(echo, indent=2, default=str) + "\n", encoding="utf-8")
+    (out_dir / "seglst.json").write_text(json.dumps(seglst, indent=2) + "\n", encoding="utf-8")
 
     per_speaker: dict[str, str] = {}
     for seg in seglst:
@@ -306,7 +306,7 @@ def main() -> int:
         per_speaker[seg["speaker"]] = per_speaker.get(seg["speaker"], [])
         per_speaker[seg["speaker"]].append(seg["words"])
     per_speaker_text = {k: " ".join(v) for k, v in per_speaker.items()}
-    (out_dir / "per_speaker_text.json").write_text(json.dumps(per_speaker_text, indent=2) + "\n")
+    (out_dir / "per_speaker_text.json").write_text(json.dumps(per_speaker_text, indent=2) + "\n", encoding="utf-8")
 
     print(f"steps recorded: {counters}")
     print(f"seglst segments: {len(seglst)}")

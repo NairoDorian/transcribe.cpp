@@ -31,13 +31,13 @@ def main() -> int:
         path for path in common.CATALOG_DIR.glob("*.json") if not path.name.startswith("_"))
     stale = []
     for path in paths:
-        current = path.read_text()
+        current = path.read_text(encoding="utf-8")
         rendered = common.dumps_record(json.loads(current))
         if current == rendered:
             continue
         stale.append(path)
         if not args.check:
-            path.write_text(rendered)
+            path.write_text(rendered, encoding="utf-8")
     verb = "need formatting" if args.check else "rewritten"
     print(f"{len(paths)} record(s) checked; {len(stale)} {verb}")
     for path in stale:

@@ -38,7 +38,7 @@ def main() -> int:
 
     prefix = Path(args.prefix).resolve()
     manifest_path = prefix / "lib" / "transcribe-link.json"
-    manifest = json.loads(manifest_path.read_text())
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     print(f"manifest: {manifest_path}")
     print(json.dumps(manifest, indent=2))
 
@@ -77,7 +77,7 @@ def main() -> int:
     run_cmd = [str(out)]
     if manifest["backend_dl"]:
         run_cmd.append(str(prefix / manifest["module_dir"]))
-    res = subprocess.run(run_cmd, capture_output=True, text=True)
+    res = subprocess.run(run_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     sys.stdout.write(res.stdout)
     sys.stderr.write(res.stderr)
     if res.returncode != 0:

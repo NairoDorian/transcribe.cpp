@@ -75,7 +75,7 @@ def load_manifest(
         path = manifest_dir / f"{variant}.manifest.json"
         if not path.exists():
             raise SystemExit(f"error: manifest not found: {path}")
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
 
     pattern = manifest_dir / "*.manifest.json"
     matches = sorted(glob.glob(str(pattern)))
@@ -90,7 +90,7 @@ def load_manifest(
             f"error: multiple manifests for '{family}': {names}\n"
             f"  Use --variant to pick one"
         )
-    return json.loads(Path(matches[0]).read_text())
+    return json.loads(Path(matches[0]).read_text(encoding="utf-8"))
 
 
 def manifest_source_model(manifest: dict[str, Any]) -> str:
@@ -279,7 +279,7 @@ def validation_hooks_enabled(repo: Path) -> bool:
     """
     cache = repo / "build" / "CMakeCache.txt"
     try:
-        for line in cache.read_text().splitlines():
+        for line in cache.read_text(encoding="utf-8").splitlines():
             if line.startswith("TRANSCRIBE_ENABLE_VALIDATION_HOOKS:"):
                 return line.rstrip().endswith("=ON")
     except OSError:
@@ -336,7 +336,7 @@ def write_cpp_transcript(
             "backend": backend,
         },
     }
-    path.write_text(json.dumps(payload, indent=2) + "\n")
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print(f"  wrote {path}", file=sys.stderr)
 
 
@@ -542,7 +542,7 @@ def cmd_cpp(args: argparse.Namespace) -> int:
             stderr=subprocess.STDOUT,
             text=True,
             errors="replace",
-        )
+         encoding="utf-8")
         if result.stdout:
             print(result.stdout, end="")
         if result.returncode != 0:
@@ -624,7 +624,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
         print(f"{'=' * 60}", file=sys.stderr)
 
         if report_mode:
-            result = subprocess.run(cmd, cwd=repo, capture_output=True, text=True)
+            result = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace")
             if result.stdout:
                 print(result.stdout)
             if result.stderr:
@@ -652,7 +652,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
         ref_transcript = ref_dir / "transcript.json"
         if ref_transcript.exists() and args.family != "sortformer":
             transcript_compare = case_transcript_compare(manifest, case)
-            ref_data = json.loads(ref_transcript.read_text())
+            ref_data = json.loads(ref_transcript.read_text(encoding="utf-8"))
             ref_text = str(ref_data.get("text", ""))
             cpp_transcript = cpp_dir / "transcript.json"
             if not cpp_transcript.exists():
@@ -667,7 +667,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
                 })
                 continue
 
-            cpp_data = json.loads(cpp_transcript.read_text())
+            cpp_data = json.loads(cpp_transcript.read_text(encoding="utf-8"))
             cpp_text = str(cpp_data.get("text", ""))
             if transcript_compare == "exact":
                 ref_compare = ref_text
@@ -761,7 +761,7 @@ def cmd_mel(args: argparse.Namespace) -> int:
         result = subprocess.run(
             cmd, cwd=repo, env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        )
+         encoding="utf-8", errors="replace")
         if result.stdout:
             print(result.stdout, end="")
         if result.returncode != 0:
@@ -777,7 +777,7 @@ def cmd_mel(args: argparse.Namespace) -> int:
             # without crossing into territory that would shift WER.
             tol.write_text(json.dumps({
                 "enc.mel.in": {"max_abs": 5e-4, "mean_abs": 5e-6},
-            }) + "\n")
+            }) + "\n", encoding="utf-8")
             cmp_cmd = [
                 "uv", "run", str(compare_script),
                 str(out_dir), str(ref_dir),
@@ -801,7 +801,7 @@ def git_head_sha(repo: Path) -> str:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd=repo, capture_output=True, text=True, check=True,
-        )
+         encoding="utf-8", errors="replace")
         return result.stdout.strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
         return "unknown"
@@ -835,7 +835,7 @@ def write_report_bundle(
 
     (bundle_dir / "commands.json").write_text(
         json.dumps({"validated_at_sha": sha, "commands": cmd_log}, indent=2) + "\n"
-    )
+    , encoding="utf-8")
 
     summary = [
         f"# Validation Report — {family}/{variant}",
@@ -874,7 +874,7 @@ def write_report_bundle(
                     summary.append(f"- reference: `{tr.get('reference', '')!r}`")
                     summary.append(f"- c++:       `{tr.get('cpp', '')!r}`")
             summary.append("")
-    (bundle_dir / "summary.md").write_text("\n".join(summary))
+    (bundle_dir / "summary.md").write_text("\n".join(summary), encoding="utf-8")
 
     repro = f"""# Reproducing this validation run
 
@@ -902,7 +902,7 @@ Bundle contents are ephemeral evidence — the compare stdout and transcript
 check at validation time. The validated commit SHA is authoritative;
 snapshots of repo-tracked files are intentionally omitted.
 """
-    (bundle_dir / "reproduce.md").write_text(repro)
+    (bundle_dir / "reproduce.md").write_text(repro, encoding="utf-8")
 
     print(f"\nReport bundle: {bundle_dir.relative_to(repo)}", file=sys.stderr)
     return bundle_dir

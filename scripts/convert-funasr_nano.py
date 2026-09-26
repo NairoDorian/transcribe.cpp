@@ -493,10 +493,10 @@ def convert(model_dir: Path, out_path: Path, variant: str, display_name: str, re
         raise FileNotFoundError(f"missing Qwen3 config: {qwen_config_path}")
 
     print(f"Reading FunASR config from {config_yaml}")
-    with config_yaml.open() as f:
+    with config_yaml.open(encoding="utf-8") as f:
         yaml_config = yaml.safe_load(f)
     print(f"Reading Qwen3 config from {qwen_config_path}")
-    with qwen_config_path.open() as f:
+    with qwen_config_path.open(encoding="utf-8") as f:
         qwen_config = json.load(f)
 
     hp = read_hparams(yaml_config, qwen_config, variant)

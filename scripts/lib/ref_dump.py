@@ -93,7 +93,7 @@ def write_tensor(
         "p99_abs": p99_abs,
         "source": source,
     }
-    json_path.write_text(json.dumps(meta, indent=2) + "\n")
+    json_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
 
 def write_transcript(
@@ -115,4 +115,4 @@ def write_transcript(
     payload: dict[str, Any] = {"text": text, "source": source}
     if tokens is not None:
         payload["tokens"] = list(tokens)
-    (out_dir / "transcript.json").write_text(json.dumps(payload, indent=2) + "\n")
+    (out_dir / "transcript.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")

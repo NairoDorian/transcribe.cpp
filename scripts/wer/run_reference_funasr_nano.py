@@ -137,7 +137,7 @@ def main() -> int:
     print(f"loaded in {load_ms / 1000:.1f}s")
 
     # Manifest.
-    with open(args.manifest) as f:
+    with open(args.manifest, encoding="utf-8") as f:
         manifest = [json.loads(line) for line in f if line.strip()]
     if args.limit > 0:
         manifest = manifest[: args.limit]
@@ -150,7 +150,7 @@ def main() -> int:
     # already-processed ids.
     done_ids: set[str] = set()
     if args.resume and args.out.exists():
-        with open(args.out) as fin:
+        with open(args.out, encoding="utf-8") as fin:
             for line in fin:
                 line = line.strip()
                 if not line:

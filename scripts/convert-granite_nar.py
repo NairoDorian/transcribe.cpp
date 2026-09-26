@@ -65,8 +65,8 @@ TOKEN_TYPE_USER_DEFINED = 4
 
 def read_tokenizer(model_dir: Path) -> dict:
     """Read tokenizer.json (granite-4 BPE) → tokens / merges / types / specials."""
-    tok = json.loads((model_dir / "tokenizer.json").read_text())
-    tcfg = json.loads((model_dir / "tokenizer_config.json").read_text())
+    tok = json.loads((model_dir / "tokenizer.json").read_text(encoding="utf-8"))
+    tcfg = json.loads((model_dir / "tokenizer_config.json").read_text(encoding="utf-8"))
 
     model = tok["model"]
     vocab = model["vocab"]  # str -> id
@@ -492,8 +492,8 @@ def main(argv: list[str]) -> int:
     model_dir = resolve_model_dir(args.model, args.revision)
     print(f"Source: {model_dir}")
 
-    config = json.loads((model_dir / "config.json").read_text())
-    preproc = json.loads((model_dir / "preprocessor_config.json").read_text())
+    config = json.loads((model_dir / "config.json").read_text(encoding="utf-8"))
+    preproc = json.loads((model_dir / "preprocessor_config.json").read_text(encoding="utf-8"))
 
     hp = read_hparams(config, preproc, None)
     tok = read_tokenizer(model_dir)

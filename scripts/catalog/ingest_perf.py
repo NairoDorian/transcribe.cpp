@@ -141,7 +141,7 @@ def collect(reports_dir: pathlib.Path) -> tuple[dict, list[str]]:
     superseded, unreadable, experiments = collections.Counter(), [], 0
     for path in sorted(reports_dir.glob("*/*.json")):
         try:
-            report = json.loads(path.read_text())
+            report = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             unreadable.append(str(path.relative_to(common.REPO)))
             continue

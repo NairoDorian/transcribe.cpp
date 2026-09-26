@@ -341,16 +341,16 @@ def _subset_manifest_for_cell(
     total = dataset_status.get("utterances") if dataset_status else None
     if n_utts is None:
         subset_path = manifest
-        subset_count = sum(1 for _ in open(subset_path))
+        subset_count = sum(1 for _ in open(subset_path, encoding="utf-8"))
         scope = "full manifest"
     else:
         subset_path = "/tmp/subset.manifest.jsonl"
-        with open(manifest) as fin, open(subset_path, "w") as fout:
+        with open(manifest, encoding="utf-8") as fin, open(subset_path, "w", encoding="utf-8") as fout:
             for i, line in enumerate(fin):
                 if i >= n_utts:
                     break
                 fout.write(line)
-        subset_count = sum(1 for _ in open(subset_path))
+        subset_count = sum(1 for _ in open(subset_path, encoding="utf-8"))
         total_display = total if total is not None else "?"
         scope = f"first {subset_count}/{total_display} requested={n_utts}"
     print(f"[{prefix}:data] subset={scope} path={subset_path}")
@@ -405,11 +405,11 @@ def _local_engine_sha() -> str:
     root = pathlib.Path(__file__).resolve().parents[3]
     try:
         dirty = subprocess.run(["git", "status", "--porcelain", "src", "CMakeLists.txt"],
-                               capture_output=True, text=True, timeout=5, cwd=root)
+                               capture_output=True, text=True, timeout=5, cwd=root, encoding="utf-8", errors="replace")
         if dirty.returncode != 0 or dirty.stdout.strip():
             return ""
         out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
-                             capture_output=True, text=True, timeout=5, cwd=root)
+                             capture_output=True, text=True, timeout=5, cwd=root, encoding="utf-8", errors="replace")
         return out.stdout.strip() if out.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -455,10 +455,10 @@ def _run_wer_impl(
        and os.path.getsize(cache_hyp) > 0:
         _log_prepared_dataset("wer", dataset_status)
         print(f"[wer] cache hit: {cache_hyp}")
-        with open(cache_sum) as f:
+        with open(cache_sum, encoding="utf-8") as f:
             summary = json.load(f)
         summary.update(dataset_summary_fields(dataset_status))
-        with open(cache_hyp) as f:
+        with open(cache_hyp, encoding="utf-8") as f:
             hyp_jsonl = f.read()
         return {"hyp_jsonl": hyp_jsonl, "summary": summary, "cached": True}
 
@@ -530,13 +530,13 @@ def _run_wer_impl(
     # Audio duration from per-utt wav headers.
     import wave
     audio_s = 0.0
-    with open(subset_path) as f:
+    with open(subset_path, encoding="utf-8") as f:
         for line in f:
             ent = json.loads(line)
             with wave.open(ent["audio"], "rb") as w:
                 audio_s += w.getnframes() / w.getframerate()
 
-    hyp_jsonl = open(hyp_path).read()
+    hyp_jsonl = open(hyp_path, encoding="utf-8").read()
     # Stage totals (sum of per-utt ms) so the dispatcher can show where the
     # wall goes: amortized GPU encode vs host decode.
     mel_ms = enc_ms = dec_ms = 0.0
@@ -553,7 +553,7 @@ def _run_wer_impl(
     gpu = subprocess.check_output(
         ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
         text=True,
-    ).strip()
+     encoding="utf-8", errors="replace").strip()
     summary = {
         "model_repo": model_repo,
         "model_file": model_file,
@@ -577,7 +577,7 @@ def _run_wer_impl(
     # Persist to Volume for future resume / re-invocation.
     os.makedirs(os.path.dirname(cache_hyp), exist_ok=True)
     shutil.copyfile(hyp_path, cache_hyp)
-    with open(cache_sum, "w") as f:
+    with open(cache_sum, "w", encoding="utf-8") as f:
         json.dump(summary, f)
     data_vol.commit()
     return {"hyp_jsonl": hyp_jsonl, "summary": summary, "cached": False}
@@ -696,10 +696,10 @@ def _run_one_reference(family, variant, framework, upstream_repo, runner_rel,
     if os.path.exists(cache_hyp) and os.path.exists(cache_sum) \
        and os.path.getsize(cache_hyp) > 0:
         print(f"[ref] cache hit: {cache_hyp}")
-        with open(cache_sum) as f:
+        with open(cache_sum, encoding="utf-8") as f:
             summary = json.load(f)
         summary.update(dataset_summary_fields(dataset_status))
-        return {"hyp_jsonl": open(cache_hyp).read(), "summary": summary,
+        return {"hyp_jsonl": open(cache_hyp, encoding="utf-8").read(), "summary": summary,
                 "cached": True}
 
     out_path = f"/tmp/ref-hyps.b{batch_size}.jsonl"
@@ -741,10 +741,10 @@ def _run_one_reference(family, variant, framework, upstream_repo, runner_rel,
             f"reference runner (bs={batch_size}) exited {rc}; "
             f"stderr tail:\n{stderr_tail.rstrip()}")
 
-    hyp_jsonl = open(out_path).read()
+    hyp_jsonl = open(out_path, encoding="utf-8").read()
     import wave
     audio_s = 0.0
-    with open(subset_path) as f:
+    with open(subset_path, encoding="utf-8") as f:
         for line in f:
             ent = json.loads(line)
             try:
@@ -755,7 +755,7 @@ def _run_one_reference(family, variant, framework, upstream_repo, runner_rel,
     gpu = subprocess.check_output(
         ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
         text=True,
-    ).strip()
+     encoding="utf-8", errors="replace").strip()
     summary = {
         "variant": variant, "family": family, "framework": framework,
         "model": upstream_repo, "dataset": dataset_spec,
@@ -768,7 +768,7 @@ def _run_one_reference(family, variant, framework, upstream_repo, runner_rel,
     print(f"[ref] done bs={batch_size}: {summary}")
     os.makedirs(os.path.dirname(cache_hyp), exist_ok=True)
     shutil.copyfile(out_path, cache_hyp)
-    with open(cache_sum, "w") as f:
+    with open(cache_sum, "w", encoding="utf-8") as f:
         json.dump(summary, f)
     data_vol.commit()
     return {"hyp_jsonl": hyp_jsonl, "summary": summary, "cached": False}
@@ -929,7 +929,7 @@ def _dispatch(cells: list[dict], gpu: str, *, clean: bool = False, n_utts: int =
         if not ds_rows:
             continue
         summary_path = repo_root / "reports" / "wer" / f"remote_sweep.{dataset_id(ds)}.summary.tsv"
-        with open(summary_path, "w") as f:
+        with open(summary_path, "w", encoding="utf-8") as f:
             f.write("slug\tdataset\tn_utts\taudio_s\twall_s\trtf\tpath\n")
             for r in ds_rows:
                 f.write("\t".join(str(x) for x in r) + "\n")
@@ -1218,7 +1218,7 @@ def batch_sweep(
         [{"n_batch": b, "n_utts": nn, "audio_s": aud, "wall_s": wall,
           "rtf_wall": rtf, "utt_per_s": ups, "encode_s": enc, "decode_s": dec,
           "gpu": gpu}
-         for b, nn, aud, wall, rtf, ups, enc, dec in rows], indent=2) + "\n")
+         for b, nn, aud, wall, rtf, ups, enc, dec in rows], indent=2) + "\n", encoding="utf-8")
     print(f"\nwrote {out}")
     print("score each batch's hyp to confirm WER is unchanged:")
     for bs, p in sorted(hyp_paths):

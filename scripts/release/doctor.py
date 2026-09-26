@@ -81,7 +81,7 @@ def check_pages_enabled() -> int:
             ["gh", "api", f"repos/{repo}/pages"],
             capture_output=True, text=True, timeout=20,
             env={**os.environ, "GH_TOKEN": token},
-        )
+         encoding="utf-8", errors="replace")
     except (FileNotFoundError, subprocess.SubprocessError):
         info("  --   GitHub Pages: skipped (gh CLI unavailable)")
         return 0

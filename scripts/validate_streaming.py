@@ -73,7 +73,7 @@ def run_subprocess(cmd: list[str], *, label: str, env: dict[str, str] | None = N
         cwd=str(cwd) if cwd else None,
         capture_output=capture,
         text=True,
-    )
+     encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         if capture:
             print(proc.stdout)
@@ -182,7 +182,7 @@ def write_stage2_tolerances(ref_dir: Path, out_path: Path) -> None:
     tolerances: dict[str, dict[str, float]] = {}
     for sidecar in sorted(ref_dir.glob("*.json")):
         try:
-            meta = json.loads(sidecar.read_text())
+            meta = json.loads(sidecar.read_text(encoding="utf-8"))
         except Exception:
             continue
         name = meta.get("name") or sidecar.stem
@@ -193,7 +193,7 @@ def write_stage2_tolerances(ref_dir: Path, out_path: Path) -> None:
             "mean_abs": max(1e-5 * rms, 1e-6),
         }
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(tolerances, indent=2))
+    out_path.write_text(json.dumps(tolerances, indent=2), encoding="utf-8")
 
 
 def expand_pattern_tolerances(ref_dir: Path, pattern_path: Path,
@@ -208,7 +208,7 @@ def expand_pattern_tolerances(ref_dir: Path, pattern_path: Path,
     pattern["cache_lc_out"]). Comment fields starting with _ are
     dropped from the emitted tolerance map.
     """
-    pattern = json.loads(pattern_path.read_text())
+    pattern = json.loads(pattern_path.read_text(encoding="utf-8"))
     pattern = {k: v for k, v in pattern.items()
                if not k.startswith("_") and isinstance(v, dict)}
     expanded: dict[str, dict[str, float]] = {}
@@ -225,7 +225,7 @@ def expand_pattern_tolerances(ref_dir: Path, pattern_path: Path,
             expanded[name] = {k: v for k, v in entry.items()
                               if not k.startswith("_")}
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(expanded, indent=2))
+    out_path.write_text(json.dumps(expanded, indent=2), encoding="utf-8")
 
 
 def run_compare_tensors(cpp_dir: Path, ref_dir: Path, *,
@@ -248,7 +248,7 @@ def run_compare_tensors(cpp_dir: Path, ref_dir: Path, *,
     proc = subprocess.run(
         cmd, cwd=str(REPO),
         capture_output=True, text=True,
-    )
+     encoding="utf-8", errors="replace")
     summary = CompareSummary()
     # compare_tensors.py prints a line per tensor (after a header). The
     # second column is the status: "ok" / "FAIL" / "SHAPE" / "L-ONLY" /
@@ -310,7 +310,7 @@ def read_ref_transcript(ref_dir: Path) -> str:
     hist = ref_dir / "stream_history.json"
     if not hist.exists():
         return ""
-    data = json.loads(hist.read_text())
+    data = json.loads(hist.read_text(encoding="utf-8"))
     pct = data.get("per_chunk_text") or []
     return pct[-1] if pct else ""
 
@@ -451,7 +451,7 @@ def main() -> int:
                 "n_missing_cpp": comp_summary.n_missing_cpp,
                 "n_missing_ref": comp_summary.n_missing_ref,
             }
-        (r_dir / "summary.json").write_text(json.dumps(per_r, indent=2))
+        (r_dir / "summary.json").write_text(json.dumps(per_r, indent=2), encoding="utf-8")
         rows.append(per_r)
 
         print(f"  ref text:  {ref_text}")
@@ -486,7 +486,7 @@ def main() -> int:
         )
     summary_text = "\n".join(summary_lines)
     print(summary_text)
-    (args.out / "summary.txt").write_text(summary_text + "\n")
+    (args.out / "summary.txt").write_text(summary_text + "\n", encoding="utf-8")
 
     # Exit nonzero if any row failed (transcripts disagree heavily OR
     # any tensor exceeded tolerance). 5% relative edit distance is a

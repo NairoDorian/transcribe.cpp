@@ -87,7 +87,7 @@ def main() -> int:
     from nemo.collections.asr.models import SortformerEncLabelModel
 
     repo = Path(__file__).resolve().parent.parent.parent
-    entries = [json.loads(l) for l in open(args.manifest) if l.strip()]
+    entries = [json.loads(l) for l in open(args.manifest, encoding="utf-8") if l.strip()]
     if args.limit:
         entries = entries[:args.limit]
     pred_dir = Path(args.pred_dir)
@@ -112,14 +112,14 @@ def main() -> int:
         dt = time.time() - t0
         seglist = segs[0] if segs else []
         lines = _seg_to_rttm(uri, seglist)
-        (pred_dir / f"{uri}.rttm").write_text("\n".join(lines) + "\n")
+        (pred_dir / f"{uri}.rttm").write_text("\n".join(lines) + "\n", encoding="utf-8")
         rtf = dt / max(e.get("duration", 1.0), 1e-6)
         rows.append({"id": uri, "hyp_rttm": str(Path(args.pred_dir) / f"{uri}.rttm"),
                      "n_segments": len(lines), "duration": e.get("duration"),
                      "compute_sec": round(dt, 2), "rtf": round(rtf, 4)})
         print(f"  [{i}] {uri}: {len(lines)} segs, {dt:.1f}s (rtf {rtf:.3f})", flush=True)
 
-    with open(out_path, "w") as f:
+    with open(out_path, "w", encoding="utf-8") as f:
         for r in rows:
             f.write(json.dumps(r) + "\n")
     print(f"wrote {out_path} ({len(rows)} meetings)")

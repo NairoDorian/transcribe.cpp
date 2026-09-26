@@ -123,7 +123,7 @@ def main(argv: list[str]) -> int:
         r = subprocess.run(
             [str(binary), str(ref), str(out), "--quant", "Q8_0"],
             capture_output=True, text=True,
-        )
+         encoding="utf-8", errors="replace")
         print(r.stdout.strip())
         check(r.returncode == 0, f"quantizer exit 0 (got {r.returncode}); stderr={r.stderr.strip()}")
         check(out.is_file(), "quantizer produced an output file")

@@ -190,7 +190,7 @@ def engine_sha() -> str | None:
     try:
         out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
                              capture_output=True, text=True, timeout=5,
-                             cwd=Path(__file__).resolve().parents[2])
+                             cwd=Path(__file__).resolve().parents[2], encoding="utf-8", errors="replace")
         return out.stdout.strip() or None if out.returncode == 0 else None
     except (OSError, subprocess.SubprocessError):
         return None
@@ -306,7 +306,7 @@ def main() -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Load manifest and build id→ref_text lookup.
-    with open(args.manifest) as f:
+    with open(args.manifest, encoding="utf-8") as f:
         manifest = [json.loads(line) for line in f if line.strip()]
     total = len(manifest)
 
@@ -442,7 +442,7 @@ def main() -> int:
             stderr=stderr_cap,
             text=True,
             errors="replace",
-        )
+         encoding="utf-8")
     except Exception as e:
         stderr_cap.close()
         Path(stderr_cap.name).unlink(missing_ok=True)
@@ -453,7 +453,7 @@ def main() -> int:
     n_errors = 0
     sum_mel = sum_encode = sum_decode = 0.0
 
-    with open(out_path, "w") as fout:
+    with open(out_path, "w", encoding="utf-8") as fout:
         assert proc.stdout is not None
         for line in proc.stdout:
             line = line.strip()

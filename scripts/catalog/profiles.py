@@ -36,7 +36,7 @@ MACHINE_ALIASES = {
 
 
 def load_profiles(path: pathlib.Path = PROFILE_PATH) -> dict:
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data.get("profiles"), dict) or not data["profiles"]:
         raise ValueError(f"{path}: profiles must be a non-empty object")
     default = data.get("default")

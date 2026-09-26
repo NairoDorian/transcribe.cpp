@@ -51,7 +51,7 @@ def main() -> int:
     env = dict(os.environ)
     env["TRANSCRIBE_MULTITALKER_MODE"] = args.mode
 
-    entries = [json.loads(l) for l in Path(args.manifest).read_text().splitlines() if l.strip()]
+    entries = [json.loads(l) for l in Path(args.manifest).read_text(encoding="utf-8").splitlines() if l.strip()]
     n_ok = 0
     for e in entries:
         mid = e["id"].split(".")[0]
@@ -70,7 +70,7 @@ def main() -> int:
             "-m", args.model,
         ]
         t0 = time.time()
-        proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        proc = subprocess.run(cmd, capture_output=True, text=True, env=env, encoding="utf-8", errors="replace")
         os.unlink(batch_list)
         if proc.returncode != 0:
             print(f"FAIL {mid}: exit {proc.returncode}\n{proc.stderr[-2000:]}", file=sys.stderr)
@@ -104,7 +104,7 @@ def main() -> int:
                     "words": text,
                 }
             )
-        (out_dir / f"{mid}.seglst.json").write_text(json.dumps(seglst, indent=1) + "\n")
+        (out_dir / f"{mid}.seglst.json").write_text(json.dumps(seglst, indent=1) + "\n", encoding="utf-8")
         n_ok += 1
         print(f"ok {mid}: {len(seglst)} segments in {time.time() - t0:.0f}s")
 

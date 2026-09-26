@@ -33,7 +33,7 @@ def resolve_reference(
         family = intake.parents[1].name
     if not intake.exists():
         raise SystemExit(f"no intake.json at {intake}")
-    d = json.loads(intake.read_text())
+    d = json.loads(intake.read_text(encoding="utf-8"))
     upstream_repo = d.get("hf_repo")
     framework = d.get("reference_framework") or "unknown"
     if not upstream_repo:

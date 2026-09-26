@@ -67,7 +67,7 @@ def main():
     report = dict(schema_version=1, machine=platform.platform(), python=sys.version,
                   policy="3 runs: discard run 1; arithmetic mean of runs 2 and 3",
                   cases=[], missing=[], failures=[])
-    baseline = json.loads(args.baseline.read_text()) if args.baseline else {}
+    baseline = json.loads(args.baseline.read_text(encoding="utf-8")) if args.baseline else {}
     old_cases = {case["case"]: case for case in baseline.get("cases", [])}
     for name in args.only:
         repo, patterns = PROFILES[name]

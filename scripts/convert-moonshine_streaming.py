@@ -424,11 +424,11 @@ def convert(model_dir: Path, out_path: Path, variant: str, repo_id: str | None =
         detect_reference_dtype(safetensors_path)
     print(f"Output dtype: {REFERENCE_DTYPE_LABEL} (source/reference dtype)")
 
-    with config_path.open() as f:
+    with config_path.open(encoding="utf-8") as f:
         config = json.load(f)
-    with gen_config_path.open() as f:
+    with gen_config_path.open(encoding="utf-8") as f:
         gen_config = json.load(f)
-    with preproc_path.open() as f:
+    with preproc_path.open(encoding="utf-8") as f:
         preproc = json.load(f)
 
     hp = read_hparams(config, gen_config, preproc)

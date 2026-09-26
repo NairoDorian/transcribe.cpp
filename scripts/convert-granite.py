@@ -167,7 +167,7 @@ class _ShardedSafetensors:
             return
 
         index_path = model_dir / "model.safetensors.index.json"
-        with index_path.open() as f:
+        with index_path.open(encoding="utf-8") as f:
             index = json.load(f)
         weight_map: dict[str, str] = index["weight_map"]
         shards = sorted(set(weight_map.values()))
@@ -585,22 +585,22 @@ def convert(model_dir: Path, out_path: Path, variant: str, repo_id: str | None =
             f"missing weights: neither {single_st.name} nor "
             f"{sharded_index.name} present in {model_dir}")
 
-    with config_path.open() as f:
+    with config_path.open(encoding="utf-8") as f:
         config = json.load(f)
     preproc: dict = {}
     if preproc_path.is_file():
-        with preproc_path.open() as f:
+        with preproc_path.open(encoding="utf-8") as f:
             preproc = json.load(f)
     processor: dict = {}
     if processor_path.is_file():
-        with processor_path.open() as f:
+        with processor_path.open(encoding="utf-8") as f:
             processor = json.load(f)
 
     chat_template: str | None = None
     if tpl_jinja.is_file():
         chat_template = tpl_jinja.read_text(encoding="utf-8")
     elif tpl_json.is_file():
-        with tpl_json.open() as f:
+        with tpl_json.open(encoding="utf-8") as f:
             chat_template = json.load(f).get("chat_template")
 
     hp = read_hparams(config, preproc, processor)

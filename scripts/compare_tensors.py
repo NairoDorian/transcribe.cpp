@@ -91,7 +91,7 @@ def load_dump(d: Path, name: str) -> tuple[tuple[int, ...] | None, np.ndarray | 
     json_path = d / f"{name}.json"
     if not f32_path.exists() or not json_path.exists():
         return None, None
-    meta = json.loads(json_path.read_text())
+    meta = json.loads(json_path.read_text(encoding="utf-8"))
     if meta.get("dtype") != "f32":
         raise ValueError(f"{name}: unsupported dtype {meta.get('dtype')!r}")
     if meta.get("layout") != "row-major":
@@ -124,7 +124,7 @@ def discover_names(d: Path) -> set[str]:
             continue
         if p.suffix == ".json" and not p.with_suffix(".f32").exists():
             try:
-                meta = json.loads(p.read_text())
+                meta = json.loads(p.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
             if {"shape", "dtype", "layout"}.issubset(meta):
@@ -195,7 +195,7 @@ def compare_pair(
 def load_tolerances(path: Path | None) -> dict[str, dict[str, float]]:
     if path is None:
         return {}
-    obj = json.loads(path.read_text())
+    obj = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(obj, dict):
         raise ValueError(f"{path}: top-level must be an object")
     return obj

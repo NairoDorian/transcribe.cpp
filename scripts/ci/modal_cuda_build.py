@@ -182,7 +182,7 @@ def build_and_check() -> str:
     # the source: a source edit reuses the tree (incremental); a CUDA bump or
     # an epoch bump rotates it (clean). The host compiler is pinned by the
     # base image — bump BUILD_CACHE_EPOCH if it ever moves under us.
-    nvcc_v = subprocess.check_output(["nvcc", "--version"], text=True)
+    nvcc_v = subprocess.check_output(["nvcc", "--version"], text=True, encoding="utf-8", errors="replace")
     tool_key = hashlib.sha256(nvcc_v.encode()).hexdigest()[:10]
     skbuild_dir = f"/build-cache/build-{tool_key}-e{BUILD_CACHE_EPOCH}"
     env["SKBUILD_BUILD_DIR"] = skbuild_dir

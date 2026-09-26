@@ -44,7 +44,7 @@ def load_rttm(path: Path, uri: str) -> Annotation:
     ann = Annotation(uri=uri)
     if not path.exists():
         return ann
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         p = line.split()
         if len(p) < 8 or p[0] != "SPEAKER":
             continue
@@ -67,7 +67,7 @@ def main() -> int:
 
     repo = Path(__file__).resolve().parent.parent.parent
     pred_dir = Path(args.pred_dir)
-    entries = [json.loads(l) for l in open(args.manifest) if l.strip()]
+    entries = [json.loads(l) for l in open(args.manifest, encoding="utf-8") if l.strip()]
 
     der = DiarizationErrorRate(collar=args.collar, skip_overlap=args.skip_overlap)
     jer = JaccardErrorRate(collar=args.collar, skip_overlap=args.skip_overlap)
@@ -118,7 +118,7 @@ def main() -> int:
     }
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(out, indent=2) + "\n")
+    out_path.write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
     print(f"\nAGGREGATE DER {out['der_pct']}%  JER {out['jer_pct']}%  "
           f"(missed {out['missed_pct']}%, FA {out['false_alarm_pct']}%, conf {out['confusion_pct']}%) "
           f"over {out['n_meetings']} meetings")

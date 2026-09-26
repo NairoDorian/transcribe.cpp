@@ -99,7 +99,7 @@ def main() -> int:
             if not source_path.exists():
                 missing += 1
                 continue
-            score = json.loads(source_path.read_text())
+            score = json.loads(source_path.read_text(encoding="utf-8"))
             recipe = score.get("recipe") or {}
             covered = any(profiles.profile_key(row) == profiles.profile_key(cell)
                           or (row.get("measurement_provenance") == "legacy-published"

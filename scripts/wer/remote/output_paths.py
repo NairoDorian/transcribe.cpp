@@ -18,7 +18,7 @@ def write_ref_hyp(
     bs_tag = "" if not batch_size or batch_size <= 1 else f".b{batch_size}"
     mode_tag = "" if mode == "offline" else f".{mode}"
     out_path = out_dir / f"{variant}-REF.{dataset_id(dataset_spec)}{bs_tag}{mode_tag}.jsonl"
-    out_path.write_text(hyp_jsonl)
+    out_path.write_text(hyp_jsonl, encoding="utf-8")
     return out_path
 
 
@@ -43,5 +43,5 @@ def write_hyp(
     r_tag = "" if stream_att_right < 0 else f".r{stream_att_right}"
     subset_tag = "" if n_utts is None else f".n{n_utts}"
     out_path = out_dir / f"{slug}.{ds}{bs_tag}{ts_tag}{stream_tag}{r_tag}{subset_tag}.jsonl"
-    out_path.write_text(hyp_jsonl)
+    out_path.write_text(hyp_jsonl, encoding="utf-8")
     return out_path

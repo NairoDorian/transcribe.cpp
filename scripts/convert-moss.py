@@ -95,7 +95,7 @@ class _ShardedSafetensors:
             self._shard_for = {k: "__single__" for k in sf.keys()}
             return
         index_path = model_dir / "model.safetensors.index.json"
-        with index_path.open() as f:
+        with index_path.open(encoding="utf-8") as f:
             weight_map = json.load(f)["weight_map"]
         shards = sorted(set(weight_map.values()))
         self._handles = {
@@ -433,11 +433,11 @@ def convert(model_dir: Path, out_path: Path, variant: str, repo_id: str | None =
         if not p.is_file():
             raise FileNotFoundError(f"missing required file: {p}")
 
-    with config_path.open() as f:
+    with config_path.open(encoding="utf-8") as f:
         config = json.load(f)
-    with preproc_path.open() as f:
+    with preproc_path.open(encoding="utf-8") as f:
         preproc = json.load(f)
-    with proc_path.open() as f:
+    with proc_path.open(encoding="utf-8") as f:
         proc = json.load(f)
     chat_template = None
     if chat_template_path.is_file():

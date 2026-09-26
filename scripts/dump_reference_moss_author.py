@@ -126,7 +126,7 @@ def write_dump(
         "p99_abs": p99_abs,
         "source": source,
     }
-    (out_dir / f"{name}.json").write_text(json.dumps(meta, indent=2) + "\n")
+    (out_dir / f"{name}.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     print(f"  wrote {out_dir / f'{name}.f32'} "
           f"({data.size * 4} bytes, shape={list(data.shape)})")
 
@@ -465,7 +465,7 @@ def cmd_decode(args: argparse.Namespace) -> int:
     }
     (out_dir / "transcript.json").write_text(
         json.dumps(transcript, indent=2, ensure_ascii=False) + "\n"
-    )
+    , encoding="utf-8")
     print(f"Raw transcript:   {raw_text!r}")
     print(f"Plain transcript: {plain_text!r}")
     print(f"Wrote transcript.json ({len(gen_ids)} tokens)")

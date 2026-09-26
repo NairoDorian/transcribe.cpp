@@ -42,13 +42,13 @@ def hf_token() -> str | None:
     if tok:
         return tok
     p = Path.home() / ".cache" / "huggingface" / "token"
-    return p.read_text().strip() if p.exists() else None
+    return p.read_text(encoding="utf-8").strip() if p.exists() else None
 
 
 def fetch_page(config: str, split: str, offset: int, cache_dir: Path, token: str | None) -> dict:
     cache = cache_dir / f"{config}-{split}-{offset}.json"
     if cache.exists():
-        return json.loads(cache.read_text())
+        return json.loads(cache.read_text(encoding="utf-8"))
     q = urllib.parse.urlencode(
         {"dataset": "edinburghcstr/ami", "config": config, "split": split,
          "offset": offset, "length": PAGE}
@@ -60,7 +60,7 @@ def fetch_page(config: str, split: str, offset: int, cache_dir: Path, token: str
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 payload = json.load(r)
-            cache.write_text(json.dumps(payload))
+            cache.write_text(json.dumps(payload), encoding="utf-8")
             return payload
         except urllib.error.HTTPError as exc:
             if attempt == 9:
@@ -104,7 +104,7 @@ def main() -> int:
     if not src_manifest.exists():
         print(f"error: {src_manifest} missing (run ingest_ami.py first)", file=sys.stderr)
         return 1
-    entries = [json.loads(l) for l in src_manifest.read_text().splitlines() if l.strip()]
+    entries = [json.loads(l) for l in src_manifest.read_text(encoding="utf-8").splitlines() if l.strip()]
     meetings = {e["id"].split(".")[0]: e for e in entries}
 
     cache_dir = base / ".rows-cache"
@@ -136,11 +136,11 @@ def main() -> int:
     out_dir = base / f"ami-{args.config}-{args.split}-seglst"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_manifest = base / f"ami-{args.config}-{args.split}-mt.manifest.jsonl"
-    with out_manifest.open("w") as mf:
+    with out_manifest.open("w", encoding="utf-8") as mf:
         for mid, entry in sorted(meetings.items()):
             segs = sorted(per_meeting.get(mid, []), key=lambda s: s["start_time"])
             seglst_path = out_dir / f"{mid}.seglst.json"
-            seglst_path.write_text(json.dumps(segs, indent=1) + "\n")
+            seglst_path.write_text(json.dumps(segs, indent=1) + "\n", encoding="utf-8")
             row = dict(entry)
             row["seglst"] = str(seglst_path.relative_to(REPO))
             mf.write(json.dumps(row) + "\n")

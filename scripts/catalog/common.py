@@ -30,7 +30,7 @@ HEADLINE_WILDCARD_KEYS = ("batch_size", "timestamps")
 def load_records(directory: pathlib.Path | None = None) -> dict[str, dict]:
     """Every catalog record, keyed by variant. `_`-prefixed files are tooling."""
     directory = directory or CATALOG_DIR
-    return {path.stem: json.loads(path.read_text())
+    return {path.stem: json.loads(path.read_text(encoding="utf-8"))
             for path in sorted(directory.glob("*.json"))
             if not path.name.startswith("_")}
 
@@ -39,7 +39,7 @@ def load_record(variant: str, directory: pathlib.Path | None = None) -> dict:
     path = (directory or CATALOG_DIR) / f"{variant}.json"
     if not path.exists():
         raise FileNotFoundError(f"no catalog record for {variant!r} at {path}")
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 # --------------------------------------------------------------------------
@@ -384,4 +384,4 @@ def dumps_record(record: dict) -> str:
 
 
 def write_record(path: pathlib.Path, record: dict) -> None:
-    path.write_text(dumps_record(record))
+    path.write_text(dumps_record(record), encoding="utf-8")

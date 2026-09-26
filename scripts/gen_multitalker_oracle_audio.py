@@ -105,7 +105,7 @@ def main() -> int:
     for spk, windows in (("spk_A", SPK_A_WINDOWS), ("spk_B", SPK_B_WINDOWS)):
         for start, end in windows:
             lines.append(f"SPEAKER {CLIP_ID} 1 {start:.3f} {end - start:.3f} <NA> <NA> {spk} <NA> <NA>")
-    OUT_RTTM.write_text("\n".join(lines) + "\n")
+    OUT_RTTM.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     dur = len(mix) / SR
     print(f"wrote {OUT_WAV.relative_to(REPO)} ({dur:.2f}s, 16kHz mono)")

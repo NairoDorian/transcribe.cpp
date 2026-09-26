@@ -377,7 +377,7 @@ def convert(model_dir: Path, out_path: Path, variant: str, repo_id: str | None =
             raise FileNotFoundError(f"missing required file: {p}")
 
     print(f"Reading config from {config_yaml}")
-    with config_yaml.open() as f:
+    with config_yaml.open(encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
     hp = read_hparams(config)

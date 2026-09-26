@@ -77,7 +77,7 @@ def family_ceiling(family: str) -> str | None:
     path = ARCH / FAMILY_DIRS.get(family, family) / "capabilities.cpp"
     if not path.exists():
         return None
-    match = KIND_RE.search(path.read_text())
+    match = KIND_RE.search(path.read_text(encoding="utf-8"))
     return match.group(1).lower() if match else None
 
 

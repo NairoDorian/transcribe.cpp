@@ -277,7 +277,7 @@ def main() -> int:
                     help="comma-separated variants (default: all)")
     args = ap.parse_args()
     d = pathlib.Path(args.dir)
-    schema = json.loads((REPO / "catalog/_schema.json").read_text())
+    schema = json.loads((REPO / "catalog/_schema.json").read_text(encoding="utf-8"))
     records = common.load_records(d)
     selected = {item.strip() for item in args.models.split(",") if item.strip()}
     unknown = selected - records.keys()

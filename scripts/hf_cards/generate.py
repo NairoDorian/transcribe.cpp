@@ -68,7 +68,7 @@ DEFAULT_QUANT = "Q8_0"
 
 def load_spec(path: Path) -> dict:
     """The editorial half of a card. Fails on any catalog-owned key."""
-    with path.open() as f:
+    with path.open(encoding="utf-8") as f:
         spec = yaml.safe_load(f) or {}
     unknown = sorted(spec.keys() - SPEC_KEYS)
     if unknown:
@@ -285,7 +285,7 @@ def fetch_upstream_card(repo_id: str, revision: str) -> str:
     one in the final file.
     """
     path = hf_hub_download(repo_id=repo_id, filename="README.md", revision=revision)
-    content = Path(path).read_text()
+    content = Path(path).read_text(encoding="utf-8")
     if content.startswith("---\n"):
         end = content.find("\n---\n", 4)
         if end != -1:
@@ -356,7 +356,7 @@ def main() -> int:
     upstream_slug = ctx["hf_repo"].rsplit("/", 1)[-1]
     output = args.output or (REPO_ROOT / "models" / upstream_slug / "README.md")
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(out)
+    output.write_text(out, encoding="utf-8")
     print(f"wrote {output}", file=sys.stderr)
     return 0
 

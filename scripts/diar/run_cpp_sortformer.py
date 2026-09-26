@@ -60,7 +60,7 @@ def _find_cli(repo: Path, override: str | None) -> Path:
 
 def _load_probs(dump_dir: Path) -> np.ndarray:
     """Load the dumped diar.probs as [T, n_spk] float32."""
-    meta = json.loads((dump_dir / "diar.probs.json").read_text())
+    meta = json.loads((dump_dir / "diar.probs.json").read_text(encoding="utf-8"))
     shape = tuple(int(x) for x in meta["shape"])  # slow-to-fast, e.g. [T, n_spk]
     data = np.fromfile(dump_dir / "diar.probs.f32", dtype="<f4")
     if data.size != int(np.prod(shape)):
@@ -113,7 +113,7 @@ def main() -> int:
 
     repo = Path(__file__).resolve().parent.parent.parent
     cli = _find_cli(repo, args.cli)
-    entries = [json.loads(l) for l in open(args.manifest) if l.strip()]
+    entries = [json.loads(l) for l in open(args.manifest, encoding="utf-8") if l.strip()]
     if args.limit:
         entries = entries[:args.limit]
     pred_dir = Path(args.pred_dir)
@@ -146,13 +146,13 @@ def main() -> int:
                 cmd += ["--threads", str(args.threads)]
             cmd.append(wav)
             res = subprocess.run(cmd, cwd=repo, env=env, stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT, text=True, errors="replace")
+                                 stderr=subprocess.STDOUT, text=True, errors="replace", encoding="utf-8")
             if res.returncode != 0:
                 sys.stderr.write(res.stdout or "")
                 raise SystemExit(f"error: transcribe-cli failed on {uri} (exit {res.returncode})")
             probs = _load_probs(Path(tmp))
         lines = _probs_to_rttm(uri, probs, cfg_vad, offset=float(e.get("offset", 0.0)))
-        (pred_dir / f"{uri}.rttm").write_text("\n".join(lines) + "\n")
+        (pred_dir / f"{uri}.rttm").write_text("\n".join(lines) + "\n", encoding="utf-8")
         dt = time.time() - t0
         rtf = dt / max(e.get("duration", 1.0), 1e-6)
         rows.append({"id": uri, "hyp_rttm": str(Path(args.pred_dir) / f"{uri}.rttm"),
@@ -160,7 +160,7 @@ def main() -> int:
                      "duration": e.get("duration"), "compute_sec": round(dt, 2), "rtf": round(rtf, 4)})
         print(f"  [{i}] {uri}: {len(lines)} segs, {probs.shape[0]} frames, {dt:.1f}s (rtf {rtf:.3f})", flush=True)
 
-    with open(out_path, "w") as f:
+    with open(out_path, "w", encoding="utf-8") as f:
         for r in rows:
             f.write(json.dumps(r) + "\n")
     print(f"wrote {out_path} ({len(rows)} meetings)")

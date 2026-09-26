@@ -138,7 +138,7 @@ def load_declared_state(repo_root: Path, family: str, variant: str | None) -> di
     """
     intake = _find_intake(repo_root, family, variant)
     if intake:
-        data = json.loads(intake.read_text())
+        data = json.loads(intake.read_text(encoding="utf-8"))
         return {
             "hf_repo": data["hf_repo"],
             "hf_revision": data.get("hf_revision"),
@@ -152,7 +152,7 @@ def load_declared_state(repo_root: Path, family: str, variant: str | None) -> di
 
     manifest = _find_manifest(repo_root, family, variant)
     if manifest:
-        data = json.loads(manifest.read_text())
+        data = json.loads(manifest.read_text(encoding="utf-8"))
         source_model = data.get("source_model", {})
         if not isinstance(source_model, dict):
             source_model = {}
@@ -894,7 +894,7 @@ def run_gate(repo_root: Path, family: str, variant: str | None, gate: Gate,
 def _resolve_variant(repo_root: Path, family: str) -> str:
     m = _find_manifest(repo_root, family, None)
     if m:
-        return json.loads(m.read_text()).get("variant", family)
+        return json.loads(m.read_text(encoding="utf-8")).get("variant", family)
     return family
 
 
@@ -903,11 +903,11 @@ def _resolve_variant(repo_root: Path, family: str) -> str:
 def write_report(report: PreflightReport, out_dir: Path, *, render_md: bool) -> tuple[Path, Path | None]:
     out_dir.mkdir(parents=True, exist_ok=True)
     json_path = out_dir / f"preflight-gate-{report.gate}.json"
-    json_path.write_text(json.dumps(_report_to_dict(report), indent=2) + "\n")
+    json_path.write_text(json.dumps(_report_to_dict(report), indent=2) + "\n", encoding="utf-8")
     md_path: Path | None = None
     if render_md:
         md_path = out_dir / f"preflight-gate-{report.gate}.md"
-        md_path.write_text(_render_markdown(report))
+        md_path.write_text(_render_markdown(report), encoding="utf-8")
     return json_path, md_path
 
 

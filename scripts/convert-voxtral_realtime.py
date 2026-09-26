@@ -323,8 +323,8 @@ def convert(model_dir: Path, out_path: Path, variant: str, repo_id: str | None =
 
     print(f"Output dtype: {REFERENCE_DTYPE_LABEL} (source/reference dtype)")
 
-    config = json.loads((model_dir / "config.json").read_text())
-    proc = json.loads((model_dir / "processor_config.json").read_text())
+    config = json.loads((model_dir / "config.json").read_text(encoding="utf-8"))
+    proc = json.loads((model_dir / "processor_config.json").read_text(encoding="utf-8"))
     fe = proc["feature_extractor"]
     hp = read_hparams(config, fe)
     print(f"Audio encoder: {hp['enc_n_layers']} layers d_model={hp['enc_d_model']} "

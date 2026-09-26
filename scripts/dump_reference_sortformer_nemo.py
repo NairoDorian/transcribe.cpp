@@ -217,7 +217,7 @@ def _write_compress_dump(calls: list[dict], dump_dir: Path) -> None:
         if "input_preds" in c:
             np.save(dump_dir / f"compress.{k:03d}.input_preds.npy", c["input_preds"])
     summary = {"n_calls": len(calls), "n_frames_in": [c["n_frames"] for c in calls]}
-    (dump_dir / "compress.summary.json").write_text(_json_dumps(summary))
+    (dump_dir / "compress.summary.json").write_text(_json_dumps(summary), encoding="utf-8")
     print(f"wrote {len(calls)} _compress_spkcache dumps to {dump_dir}")
 
 

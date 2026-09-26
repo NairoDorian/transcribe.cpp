@@ -53,7 +53,7 @@ def main() -> int:
         return 0
 
     entries: list[dict] = []
-    with args.manifest.open() as f:
+    with args.manifest.open(encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -72,7 +72,7 @@ def main() -> int:
         print(f"selected first {len(subset)} of {len(entries)} entries (manifest order)")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    with args.out.open("w") as f:
+    with args.out.open("w", encoding="utf-8") as f:
         for e in subset:
             f.write(json.dumps(e) + "\n")
     print(f"wrote {args.out} ({len(subset)} entries)")

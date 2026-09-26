@@ -168,7 +168,7 @@ def slugify(text: str) -> str:
 
 def _run_capture(cmd: list[str]) -> str | None:
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace")
     except (FileNotFoundError, subprocess.SubprocessError):
         return None
     return (proc.stdout.strip() or None) if proc.returncode == 0 else None
@@ -176,7 +176,7 @@ def _run_capture(cmd: list[str]) -> str | None:
 
 def _linux_file_field(path: str, prefix: str, sep: str, strip_quotes: bool = False) -> str | None:
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 if line.lower().startswith(prefix):
                     val = line.split(sep, 1)[1].strip()
@@ -517,7 +517,7 @@ def _read_tctl_c() -> float | None:
     # blank lines; the chip header is the first line of a block.
     try:
         proc = subprocess.run(["sensors", "-u"], capture_output=True,
-                              text=True, timeout=3)
+                              text=True, timeout=3, encoding="utf-8", errors="replace")
     except (FileNotFoundError, subprocess.SubprocessError):
         return None
     if proc.returncode != 0:
@@ -581,14 +581,14 @@ def run_bench_binary(bench_bin: Path, cell: Cell, iters: int, warmup: int,
             "--quiet",
             "--backend", backend_arg,
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if proc.returncode != 0:
             print(f"  binary failed (exit {proc.returncode}):", file=sys.stderr)
             if proc.stderr.strip():
                 print(f"  stderr: {proc.stderr.strip()}", file=sys.stderr)
             return None
         try:
-            data = json.loads(tmp_path.read_text())
+            data = json.loads(tmp_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as e:
             print(f"  failed to parse json-out: {e}", file=sys.stderr)
             return None
@@ -823,7 +823,7 @@ def _run_one_backend(backend: BackendSpec,
                   f"report: {', '.join(missing)}", file=sys.stderr)
             exit_code = 1
             continue
-        out_path.write_text(json.dumps(aggregate, indent=2) + "\n")
+        out_path.write_text(json.dumps(aggregate, indent=2) + "\n", encoding="utf-8")
         try:
             rel = out_path.relative_to(repo)
         except ValueError:

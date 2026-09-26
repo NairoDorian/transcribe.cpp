@@ -105,14 +105,14 @@ def build(repo: str, out: Path, wheels: list[tuple[str, str]]) -> None:
         pkgs = sorted(wanted)
         flavor_dir.joinpath("index.html").write_text(
             _page("\n".join(f'    <a href="{p}/">{p}</a>' for p in pkgs))
-        )
+        , encoding="utf-8")
         for pkg in pkgs:
             files = sorted(by_pkg.get(pkg, []))
             pkg_dir = flavor_dir / pkg
             pkg_dir.mkdir(parents=True, exist_ok=True)
             pkg_dir.joinpath("index.html").write_text(
                 _page("\n".join(f'    <a href="{url}">{fn}</a>' for fn, url in files))
-            )
+            , encoding="utf-8")
             print(f"[{flavor}] {pkg}: {len(files)} wheel(s)")
 
 

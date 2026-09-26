@@ -158,7 +158,7 @@ def main() -> int:
         seqs = gen.sequences if hasattr(gen, "sequences") else gen
         return [decode_new(row.detach().cpu().tolist()[maxlen:]) for row in seqs]
 
-    with open(args.manifest) as f:
+    with open(args.manifest, encoding="utf-8") as f:
         manifest = [json.loads(line) for line in f if line.strip()]
     if args.limit > 0:
         manifest = manifest[:args.limit]
@@ -170,7 +170,7 @@ def main() -> int:
     t_loop = time.monotonic()
     bs = max(1, args.batch_size)
 
-    with open(args.out, "w") as fout:
+    with open(args.out, "w", encoding="utf-8") as fout:
         fout.write(json.dumps({
             "type": "batch_header", "load_ms": round(load_ms, 1),
             "framework": "transformers", "model": args.model,

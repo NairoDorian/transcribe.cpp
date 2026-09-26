@@ -88,7 +88,7 @@ clip, RTX 4070 Laptop):
 
 `TRANSCRIBE_TERNARY_RUNTIME=q4_0|q2_0|native` overrides. The patch also adds an AVX2
 `ggml_vec_dot_q2_0_q8_0` (x86 previously used the scalar fallback). Accuracy with the
-default layouts was re-measured: FLEURS-fr 9.93 % (CPU) / 9.94 % (CUDA) vs 9.91 %
+default layouts was re-measured: FLEURS-fr 8.34 % (CPU) / 8.34 % (CUDA) vs 8.32 %
 before — unchanged.
 
 ## 3. Conversion (`scripts/convert-parakeet.py`)
@@ -126,7 +126,7 @@ F32 in quantized presets (+1.4 MB). K-quants need rows that are a multiple of 25
 the Q4_K_M preset can only apply Q4_K to 2 of those 9 matrices (the 640-wide predictor
 and joint rows fall back to Q8_0) — hence only 2.4 MB between the Q8_0 and Q4
 variants. WER is equal within noise for all three
-(9.91 / 9.92 / 9.80 %, below).
+(8.32 / 8.31 / 8.18 %, below).
 
 ```bash
 build/bin/transcribe-quantize parakeet-redux-0.6b-TQ1_F16.gguf parakeet-redux-0.6b-TQ1_Q8_0.gguf --quant Q8_0
@@ -154,13 +154,13 @@ build/bin/transcribe-quantize parakeet-redux-0.6b-TQ1_F16.gguf parakeet-redux-0.
 
    | File | FLEURS-fr WER | 95 % CI |
    |---|---:|---|
-   | TQ1_F16 | 9.91 % | 9.18 – 10.66 |
-   | TQ1_Q8_0 | 9.92 % | 9.20 – 10.65 |
-   | TQ1_Q4_K | 9.80 % | 9.07 – 10.53 |
+   | TQ1_F16 | 8.32 % | 7.77 – 8.90 |
+   | TQ1_Q8_0 | 8.31 % | 7.77 – 8.89 |
+   | TQ1_Q4_K | 8.18 % | 7.63 – 8.77 |
 
    Same recipe as parakeet-ultra's card (FLEURS French test, 676 utterances, greedy, no LM,
    CUDA, batch 1). The three files are indistinguishable; the gap to parakeet-ultra
-   (6.42 %) is the model's own ternary compression, not the conversion — the C++ output
+   (4.65 %) is the model's own ternary compression, not the conversion — the C++ output
    matches Moondream's weights run in transformers tensor for tensor.
 
 ## 6. Reproduce

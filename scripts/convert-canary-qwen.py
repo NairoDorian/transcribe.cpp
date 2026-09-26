@@ -292,7 +292,7 @@ def extract_tokenizer(
     chat_template = tokcfg.get("chat_template")
     chat_template_json = lm_dir / "chat_template.json"
     if chat_template_json.is_file():
-        with chat_template_json.open() as f:
+        with chat_template_json.open(encoding="utf-8") as f:
             chat_template = json.load(f).get("chat_template", chat_template)
 
     return {

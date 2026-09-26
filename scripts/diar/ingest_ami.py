@@ -68,7 +68,7 @@ def _write_rttm(path: Path, uri: str, starts, ends, speakers) -> int:
         if dur <= 0:
             continue
         lines.append(f"SPEAKER {uri} 1 {float(s):.3f} {dur:.3f} <NA> <NA> {spk} <NA> <NA>")
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return len(lines)
 
 
@@ -86,7 +86,7 @@ def main() -> int:
     manifest = REPO / "samples" / "diar" / f"{ds_id}.manifest.jsonl"
     out_dir.mkdir(parents=True, exist_ok=True)
     if manifest.exists() and not args.force:
-        n = sum(1 for _ in open(manifest))
+        n = sum(1 for _ in open(manifest, encoding="utf-8"))
         print(f"OK already exists: {manifest} ({n} meetings). Use --force to rebuild.")
         return 0
 
@@ -115,7 +115,7 @@ def main() -> int:
         })
         print(f"  [{i}] {uri}: {dur/60:.1f}min, {n_spk} spk, {n_turns} turns", flush=True)
 
-    with open(manifest, "w") as f:
+    with open(manifest, "w", encoding="utf-8") as f:
         for e in entries:
             f.write(json.dumps(e) + "\n")
     print(f"\nmanifest: {manifest.relative_to(REPO)}")

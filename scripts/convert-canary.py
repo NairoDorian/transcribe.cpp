@@ -836,7 +836,7 @@ def languages_from_manifest(variant: str) -> list[str]:
             f"manifest not found at {p} — run porting-1-intake / "
             f"porting-2-oracle for variant {variant} before converting"
         )
-    data = json.loads(p.read_text())
+    data = json.loads(p.read_text(encoding="utf-8"))
     langs = data.get("capabilities", {}).get("languages")
     if not langs:
         raise ValueError(f"manifest {p} has no capabilities.languages")

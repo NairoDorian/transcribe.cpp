@@ -56,7 +56,7 @@ def run(cli, model, args, dump_dir, backend, extra_env=None):
             else:
                 env[key] = value
     cmd = [str(cli), "-m", str(model), "--backend", backend, "-q"] + args
-    r = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    r = subprocess.run(cmd, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode != 0:
         sys.stderr.write(r.stderr)
         raise SystemExit(f"transcribe-cli failed (rc={r.returncode})")
@@ -101,7 +101,7 @@ def main() -> int:
     if args.list:
         if not args.list.exists():
             raise SystemExit(f"missing: {args.list}")
-        wavs = [Path(line.strip()) for line in args.list.read_text().splitlines()
+        wavs = [Path(line.strip()) for line in args.list.read_text(encoding="utf-8").splitlines()
                 if line.strip() and not line.lstrip().startswith("#")]
         if len(wavs) != args.batch:
             raise SystemExit(
@@ -136,7 +136,7 @@ def main() -> int:
                   f"rms={np.sqrt((single**2).mean()):.4e}")
 
         list_file = td / "list.txt"
-        list_file.write_text("\n".join(str(wav) for wav in wavs) + "\n")
+        list_file.write_text("\n".join(str(wav) for wav in wavs) + "\n", encoding="utf-8")
         run(args.cli, args.model,
             ["--batch", str(list_file), "--batch-size", str(args.batch)],
             batch_dir, args.backend, extra_env=env)

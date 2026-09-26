@@ -83,11 +83,11 @@ F32. No importance matrix is used.
 
    | File | FLEURS-fr WER | 95 % CI |
    |---|---:|---|
-   | F16 | 6.42 % | 5.72 – 7.10 |
-   | Q8_0 | 6.40 % | 5.70 – 7.07 |
-   | Q6_K | 6.43 % | 5.70 – 7.11 |
-   | Q5_K_M | 6.52 % | 5.80 – 7.24 |
-   | Q4_K_M | 6.73 % | 6.01 – 7.43 |
+   | F16 | 4.65 % | 4.22 – 5.13 |
+   | Q8_0 | 4.62 % | 4.21 – 5.11 |
+   | Q6_K | 4.66 % | 4.24 – 5.15 |
+   | Q5_K_M | 4.73 % | 4.29 – 5.21 |
+   | Q4_K_M | 4.98 % | 4.54 – 5.46 |
 
    FLEURS French test split, all 676 utterances, greedy decoding, no LM, CUDA backend,
    batch 1, language hint `fr`; bootstrap 95 % confidence intervals. F16 → Q5_K_M are

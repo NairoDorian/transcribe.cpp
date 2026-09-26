@@ -52,19 +52,19 @@ def main() -> int:
     fa_dir = REPO / "samples" / "diar" / f"{ds_id}-fa"
     fa_dir.mkdir(parents=True, exist_ok=True)
 
-    rows = [json.loads(l) for l in open(src_manifest) if l.strip()]
+    rows = [json.loads(l) for l in open(src_manifest, encoding="utf-8") if l.strip()]
     out = []
     for r in rows:
         meeting = r["id"].replace(".Mix-Headset", "").replace(".Array1-01", "")
         url = RAW.format(split=fa_split, meeting=meeting)
         dst = fa_dir / f"{meeting}.rttm"
         urllib.request.urlretrieve(url, dst)
-        n = sum(1 for l in dst.read_text().splitlines() if l.startswith("SPEAKER"))
+        n = sum(1 for l in dst.read_text(encoding="utf-8").splitlines() if l.startswith("SPEAKER"))
         out.append({**r, "rttm": str(dst.relative_to(REPO))})
         print(f"  {meeting}: {n} forced-alignment turns", flush=True)
 
     fa_manifest = REPO / "samples" / "diar" / f"{ds_id}-fa.manifest.jsonl"
-    fa_manifest.write_text("\n".join(json.dumps(o) for o in out) + "\n")
+    fa_manifest.write_text("\n".join(json.dumps(o) for o in out) + "\n", encoding="utf-8")
     print(f"wrote {fa_manifest.relative_to(REPO)} ({len(out)} meetings)")
     return 0
 

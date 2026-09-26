@@ -63,11 +63,11 @@ application that already runs parakeet-tdt-0.6b-v3 through transcribe.cpp can lo
 
 | File | FLEURS-fr WER | 95 % CI |
 |---|---:|---|
-| F16 | 6.42 % | 5.72 – 7.10 |
-| Q8_0 | 6.40 % | 5.70 – 7.07 |
-| Q6_K | 6.43 % | 5.70 – 7.11 |
-| Q5_K_M | 6.52 % | 5.80 – 7.24 |
-| Q4_K_M | 6.73 % | 6.01 – 7.43 |
+| F16 | 4.65 % | 4.22 – 5.13 |
+| Q8_0 | 4.62 % | 4.21 – 5.11 |
+| Q6_K | 4.66 % | 4.24 – 5.15 |
+| Q5_K_M | 4.73 % | 4.29 – 5.21 |
+| Q4_K_M | 4.98 % | 4.54 – 5.46 |
 
 FLEURS French test split, all 676 utterances, greedy decoding, no LM, CUDA backend,
 batch 1, language hint `fr`; bootstrap 95 % confidence intervals. F16 → Q5_K_M are
@@ -93,8 +93,8 @@ realtime.
 
 On CPU, K-quants and Q4_0 use ggml's repacked GEMM kernels (x86 AVX2: Q4_K; ARM
 dotprod/i8mm: also Q5_K, Q6_K, Q8_0), which is why Q4_K_M is the fastest CPU file here.
-Accuracy of the optimized paths was re-measured (FLEURS-fr: Q8_0 on CUDA 6.40 %,
-Q4_K_M on CPU 6.77 %) and is unchanged.
+Accuracy of the optimized paths was re-measured (FLEURS-fr: Q8_0 on CUDA 4.63 %,
+Q4_K_M on CPU 4.99 %) and is unchanged.
 
 ## Differences from the parent checkpoint
 
@@ -112,3 +112,5 @@ Model weights: © Moondream, released under
 post-training of NVIDIA's [parakeet-tdt-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)
 (CC-BY-4.0). This repository changes only the file format (GGUF) and the numeric
 precision of the weights as described in QUANTIZATION.md.
+
+> **Correction (2026-09-26):** WER figures published earlier were ~1.6–1.8 pp too high. 61 of the FLEURS-fr reference transcripts in the manifest had been stored mojibake-encoded (`é` → `Ã©`, Windows cp1252 default in the manifest builder), so correct hypotheses scored as errors. The references were repaired and every report re-scored; the numbers here are the corrected ones. The scripts now always pass an explicit encoding (`scripts/ci/check_text_encoding.py`).

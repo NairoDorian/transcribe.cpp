@@ -28,7 +28,7 @@ def run_subprocess_capturing_stderr(
     proc = subprocess.Popen(
         cmd, cwd=cwd, env=env, stderr=subprocess.PIPE,
         text=True, bufsize=1,
-    )
+     encoding="utf-8", errors="replace")
     thr = threading.Thread(target=_tee, args=(proc.stderr,), daemon=True)
     thr.start()
     rc = proc.wait()

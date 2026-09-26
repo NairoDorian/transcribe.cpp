@@ -252,7 +252,7 @@ def main() -> int:
         ids = [int(x) for x in hyps_view[0].y_sequence.tolist()]
         return model.tokenizer.ids_to_text(ids) if ids else ""
 
-    with open(args.manifest) as f:
+    with open(args.manifest, encoding="utf-8") as f:
         manifest = [json.loads(line) for line in f if line.strip()]
     if args.limit > 0:
         manifest = manifest[: args.limit]
@@ -262,7 +262,7 @@ def main() -> int:
 
     t_loop = time.monotonic()
     n_done, n_errors = 0, 0
-    with open(args.out, "w") as fout:
+    with open(args.out, "w", encoding="utf-8") as fout:
         fout.write(json.dumps({
             "type": "batch_header",
             "load_ms": round(load_ms, 1),

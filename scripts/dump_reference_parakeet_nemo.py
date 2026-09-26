@@ -969,7 +969,7 @@ def cmd_streaming(args: argparse.Namespace) -> int:
     import json
     history_path = out_dir / "stream_history.json"
     history_path.parent.mkdir(parents=True, exist_ok=True)
-    with history_path.open("w") as f:
+    with history_path.open("w", encoding="utf-8") as f:
         json.dump({
             "per_chunk_text": per_chunk_text,
             "final_tokens": cumulative_tokens,
@@ -1344,7 +1344,7 @@ def cmd_buffered_streaming(args: argparse.Namespace) -> int:
     import json
     history_path = out_dir / "stream_history.json"
     history_path.parent.mkdir(parents=True, exist_ok=True)
-    with history_path.open("w") as f:
+    with history_path.open("w", encoding="utf-8") as f:
         json.dump({
             "per_chunk_text": per_chunk_text,
             "final_tokens": cumulative_tokens,

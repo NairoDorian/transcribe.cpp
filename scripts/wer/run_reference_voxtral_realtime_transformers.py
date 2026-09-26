@@ -202,7 +202,7 @@ def main() -> int:
             )
         return decode_new(gen.sequences[0].detach().cpu().tolist()[prompt_len:])
 
-    with open(args.manifest) as f:
+    with open(args.manifest, encoding="utf-8") as f:
         manifest = [json.loads(line) for line in f if line.strip()]
     if args.limit > 0:
         manifest = manifest[:args.limit]
@@ -230,7 +230,7 @@ def main() -> int:
     else:
         header_language = "auto"
 
-    with open(args.out, "w") as fout:
+    with open(args.out, "w", encoding="utf-8") as fout:
         fout.write(json.dumps({
             "type": "batch_header", "load_ms": round(load_ms, 1),
             "framework": "transformers", "model": args.model,

@@ -65,7 +65,7 @@ def _edit(path: Path, pattern: str, repl: str, *, expected: int, flags: int = 0)
     A silent no-match (a spot that moved or was reformatted) is a hard error: it
     is exactly the "forgot to bump X" failure this tool exists to prevent.
     """
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     new, n = re.subn(pattern, repl, text, flags=flags)
     if n != expected:
         raise SystemExit(
@@ -74,7 +74,7 @@ def _edit(path: Path, pattern: str, repl: str, *, expected: int, flags: int = 0)
             f"prepare.py."
         )
     if new != text:
-        path.write_text(new)
+        path.write_text(new, encoding="utf-8")
 
 
 def _run(cmd: list[str], *, cwd: Path | None = None, quiet: bool = False) -> bool:
@@ -151,13 +151,13 @@ def write_version(version: str) -> int:
 
     # Regenerate the FFI. Post-§8-P0-#1 a version-only bump yields no diff; a
     # moved abihash means a real ABI change slipped in and needs a Swift pin bump.
-    before = ABIHASH.read_text() if ABIHASH.exists() else ""
+    before = ABIHASH.read_text(encoding="utf-8") if ABIHASH.exists() else ""
     print("regenerating the FFI (generate.py, cargo xtask bindgen) ...")
     if not _run(["uv", "run", "--no-project", "--with", LIBCLANG, str(GENERATE_PY)]):
         raise SystemExit("error: generate.py failed")
     if not _run(["cargo", "xtask", "bindgen"], cwd=REPO):
         raise SystemExit("error: cargo xtask bindgen failed")
-    after = ABIHASH.read_text() if ABIHASH.exists() else ""
+    after = ABIHASH.read_text(encoding="utf-8") if ABIHASH.exists() else ""
     if before != after:
         print(
             "\n*** NOTE: include/transcribe.abihash MOVED — this is a REAL ABI "

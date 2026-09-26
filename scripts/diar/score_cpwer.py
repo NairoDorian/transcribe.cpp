@@ -48,7 +48,7 @@ def normalize(text: str) -> str:
 
 
 def load_seglst(path: Path, session_id: str) -> meeteval.io.SegLST:
-    rows = json.loads(path.read_text())
+    rows = json.loads(path.read_text(encoding="utf-8"))
     cleaned = []
     for r in rows:
         words = normalize(r.get("words", ""))
@@ -76,7 +76,7 @@ def main() -> int:
     hyp_dir = Path(args.hyp_dir)
     per_meeting = {}
     tot_err = tot_len = 0
-    for line in Path(args.manifest).read_text().splitlines():
+    for line in Path(args.manifest).read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         e = json.loads(line)
@@ -116,7 +116,7 @@ def main() -> int:
     }
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(summary, indent=2) + "\n")
+    out.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(f"cpWER: {summary['cpwer_pct']}% over {len(per_meeting)} meetings ({tot_err}/{tot_len})")
     print(f"wrote {out}")
     return 0

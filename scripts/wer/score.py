@@ -152,7 +152,7 @@ def main() -> int:
     entries: list[dict] = []
     header_language: str | None = None
     recipe: dict = {}
-    with open(args.report) as f:
+    with open(args.report, encoding="utf-8") as f:
         for line in f:
             if not line.strip():
                 continue
@@ -298,7 +298,7 @@ def main() -> int:
         score["wer_pct"] = score["error_rate_pct"]
         score["wer_ci_lo"] = score["error_rate_ci_lo"]
         score["wer_ci_hi"] = score["error_rate_ci_hi"]
-    with open(score_path, "w") as f:
+    with open(score_path, "w", encoding="utf-8") as f:
         json.dump(score, f, indent=2)
     print(f"score: {score_path}")
     return 0

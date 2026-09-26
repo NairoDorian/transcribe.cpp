@@ -144,7 +144,7 @@ def run_dump(
     cmd = [str(cli), "-q", "-r", str(repeat),
            "-m", str(model), str(audio)]
     print(f"  $ {' '.join(cmd)}")
-    res = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    res = subprocess.run(cmd, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if res.returncode != 0:
         sys.stderr.write(res.stderr)
         raise RuntimeError(
@@ -166,7 +166,7 @@ def load_dump(d: Path, name: str) -> tuple[tuple[int, ...] | None, np.ndarray | 
     if not f32_path.exists() or not json_path.exists():
         return None, None
     import json
-    meta = json.loads(json_path.read_text())
+    meta = json.loads(json_path.read_text(encoding="utf-8"))
     shape = tuple(int(s) for s in meta["shape"])
     raw = np.fromfile(f32_path, dtype=np.float32)
     expected = int(np.prod(shape)) if shape else 0

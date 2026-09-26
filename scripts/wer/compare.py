@@ -53,7 +53,7 @@ def main() -> int:
         if not sp.exists():
             print(f"error: {sp} does not exist", file=sys.stderr)
             return 2
-        with open(sp) as f:
+        with open(sp, encoding="utf-8") as f:
             scores.append((extract_family(sp), json.load(f)))
 
     if not scores:

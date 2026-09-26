@@ -116,10 +116,10 @@ def resolved_preset(presets: dict[str, dict], name: str) -> dict[str, str]:
 
 
 def main() -> int:
-    presets_doc = json.loads(PRESETS.read_text())
+    presets_doc = json.loads(PRESETS.read_text(encoding="utf-8"))
     presets = {p["name"]: p for p in presets_doc["configurePresets"]}
 
-    pyproject = tomllib.loads(PYPROJECT.read_text())
+    pyproject = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
     overrides = pyproject["tool"]["scikit-build"].get("overrides", [])
 
     failures: list[str] = []

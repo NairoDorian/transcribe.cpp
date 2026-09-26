@@ -193,7 +193,7 @@ def main() -> int:
     print(f"variant: {variant}")
     print(f"prompt: {prompt!r}")
 
-    with open(args.manifest) as f:
+    with open(args.manifest, encoding="utf-8") as f:
         manifest = [json.loads(line) for line in f if line.strip()]
     if args.limit > 0:
         manifest = manifest[:args.limit]
@@ -205,7 +205,7 @@ def main() -> int:
     n_errors = 0
     t_loop = time.monotonic()
 
-    with open(args.out, "w") as fout:
+    with open(args.out, "w", encoding="utf-8") as fout:
         fout.write(json.dumps({
             "type": "batch_header",
             "load_ms": round(load_ms, 1),

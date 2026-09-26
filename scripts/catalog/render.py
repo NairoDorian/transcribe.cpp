@@ -205,7 +205,7 @@ def spec_for(record: dict) -> dict:
         path = common.CARDS_DIR / f"{variant}.yaml"
         if not path.exists():
             raise RenderError(f"no card spec at {path.relative_to(common.REPO)}")
-        _SPECS[variant] = yaml.safe_load(path.read_text()) or {}
+        _SPECS[variant] = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     return _SPECS[variant]
 
 
@@ -379,7 +379,7 @@ def block_family_index(records: dict[str, dict], attrs: dict[str, str]) -> list[
         doc = doc_for(record)
         if doc is not None:
             key = doc.stem
-            title = doc.read_text().splitlines()[0].lstrip("# ").strip()
+            title = doc.read_text(encoding="utf-8").splitlines()[0].lstrip("# ").strip()
             link = f"[docs/models/{doc.name}](docs/models/{doc.name})"
         else:
             key = variant
@@ -408,7 +408,7 @@ BLOCKS = {"downloads": block_downloads, "perf": block_perf,
 
 
 def rewrite(path: pathlib.Path, records: dict[str, dict]) -> tuple[str, list[str]]:
-    lines = path.read_text().splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     out, errors, index, fenced = [], [], 0, False
     while index < len(lines):
         if lines[index].lstrip().startswith("```"):
@@ -466,7 +466,7 @@ def main() -> int:
 
     stale, errors, rendered = [], [], 0
     for path in docs:
-        current = path.read_text()
+        current = path.read_text(encoding="utf-8")
         text, file_errors = rewrite(path, records)
         errors.extend(file_errors)
         if not any(OPEN.match(line) for line in current.splitlines()):
@@ -480,7 +480,7 @@ def main() -> int:
                                         f"a/{path}", f"b/{path}", lineterm="", n=1)
             print("\n".join(diff))
         else:
-            path.write_text(text)
+            path.write_text(text, encoding="utf-8")
 
     for error in errors:
         print(f"  error: {error}", file=sys.stderr)

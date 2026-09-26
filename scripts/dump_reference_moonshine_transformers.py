@@ -560,7 +560,7 @@ def cmd_decode(args: argparse.Namespace) -> int:
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "transcript.json").write_text(
             _json.dumps(transcript, indent=2) + "\n"
-        )
+        , encoding="utf-8")
         print(f"  wrote {out_dir / 'transcript.json'}")
 
     return 0
@@ -589,7 +589,7 @@ def cmd_wer(args: argparse.Namespace) -> int:
     eos = int(model.config.eos_token_id)
     decoder_start = int(model.config.decoder_start_token_id)
 
-    with manifest_path.open() as f:
+    with manifest_path.open(encoding="utf-8") as f:
         rows = [json.loads(line) for line in f if line.strip()]
     if getattr(args, "limit", 0):
         rows = rows[: args.limit]
@@ -609,7 +609,7 @@ def cmd_wer(args: argparse.Namespace) -> int:
     }
     if args.language:
         header["language"] = args.language
-    with out_path.open("w") as out:
+    with out_path.open("w", encoding="utf-8") as out:
         out.write(json.dumps(header) + "\n")
         for i, row in enumerate(rows):
             audio_path = Path(row["audio"])

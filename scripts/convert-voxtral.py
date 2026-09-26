@@ -87,7 +87,7 @@ class _ShardedSafetensors:
         index = self.model_dir / "model.safetensors.index.json"
         single = self.model_dir / "model.safetensors"
         if index.is_file():
-            weight_map = json.loads(index.read_text())["weight_map"]
+            weight_map = json.loads(index.read_text(encoding="utf-8"))["weight_map"]
             files = sorted(set(weight_map.values()))
             self._key_to_file = weight_map
         elif single.is_file():
@@ -371,8 +371,8 @@ def compute_size_label(total_params: int) -> str:
 def convert(model_dir: Path, out_path: Path, variant: str, repo_id: str | None = None) -> None:
     print(f"Output dtype: {REFERENCE_DTYPE_LABEL} (source/reference dtype)")
 
-    config = json.loads((model_dir / "config.json").read_text())
-    preproc = json.loads((model_dir / "preprocessor_config.json").read_text())
+    config = json.loads((model_dir / "config.json").read_text(encoding="utf-8"))
+    preproc = json.loads((model_dir / "preprocessor_config.json").read_text(encoding="utf-8"))
     hp = read_hparams(config, preproc)
     print(f"Audio encoder: {hp['enc_n_layers']} layers, d_model={hp['enc_d_model']}, "
           f"heads={hp['enc_n_heads']}")

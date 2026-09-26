@@ -68,7 +68,7 @@ def run_subprocess(cmd: list[str], *, label: str, env: dict | None = None,
         cwd=str(cwd) if cwd else None,
         capture_output=capture,
         text=True,
-    )
+     encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         if capture:
             sys.stdout.write(proc.stdout or "")
@@ -149,7 +149,7 @@ def load_f32(path: Path, expected_shape: list[int] | None = None) -> np.ndarray:
     raw = np.fromfile(path, dtype=np.float32)
     if not sidecar.exists():
         return raw
-    meta = json.loads(sidecar.read_text())
+    meta = json.loads(sidecar.read_text(encoding="utf-8"))
     shape = meta.get("shape") or expected_shape
     if shape:
         return raw.reshape(shape)
@@ -256,7 +256,7 @@ def main() -> int:
     ref_transcript_path = ref_dir / "transcript.json"
     ref_text = ""
     if ref_transcript_path.exists():
-        ref_text = json.loads(ref_transcript_path.read_text()).get("text", "")
+        ref_text = json.loads(ref_transcript_path.read_text(encoding="utf-8")).get("text", "")
     # CPP transcript: strip leading/trailing whitespace
     cpp_text_norm = cpp_text.strip()
     ref_text_norm = ref_text.strip()
@@ -340,7 +340,7 @@ def main() -> int:
         "chunk_failures": fail_chunks,
         "rows": rows,
     }
-    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     if fail_chunks > 0:
         print(f"FAIL: {fail_chunks} chunks exceed tolerance or have wrong shape")

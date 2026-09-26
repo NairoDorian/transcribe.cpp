@@ -34,8 +34,8 @@ def main() -> int:
         print(f"error: missing {PIN_FILE}", file=sys.stderr)
         return 2
 
-    neutral = ABIHASH_FILE.read_text().strip()
-    m = re.search(r'pinnedHeaderHash\s*=\s*"([0-9a-fA-F]+)"', PIN_FILE.read_text())
+    neutral = ABIHASH_FILE.read_text(encoding="utf-8").strip()
+    m = re.search(r'pinnedHeaderHash\s*=\s*"([0-9a-fA-F]+)"', PIN_FILE.read_text(encoding="utf-8"))
     if not m:
         print(f"error: could not find pinnedHeaderHash in {PIN_FILE}", file=sys.stderr)
         return 2

@@ -71,7 +71,7 @@ def main() -> int:
         print(f"expected one intake for {args.variant}, found {len(intakes)}", file=sys.stderr)
         return 2
     import json
-    intake = json.loads(intakes[0].read_text())
+    intake = json.loads(intakes[0].read_text(encoding="utf-8"))
     model_dir = common.REPO / "models" / args.variant
     files = sorted(model_dir.glob("*.gguf"), key=lambda p: (QUANT_ORDER.index(quant_of(p.name))
                                                            if quant_of(p.name) in QUANT_ORDER else 99))

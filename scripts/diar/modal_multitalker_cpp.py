@@ -62,7 +62,7 @@ image = (
 def run_meeting(meeting_wav: str, mode: str, ref_bg_compat: bool = False) -> dict:
     mid = Path(meeting_wav).name.split(".")[0]
     batch_list = "/tmp/batch.list"
-    Path(batch_list).write_text(f"/data/audio/{meeting_wav}\n")
+    Path(batch_list).write_text(f"/data/audio/{meeting_wav}\n", encoding="utf-8")
 
     env = dict(os.environ)
     if ref_bg_compat:
@@ -74,7 +74,7 @@ def run_meeting(meeting_wav: str, mode: str, ref_bg_compat: bool = False) -> dic
         "--batch", batch_list, "--batch-jsonl",
         "-m", "/data/model/bundle-F32.gguf",
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         return {"id": mid, "mode": mode, "error": f"exit {proc.returncode}: {proc.stderr[-2000:]}"}
 
@@ -111,7 +111,7 @@ def run_meeting(meeting_wav: str, mode: str, ref_bg_compat: bool = False) -> dic
 @app.local_entrypoint()
 def main(modes: str = "both", meetings: str = "", ref_bg_compat: bool = False):
     manifest = REPO / "samples" / "diar" / "ami-ihm-test.manifest.jsonl"
-    entries = [json.loads(l) for l in manifest.read_text().splitlines() if l.strip()]
+    entries = [json.loads(l) for l in manifest.read_text(encoding="utf-8").splitlines() if l.strip()]
     want = {m.strip() for m in meetings.split(",") if m.strip()}
     mode_list = ["masked", "kernel"] if modes == "both" else [modes]
 
@@ -132,7 +132,7 @@ def main(modes: str = "both", meetings: str = "", ref_bg_compat: bool = False):
         out_dir = REPO / "reports" / "cpwer" / f"cpp-{res['mode']}{suffix}"
         out_dir.mkdir(parents=True, exist_ok=True)
         out = out_dir / f"{res['id']}.seglst.json"
-        out.write_text(json.dumps(res["seglst"], indent=1) + "\n")
+        out.write_text(json.dumps(res["seglst"], indent=1) + "\n", encoding="utf-8")
         n_ok += 1
         print(f"ok   {res['id']} [{res['mode']}]: {len(res['seglst'])} segments -> {out.relative_to(REPO)}")
 

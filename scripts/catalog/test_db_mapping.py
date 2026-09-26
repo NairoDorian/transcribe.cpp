@@ -12,7 +12,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import db  # noqa: E402
 
-SCHEMA = json.loads((HERE.parents[1] / "catalog" / "_schema.json").read_text())
+SCHEMA = json.loads((HERE.parents[1] / "catalog" / "_schema.json").read_text(encoding="utf-8"))
 
 # Row properties that are flattened or renamed rather than stored one to one.
 ACCURACY_MAPPED = {"dataset": "dataset_id", "split": "dataset_id", "language": "dataset_id",

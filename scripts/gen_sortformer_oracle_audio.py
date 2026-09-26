@@ -97,13 +97,13 @@ def main() -> int:
             lines.append(
                 f"SPEAKER {CLIP_ID} 1 {start:.3f} {end - start:.3f} <NA> <NA> {spk} <NA> <NA>"
             )
-    OUT_RTTM.write_text("\n".join(lines) + "\n")
+    OUT_RTTM.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     dur = len(mix) / SR
     print(f"wrote {OUT_WAV.relative_to(REPO)} ({dur:.2f}s, 16kHz mono)")
     print(f"wrote {OUT_RTTM.relative_to(REPO)} ({len(lines)} turns, 2 speakers, overlap [9.0,10.5]s)")
     # Emit a sha so the artifact is verifiably reproducible.
-    sha = subprocess.run(["shasum", "-a", "256", str(OUT_WAV)], capture_output=True, text=True)
+    sha = subprocess.run(["shasum", "-a", "256", str(OUT_WAV)], capture_output=True, text=True, encoding="utf-8", errors="replace")
     print("sha256:", sha.stdout.split()[0] if sha.returncode == 0 else "n/a")
     return 0
 

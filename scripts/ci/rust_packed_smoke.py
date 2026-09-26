@@ -113,7 +113,7 @@ def stage_safe_crate(dest: Path) -> Path:
         elif src.is_file():
             shutil.copy2(src, dest / item)
     cargo_toml = dest / "Cargo.toml"
-    text = cargo_toml.read_text()
+    text = cargo_toml.read_text(encoding="utf-8")
     # `transcribe-cpp-sys = { version = "0.0.1", path = "../../.." }`
     #   -> `transcribe-cpp-sys = { version = "0.0.1" }`
     patched = re.sub(
@@ -123,7 +123,7 @@ def stage_safe_crate(dest: Path) -> Path:
     )
     if patched == text:
         sys.exit("packed-smoke FAILED: could not strip the sys path dep from the safe Cargo.toml")
-    cargo_toml.write_text(patched)
+    cargo_toml.write_text(patched, encoding="utf-8")
     return dest
 
 
@@ -165,8 +165,8 @@ def main() -> int:
             [workspace]
             """
         )
-    )
-    (consumer / "src" / "main.rs").write_text(CONSUMER_MAIN)
+    , encoding="utf-8")
+    (consumer / "src" / "main.rs").write_text(CONSUMER_MAIN, encoding="utf-8")
 
     env = os.environ.copy()
     model = args.model

@@ -110,7 +110,7 @@ def write_dump(
         "mean": float(data.mean(dtype=np.float64)) if data.size else 0.0,
         "source": source,
     }
-    json_path.write_text(json.dumps(meta, indent=2) + "\n")
+    json_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     print(f"  wrote {f32_path} ({data.size * 4} bytes)")
     print(f"  wrote {json_path}")
 
@@ -122,7 +122,7 @@ def normalize_text(text: str) -> str:
 def write_json_artifact(out_dir: Path, name: str, data: dict[str, Any]) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / name
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     print(f"  wrote {path}")
 
 

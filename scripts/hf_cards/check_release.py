@@ -40,7 +40,7 @@ def main() -> int:
     if not path.exists():
         print(f"FAIL: no HF card spec at {path}", file=sys.stderr)
         return 2
-    spec = yaml.safe_load(path.read_text()) or {}
+    spec = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     errors = []
     try:
         pin_date = as_date(spec.get("pin_date"), "pin_date")

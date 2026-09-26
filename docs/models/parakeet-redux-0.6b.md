@@ -79,13 +79,13 @@ build/bin/transcribe-cli -m parakeet-redux-0.6b-TQ1_F16.gguf -l de --timestamps 
 
 | File | FLEURS-fr WER | 95 % CI |
 |---|---:|---|
-| TQ1_F16 | 9.91 % | 9.18 – 10.66 |
-| TQ1_Q8_0 | 9.92 % | 9.20 – 10.65 |
-| TQ1_Q4_K | 9.80 % | 9.07 – 10.53 |
+| TQ1_F16 | 8.32 % | 7.77 – 8.90 |
+| TQ1_Q8_0 | 8.31 % | 7.77 – 8.89 |
+| TQ1_Q4_K | 8.18 % | 7.63 – 8.77 |
 
 Same recipe as parakeet-ultra's card (FLEURS French test, 676 utterances, greedy, no LM,
 CUDA, batch 1). The three files are indistinguishable; the gap to parakeet-ultra
-(6.42 %) is the model's own ternary compression, not the conversion — the C++ output
+(4.65 %) is the model's own ternary compression, not the conversion — the C++ output
 matches Moondream's weights run in transformers tensor for tensor.
 
 ## Speed
@@ -101,7 +101,7 @@ realtime.
 | TQ1_Q8_0 | 109 ms — **256×** | 136 ms — **196×** | 1.40 s — **21×** |
 
 Encoder / decoder split on CUDA: 40 ms / 60 ms. Accuracy of the optimized paths was
-re-measured (FLEURS-fr: CUDA 9.94 %, CPU 9.93 %) and is unchanged.
+re-measured (FLEURS-fr: CUDA 8.34 %, CPU 8.34 %) and is unchanged.
 
 ## Differences from the parent checkpoint
 
@@ -118,3 +118,5 @@ from NVIDIA's [parakeet-tdt-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-
 (CC-BY-4.0). This repository changes only the file format (GGUF, ternary blocks
 re-laid-out losslessly) and, for the optional variants, the precision of the dense
 tensors, as described in QUANTIZATION.md.
+
+> **Correction (2026-09-26):** WER figures published earlier were ~1.6–1.8 pp too high. 61 of the FLEURS-fr reference transcripts in the manifest had been stored mojibake-encoded (`é` → `Ã©`, Windows cp1252 default in the manifest builder), so correct hypotheses scored as errors. The references were repaired and every report re-scored; the numbers here are the corrected ones. The scripts now always pass an explicit encoding (`scripts/ci/check_text_encoding.py`).

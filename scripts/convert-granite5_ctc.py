@@ -165,7 +165,7 @@ def read_tokenizer(model_dir: Path, pad_token: str | None) -> dict:
     then cross-checked against config.pad_token_id by the caller. A CTC model
     never encodes text, so there is no bos/eos to carry.
     """
-    tok = json.loads((model_dir / "tokenizer.json").read_text())
+    tok = json.loads((model_dir / "tokenizer.json").read_text(encoding="utf-8"))
     model = tok["model"]
     vocab = model["vocab"]
     merges = model.get("merges") or []
@@ -515,11 +515,11 @@ def main(argv: list[str]) -> int:
     model_dir = resolve_model_dir(args.model, args.revision)
     print(f"Source: {model_dir}")
 
-    config = json.loads((model_dir / "config.json").read_text())
-    preproc = json.loads((model_dir / "preprocessor_config.json").read_text())
+    config = json.loads((model_dir / "config.json").read_text(encoding="utf-8"))
+    preproc = json.loads((model_dir / "preprocessor_config.json").read_text(encoding="utf-8"))
     processor_path = model_dir / "processor_config.json"
-    processor = json.loads(processor_path.read_text()) if processor_path.exists() else {}
-    tok_config = json.loads((model_dir / "tokenizer_config.json").read_text())
+    processor = json.loads(processor_path.read_text(encoding="utf-8")) if processor_path.exists() else {}
+    tok_config = json.loads((model_dir / "tokenizer_config.json").read_text(encoding="utf-8"))
 
     arch_declared = (config.get("architectures") or [None])[0]
     if arch_declared != "GraniteSpeech5ForCTC":

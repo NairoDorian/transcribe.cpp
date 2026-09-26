@@ -128,7 +128,7 @@ app that places them elsewhere passes that directory to `transcribe_init_backend
 Weight memory only; activations add tens of MB for a 30 s clip. Measure peak RSS on
 the target device before committing to a model.
 
-Redux trades ~3.5 WER points (FLEURS-fr 9.9 % vs 6.4–6.8 %) for a 3× smaller download.
+Redux trades ~3.5 WER points (FLEURS-fr 8.3 % vs 4.6–5.0 %) for a 3× smaller download.
 To keep the smallest in-memory footprint for redux on a memory-starved device, set
 `TRANSCRIBE_TERNARY_RUNTIME=native` (1.75 bpw in RAM, slower) or `q2_0` (2.25 bpw).
 

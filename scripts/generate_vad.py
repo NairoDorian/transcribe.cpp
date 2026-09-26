@@ -1,9 +1,9 @@
 import re
 
-with open(r"C:\Users\Z\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\earshot-1.2.2\src\filters.rs") as f:
+with open(r"C:\Users\Z\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\earshot-1.2.2\src\filters.rs", encoding="utf-8") as f:
     filters_code = f.read()
 
-with open(r"C:\Users\Z\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\earshot-1.2.2\src\fft\tables.rs") as f:
+with open(r"C:\Users\Z\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\earshot-1.2.2\src\fft\tables.rs", encoding="utf-8") as f:
     tables_code = f.read()
 
 # Extract HANN_WINDOW

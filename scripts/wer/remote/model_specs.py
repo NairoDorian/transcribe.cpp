@@ -28,7 +28,7 @@ def resolve_model(root: Path, spec: str) -> tuple[str, list[str] | None]:
             f"(e.g. handy-computer/{spec}-gguf) if the variant isn't in the "
             f"catalog yet"
         )
-    record = json.loads(record_path.read_text())
+    record = json.loads(record_path.read_text(encoding="utf-8"))
     repo = record.get("published_repo")
     if not repo:
         raise SystemExit(f"catalog record {spec!r}: no published_repo")

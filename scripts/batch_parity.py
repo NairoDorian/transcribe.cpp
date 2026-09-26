@@ -70,7 +70,7 @@ def run_cli(cli: Path, model: Path, list_file: Path, backend: str,
         cmd += ["--batch-size", str(batch_size)]
     if language:
         cmd += ["--language", language]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         sys.stderr.write(proc.stderr)
         raise SystemExit(f"transcribe-cli failed (rc={proc.returncode})")
@@ -138,7 +138,7 @@ def main() -> int:
             raise SystemExit(f"no wavs under {args.samples_dir}")
         list_file = repo / "tmp" / "batch_parity_list.txt"
         list_file.parent.mkdir(parents=True, exist_ok=True)
-        list_file.write_text("\n".join(wavs) + "\n")
+        list_file.write_text("\n".join(wavs) + "\n", encoding="utf-8")
     elif args.list:
         list_file = args.list
     else:
@@ -167,7 +167,7 @@ def main() -> int:
             "texts": serial,
         }
         args.golden_out.write_text(json.dumps(payload, indent=2,
-                                              ensure_ascii=False) + "\n")
+                                              ensure_ascii=False) + "\n", encoding="utf-8")
         print(f"captured golden baseline -> {args.golden_out} "
               f"({len(serial)} utterances)")
         return 0
@@ -178,7 +178,7 @@ def main() -> int:
     # Optional: gate serial itself against a frozen golden (catches encoder
     # drift that would move serial+batched together).
     if args.golden_in:
-        golden = json.loads(Path(args.golden_in).read_text())["texts"]
+        golden = json.loads(Path(args.golden_in).read_text(encoding="utf-8"))["texts"]
         ok &= report("serial vs golden", golden, serial)
 
     # Batched vs serial (same build) for each requested batch size.
@@ -187,7 +187,7 @@ def main() -> int:
                           args.language, batch_size=n)
         ok &= report(f"batch-size {n} vs serial", serial, batched)
         if args.golden_in:
-            golden = json.loads(Path(args.golden_in).read_text())["texts"]
+            golden = json.loads(Path(args.golden_in).read_text(encoding="utf-8"))["texts"]
             ok &= report(f"batch-size {n} vs golden", golden, batched)
 
     print("PARITY OK" if ok else "PARITY FAIL")

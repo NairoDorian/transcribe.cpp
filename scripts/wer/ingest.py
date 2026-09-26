@@ -134,7 +134,7 @@ def ingest_librispeech(repo: Path, args: argparse.Namespace) -> int:
     n_skipped = 0
     for tf in trans_files:
         chap_dir = tf.parent
-        for line in tf.read_text().strip().splitlines():
+        for line in tf.read_text(encoding="utf-8").strip().splitlines():
             parts = line.strip().split(maxsplit=1)
             if len(parts) != 2:
                 continue

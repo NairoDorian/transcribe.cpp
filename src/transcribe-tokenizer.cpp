@@ -507,6 +507,8 @@ transcribe_status Tokenizer::encode(const std::string & text, std::vector<int32_
         words = unicode::pretokenize_gpt2(text);
     } else if (pre_ == "granite") {
         words = unicode::pretokenize_granite(text);
+    } else if (pre_ == "tekken") {
+        words = unicode::pretokenize_tekken(text);
     } else {
         if (pre_ != "qwen2" && !pre_.empty()) {
             log_msg(TRANSCRIBE_LOG_LEVEL_WARN,

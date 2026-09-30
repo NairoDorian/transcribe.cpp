@@ -21,6 +21,8 @@ emergent text markers into clean `full_text`, segment rows, and—when
 `diarize=ON`—speaker IDs and speaker-turn rows. Built for long-form,
 multi-speaker audio. No translation; not a streaming model.
 
+**Prompting:** vocabulary (`--vocabulary`) as the upstream `热词提示：` hotword hint. It needs a GGUF converted with the instruction split; older GGUFs report no vocabulary support.
+
 See OpenMOSS's [model card](https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize)
 for training data, intended use, and upstream evaluation. All of OpenMOSS's
 published metrics are Chinese multi-speaker diarization CER/cpCER; LibriSpeech

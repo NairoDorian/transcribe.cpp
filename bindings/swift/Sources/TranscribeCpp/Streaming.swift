@@ -191,6 +191,7 @@ extension Session {
     public func stream(
         _ runOptions: RunOptions = .init(), _ streamOptions: StreamOptions = .init()
     ) throws -> Stream {
+        try runOptions.checkCStrings()
         model.runLock.lock()
         defer { model.runLock.unlock() }
         if model.streamActive {

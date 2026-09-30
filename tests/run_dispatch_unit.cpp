@@ -6,6 +6,7 @@
 #include "transcribe-session.h"
 #include "transcribe.h"
 
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -616,6 +617,178 @@ void test_batch_serial_truncation_is_per_utterance() {
     check_truncated_then_clean(dispatcher_arch);
 }
 
+// ---------------------------------------------------------------------------
+// Generic prompting fields: validation, warn-and-strip, and the normalized
+// full-size view families receive.
+// ---------------------------------------------------------------------------
+
+transcribe_run_params g_seen_params;
+int                   g_prompt_runs = 0;
+
+transcribe_status capture_run(transcribe_session *          session,
+                              const float *                 pcm,
+                              int                           n_samples,
+                              const transcribe_run_params * params) {
+    (void) pcm;
+    (void) n_samples;
+    g_seen_params = *params;
+    ++g_prompt_runs;
+    session->full_text  = "fresh result";
+    session->has_result = true;
+    return TRANSCRIBE_OK;
+}
+
+const transcribe::Arch & capture_arch() {
+    static const transcribe::Arch arch = {
+        "fake-prompt", nullptr, nullptr, capture_run, nullptr, nullptr,
+        nullptr,       nullptr, nullptr, nullptr,     nullptr, nullptr,
+    };
+    return arch;
+}
+
+transcribe_status prompt_run(transcribe_model & model, const transcribe_run_params & params) {
+    transcribe_session session;
+    session.model               = &model;
+    session.full_text           = "previous result";
+    session.has_result          = true;
+    float                   pcm = 0.0f;
+    const transcribe_status st  = transcribe_run(&session, &pcm, 1, &params);
+    if (st != TRANSCRIBE_OK) {
+        // Every dispatcher-level prompting rejection is pre-clear (family
+        // text checks go through check_prompting_text / run_validate).
+        CHECK(session.has_result);
+        CHECK(session.full_text == "previous result");
+    }
+    return st;
+}
+
+void test_prompting_validation() {
+    transcribe_model model;
+    model.arch           = &capture_arch();
+    const char * terms[] = { "GGUF", "", "ggml" };
+
+    transcribe_run_params p;
+    transcribe_run_params_init(&p);
+    CHECK(p.vocabulary == nullptr && p.n_vocabulary == 0 && p.prompt == nullptr && p.prefix == nullptr);
+
+    // Vocabulary shape.
+    p.n_vocabulary = -1;
+    CHECK(prompt_run(model, p) == TRANSCRIBE_ERR_INVALID_ARG);
+    p.n_vocabulary = 2;
+    CHECK(prompt_run(model, p) == TRANSCRIBE_ERR_INVALID_ARG);
+    const char * with_null[] = { "a", nullptr };
+    p.vocabulary             = with_null;
+    CHECK(prompt_run(model, p) == TRANSCRIBE_ERR_INVALID_ARG);
+
+    // INSTRUCT without the bit, then its argument rules with it.
+    transcribe_run_params_init(&p);
+    p.task   = TRANSCRIBE_TASK_INSTRUCT;
+    p.prompt = "Summarize.";
+    CHECK(prompt_run(model, p) == TRANSCRIBE_ERR_UNSUPPORTED_TASK);
+    transcribe::set_feature(&model, TRANSCRIBE_FEATURE_INSTRUCT, true);
+    CHECK(prompt_run(model, p) == TRANSCRIBE_OK);
+    CHECK(g_seen_params.task == TRANSCRIBE_TASK_INSTRUCT);
+    CHECK(std::strcmp(g_seen_params.prompt, "Summarize.") == 0);
+    p.prompt = "";
+    CHECK(prompt_run(model, p) == TRANSCRIBE_ERR_INVALID_ARG);
+    p.prompt = nullptr;
+    CHECK(prompt_run(model, p) == TRANSCRIBE_ERR_INVALID_ARG);
+    p.prompt          = "Summarize.";
+    p.target_language = "fr";
+    CHECK(prompt_run(model, p) == TRANSCRIBE_ERR_INVALID_ARG);
+    p.target_language = nullptr;
+    p.timestamps      = TRANSCRIBE_TIMESTAMPS_NONE;
+    CHECK(prompt_run(model, p) == TRANSCRIBE_OK);
+
+    // Prefix: hard gate, and never under INSTRUCT.
+    p.prefix = "Good morning";
+    CHECK(prompt_run(model, p) == TRANSCRIBE_ERR_INVALID_ARG);
+    transcribe::set_feature(&model, TRANSCRIBE_FEATURE_TRANSCRIPT_PREFIX, true);
+    CHECK(prompt_run(model, p) == TRANSCRIBE_ERR_INVALID_ARG);
+    p.task = TRANSCRIBE_TASK_TRANSCRIBE;
+    CHECK(prompt_run(model, p) == TRANSCRIBE_OK);
+    CHECK(std::strcmp(g_seen_params.prefix, "Good morning") == 0);
+    transcribe::set_feature(&model, TRANSCRIBE_FEATURE_TRANSCRIPT_PREFIX, false);
+    p.prefix = "";  // empty == absent
+    CHECK(prompt_run(model, p) == TRANSCRIBE_OK);
+    CHECK(g_seen_params.prefix == nullptr);
+
+    // Soft inputs without their bits: warn, run, and the family sees none.
+    transcribe_run_params_init(&p);
+    p.vocabulary   = terms;
+    p.n_vocabulary = 3;
+    p.prompt       = "Earnings call.";
+    CHECK(prompt_run(model, p) == TRANSCRIBE_OK);
+    CHECK(g_seen_params.vocabulary == nullptr && g_seen_params.n_vocabulary == 0);
+    CHECK(g_seen_params.prompt == nullptr);
+
+    // With the bits, they pass through untouched.
+    transcribe::set_feature(&model, TRANSCRIBE_FEATURE_VOCABULARY, true);
+    transcribe::set_feature(&model, TRANSCRIBE_FEATURE_CONTEXT_PROMPT, true);
+    CHECK(prompt_run(model, p) == TRANSCRIBE_OK);
+    CHECK(g_seen_params.vocabulary == terms && g_seen_params.n_vocabulary == 3);
+    CHECK(std::strcmp(g_seen_params.prompt, "Earnings call.") == 0);
+
+    // Vocabulary under INSTRUCT needs both V and I.
+    p.task   = TRANSCRIBE_TASK_INSTRUCT;
+    p.prompt = "Summarize.";
+    CHECK(prompt_run(model, p) == TRANSCRIBE_OK);
+    CHECK(g_seen_params.n_vocabulary == 3);
+    transcribe::set_feature(&model, TRANSCRIBE_FEATURE_VOCABULARY, false);
+    CHECK(prompt_run(model, p) == TRANSCRIBE_OK);
+    CHECK(g_seen_params.n_vocabulary == 0);
+}
+
+// A caller compiled before the prompting fields existed passes a struct that
+// ends at spec_k_drafts. Whatever lies past it must be read as defaults.
+void test_prompting_short_struct_reads_defaults() {
+    transcribe_model model;
+    model.arch = &capture_arch();
+    transcribe::set_feature(&model, TRANSCRIBE_FEATURE_VOCABULARY, true);
+    transcribe::set_feature(&model, TRANSCRIBE_FEATURE_TRANSCRIPT_PREFIX, true);
+
+    transcribe_run_params p;
+    std::memset(&p, 0xA5, sizeof(p));
+    transcribe_run_params base;
+    transcribe_run_params_init(&base);
+    const size_t old_size = offsetof(transcribe_run_params, spec_k_drafts) + sizeof(base.spec_k_drafts);
+    std::memcpy(&p, &base, old_size);
+    p.struct_size = old_size;
+
+    CHECK(prompt_run(model, p) == TRANSCRIBE_OK);
+    CHECK(g_seen_params.vocabulary == nullptr && g_seen_params.n_vocabulary == 0);
+    CHECK(g_seen_params.prompt == nullptr && g_seen_params.prefix == nullptr);
+    CHECK(g_seen_params.struct_size == old_size);
+}
+
+void test_prompting_batch_rejects_prefix() {
+    transcribe_model model;
+    model.arch = &capture_arch();
+    transcribe::set_feature(&model, TRANSCRIBE_FEATURE_TRANSCRIPT_PREFIX, true);
+    transcribe::set_feature(&model, TRANSCRIBE_FEATURE_VOCABULARY, true);
+
+    transcribe_session session;
+    session.model = &model;
+
+    transcribe_run_params p;
+    transcribe_run_params_init(&p);
+    p.prefix             = "Good morning";
+    float         a      = 0.0f;
+    const float * pcm[2] = { &a, &a };
+    const int     ns[2]  = { 1, 1 };
+    CHECK(transcribe_run_batch(&session, pcm, ns, 2, &p) == TRANSCRIBE_ERR_INVALID_ARG);
+
+    // Vocabulary is fine in a batch and reaches every utterance.
+    const char * terms[] = { "GGUF" };
+    p.prefix             = nullptr;
+    p.vocabulary         = terms;
+    p.n_vocabulary       = 1;
+    g_prompt_runs        = 0;
+    CHECK(transcribe_run_batch(&session, pcm, ns, 2, &p) == TRANSCRIBE_OK);
+    CHECK(g_prompt_runs == 2);
+    CHECK(g_seen_params.n_vocabulary == 1);
+}
+
 }  // namespace
 
 int main() {
@@ -628,5 +801,8 @@ int main() {
     test_batch_abort_pads_missing_to_n();
     test_batch_fastpath_abort_pads_missing_to_n();
     test_raw_text_single_batch_and_alias();
+    test_prompting_validation();
+    test_prompting_short_struct_reads_defaults();
+    test_prompting_batch_rejects_prefix();
     return g_failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

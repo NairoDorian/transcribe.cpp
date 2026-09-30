@@ -302,8 +302,12 @@ struct transcribe_session {
     // storage (the public contract lets the caller free its params pointers
     // the moment begin returns). Stable for the stream's lifetime; only the
     // next begin mutates them.
-    std::string stream_language_owned;
-    std::string stream_target_language_owned;
+    std::string               stream_language_owned;
+    std::string               stream_target_language_owned;
+    // Generic prompting strings for the stream's run-params view.
+    std::vector<std::string>  stream_vocabulary_owned;
+    std::vector<const char *> stream_vocabulary_ptrs;
+    std::string               stream_prompt_owned;
 
     // UI-facing streaming text state. `full_text` above remains the raw
     // model hypothesis. `stream_committed_text` is the append-only public

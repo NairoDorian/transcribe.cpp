@@ -24,6 +24,7 @@
 #include "transcribe-log.h"
 #include "transcribe-mel.h"
 #include "transcribe-meta.h"
+#include "transcribe-prompting.h"
 #include "transcribe-repetition-guard.h"
 #include "weights.h"
 
@@ -171,10 +172,11 @@ void build_audio_span(const MossHParams &    hp,
     }
 }
 
-void build_prompt_tokens(const MossHParams &    hp,
-                         int                    audio_seq_len,
-                         std::vector<int32_t> & out_ids,
-                         std::vector<int32_t> & out_audio_positions) {
+void build_prompt_tokens(const MossHParams &          hp,
+                         int                          audio_seq_len,
+                         std::vector<int32_t> &       out_ids,
+                         std::vector<int32_t> &       out_audio_positions,
+                         const std::vector<int32_t> * suffix) {
     out_ids.clear();
     out_audio_positions.clear();
 
@@ -189,13 +191,85 @@ void build_prompt_tokens(const MossHParams &    hp,
         out_audio_positions.push_back(prefix_len + off);
     }
 
-    out_ids.insert(out_ids.end(), hp.prompt_suffix_tokens.begin(), hp.prompt_suffix_tokens.end());
+    const std::vector<int32_t> & tail = suffix != nullptr ? *suffix : hp.prompt_suffix_tokens;
+    out_ids.insert(out_ids.end(), tail.begin(), tail.end());
 }
 
 namespace {
 
+// True when the GGUF carries the instruction split and it reproduces the
+// baked suffix with this tokenizer, i.e. the runtime can re-encode the
+// instruction with a hotword list appended.
+bool moss_supports_hotwords(const MossModel & m) {
+    const MossHParams & hp = m.hparams;
+    if (hp.prompt_instruction.empty() || !m.tok.has_encoder()) {
+        return false;
+    }
+    std::vector<int32_t> ids = hp.prompt_instruction_head_tokens;
+    std::vector<int32_t> instr;
+    if (m.tok.encode(hp.prompt_instruction, instr) != TRANSCRIBE_OK) {
+        return false;
+    }
+    ids.insert(ids.end(), instr.begin(), instr.end());
+    ids.insert(ids.end(), hp.prompt_instruction_tail_tokens.begin(), hp.prompt_instruction_tail_tokens.end());
+    return ids == hp.prompt_suffix_tokens;
+}
+
+// Prompt suffix for the run: the baked one, or with the generic vocabulary
+// appended to the instruction as upstream's hotword hint
+// (examples/prompts.md) in the instruction's language: "热词提示：{terms}"
+// after a Chinese instruction, " Hotwords: {terms}" otherwise (", "-joined).
+// Terms are fitted to `budget` tokens; `n_hint_tokens` receives how many the
+// fitted hint took (0 without terms).
+transcribe_status moss_prompt_suffix(const MossModel &             m,
+                                     const transcribe_run_params * params,
+                                     int                           budget,
+                                     std::vector<int32_t> &        out,
+                                     size_t &                      n_hint_tokens) {
+    const MossHParams &            hp    = m.hparams;
+    const std::vector<std::string> terms = transcribe::prompting::terms(params);
+    out                                  = hp.prompt_suffix_tokens;
+    n_hint_tokens                        = 0;
+    if (terms.empty()) {
+        return TRANSCRIBE_OK;
+    }
+    bool cjk = false;
+    for (size_t i = 0; i + 2 < hp.prompt_instruction.size() && !cjk; ++i) {
+        const unsigned char b = static_cast<unsigned char>(hp.prompt_instruction[i]);
+        cjk                   = b >= 0xE4 && b <= 0xE9;  // lead bytes of U+4E00..U+9FFF
+    }
+    const std::string lead =
+        cjk ? "\xE7\x83\xAD\xE8\xAF\x8D\xE6\x8F\x90\xE7\xA4\xBA\xEF\xBC\x9A" /* 热词提示： */ : " Hotwords: ";
+    transcribe::prompting::FittedPrompt fit;
+    if (const transcribe_status st =
+            transcribe::prompting::fit_terms_and_context(m.tok, terms, { lead, ", ", "" }, "", budget, "moss run", fit);
+        st != TRANSCRIBE_OK) {
+        return st;
+    }
+    n_hint_tokens = fit.n_tokens();
+    if (fit.n_terms == 0) {
+        return TRANSCRIBE_OK;
+    }
+    std::vector<int32_t> instr;
+    if (const transcribe_status st = m.tok.encode(hp.prompt_instruction + fit.terms_text, instr); st != TRANSCRIBE_OK) {
+        return st;
+    }
+    out = hp.prompt_instruction_head_tokens;
+    out.insert(out.end(), instr.begin(), instr.end());
+    out.insert(out.end(), hp.prompt_instruction_tail_tokens.begin(), hp.prompt_instruction_tail_tokens.end());
+    return TRANSCRIBE_OK;
+}
+
 constexpr const char k_default_variant[] = "moss-transcribe-diarize";
 constexpr int        k_max_new           = 256;
+
+// Token room for the hotword hint: what the context window leaves after the
+// generation reserve and a prompt of `base_prompt_len` tokens built with the
+// baked suffix. run() passes its clip's prompt; run_batch() passes one
+// without audio.
+int moss_hint_budget(int ceiling, int base_prompt_len) {
+    return ceiling - k_max_new - base_prompt_len;
+}
 
 int moss_context_ceiling(int32_t n_ctx_knob, const MossHParams & hp) {
     int ceiling = hp.dec_max_position_embeddings;
@@ -233,6 +307,9 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
     if (const transcribe_status st = read_moss_hparams(loader.gguf(), m->hparams); st != TRANSCRIBE_OK) {
         return st;
     }
+    // Generic vocabulary needs the instruction split, which GGUFs converted
+    // before it lack; those keep the fixed prompt and do not advertise it.
+    transcribe::set_feature(m.get(), TRANSCRIBE_FEATURE_VOCABULARY, moss_supports_hotwords(*m));
 
     m->hparams.vocab_size   = m->tok.n_tokens();
     m->hparams.bos_token_id = m->tok.bos_id();
@@ -748,6 +825,20 @@ transcribe_status run(transcribe_session *          session,
     std::vector<int32_t> prompt_ids;
     std::vector<int32_t> audio_positions;
     build_prompt_tokens(cm->hparams, T_enc, prompt_ids, audio_positions);
+    if (params != nullptr && params->n_vocabulary > 0) {
+        // The suffix follows the audio, so swapping it leaves audio_positions.
+        std::vector<int32_t> suffix;
+        size_t               n_hint_tokens = 0;
+        if (const transcribe_status st = moss_prompt_suffix(
+                *cm, params,
+                moss_hint_budget(moss_context_ceiling(cc->n_ctx, cm->hparams), static_cast<int>(prompt_ids.size())),
+                suffix, n_hint_tokens);
+            st != TRANSCRIBE_OK) {
+            return st;
+        }
+        prompt_ids.resize(prompt_ids.size() - cm->hparams.prompt_suffix_tokens.size());
+        prompt_ids.insert(prompt_ids.end(), suffix.begin(), suffix.end());
+    }
     const int T_prompt = static_cast<int>(prompt_ids.size());
     if (static_cast<int>(audio_positions.size()) != T_enc) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "moss run: audio_positions(%zu) != T_enc(%d)", audio_positions.size(),
@@ -1114,6 +1205,20 @@ transcribe_status run_batch(transcribe_session *          session,
     // length is a pure function of the sample count, so predict it here — no
     // encoder pass needed — and hand the whole batch to the serial path,
     // which goes through run() and therefore chunks.
+    // Shared hotword-extended suffix (one run_params per batch), fitted as if
+    // there were no audio. A row whose own budget is smaller than that fit
+    // would get fewer hotwords from run(), so the batch then goes serial (see
+    // fit_terms_and_context: otherwise the fits match); checked below with
+    // the predicted prompt length.
+    const int            ceiling = moss_context_ceiling(cc->n_ctx, cm->hparams);
+    std::vector<int32_t> suffix;
+    size_t               n_hint_tokens = 0;
+    if (moss_prompt_suffix(*cm, params,
+                           moss_hint_budget(ceiling, static_cast<int>(cm->hparams.prompt_prefix_tokens.size() +
+                                                                      cm->hparams.prompt_suffix_tokens.size())),
+                           suffix, n_hint_tokens) != TRANSCRIBE_OK) {
+        return run_batch_serial(cc, pcm, n_samples, n, params);
+    }
     {
         const int chunk_size = causal_lm::prefill_chunk_size();
         for (int b = 0; b < n; ++b) {
@@ -1121,7 +1226,11 @@ transcribe_status run_batch(transcribe_session *          session,
                 continue;
             }
             std::vector<int32_t> ids, positions;
-            build_prompt_tokens(cm->hparams, audio_token_length(n_samples[b], cm->hparams), ids, positions);
+            build_prompt_tokens(cm->hparams, audio_token_length(n_samples[b], cm->hparams), ids, positions, &suffix);
+            const int base_len = static_cast<int>(ids.size() - suffix.size() + cm->hparams.prompt_suffix_tokens.size());
+            if (static_cast<int>(n_hint_tokens) > std::max(moss_hint_budget(ceiling, base_len), 0)) {
+                return run_batch_serial(cc, pcm, n_samples, n, params);
+            }
             if (static_cast<int>(ids.size()) > chunk_size) {
                 log_msg(TRANSCRIBE_LOG_LEVEL_DEBUG,
                         "moss run_batch: utterance %d needs %zu prompt tokens (> %d) — running the batch serially so "
@@ -1145,9 +1254,8 @@ transcribe_status run_batch(transcribe_session *          session,
     std::vector<transcribe_status>    fail_status(n, TRANSCRIBE_ERR_INVALID_ARG);
     int64_t                           mel_us = 0, enc_us = 0;
 
-    const int ceiling      = moss_context_ceiling(cc->n_ctx, cm->hparams);
-    int       max_T_prompt = 0;
-    int       max_T_enc    = 0;
+    int max_T_prompt = 0;
+    int max_T_enc    = 0;
     for (int b = 0; b < n; ++b) {
         if (cc->poll_abort()) {
             return TRANSCRIBE_ERR_ABORTED;
@@ -1163,7 +1271,7 @@ transcribe_status run_batch(transcribe_session *          session,
             continue;
         }
         T_enc[b] = te;
-        build_prompt_tokens(cm->hparams, te, prompt_ids[b], audio_positions[b]);
+        build_prompt_tokens(cm->hparams, te, prompt_ids[b], audio_positions[b], &suffix);
         T_prompt[b] = static_cast<int>(prompt_ids[b].size());
         if (T_prompt[b] + k_max_new > ceiling) {
             fail_status[b] = TRANSCRIBE_ERR_INPUT_TOO_LONG;

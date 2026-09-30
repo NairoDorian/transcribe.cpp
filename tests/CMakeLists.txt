@@ -1350,6 +1350,23 @@ if(TRANSCRIBE_BUILD_REAL_MODEL_TESTS)
     set_tests_properties(transcribe_qwen3_asr_bpe_parity PROPERTIES
         SKIP_RETURN_CODE 77)
 
+    # SentencePiece BPE encoder parity (canary2 transcript prefix),
+    # gated on TRANSCRIBE_CANARY_1B_V2_GGUF / TRANSCRIBE_CANARY_FLASH_GGUF.
+    # Expected ids come from the reference sentencepiece library via
+    # scripts/gen_sentencepiece_bpe_fixture.py.
+    add_executable(transcribe_sentencepiece_bpe_parity
+        sentencepiece_bpe_parity.cpp)
+    target_link_libraries(transcribe_sentencepiece_bpe_parity PRIVATE transcribe ggml)
+    target_include_directories(transcribe_sentencepiece_bpe_parity PRIVATE
+        ${CMAKE_SOURCE_DIR}/src)
+    target_compile_definitions(transcribe_sentencepiece_bpe_parity PRIVATE
+        "TRANSCRIBE_TEST_FIXTURES_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures\"")
+    transcribe_apply_warnings(transcribe_sentencepiece_bpe_parity)
+    add_test(NAME transcribe_sentencepiece_bpe_parity
+        COMMAND transcribe_sentencepiece_bpe_parity)
+    set_tests_properties(transcribe_sentencepiece_bpe_parity PROPERTIES
+        SKIP_RETURN_CODE 77)
+
     add_executable(transcribe_qwen3_asr_e2e_smoke
         qwen3_asr_e2e_smoke.cpp)
 

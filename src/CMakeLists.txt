@@ -102,6 +102,7 @@ set(TRANSCRIBE_SRCS
     transcribe-mel.cpp
     transcribe-model.cpp
     transcribe-tokenizer.cpp
+    transcribe-prompting.cpp
     transcribe-unicode.cpp
     transcribe-unicode-data.cpp
     transcribe-debug.cpp

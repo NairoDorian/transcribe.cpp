@@ -43,6 +43,17 @@ pub struct RunOptions {
     pub spec_k_drafts: i32,
     /// Optional family-specific run extension (e.g. whisper decode knobs).
     pub family: Option<RunExtension>,
+    /// Custom terms in priority order, formatted per family
+    /// (`Feature::Vocabulary`; ignored with a warning elsewhere).
+    pub vocabulary: Vec<String>,
+    /// Context text under `Task::Transcribe`/`Translate`
+    /// (`Feature::ContextPrompt`); the required instruction under
+    /// `Task::Instruct`.
+    pub prompt: Option<String>,
+    /// Transcript text the model continues from (`Feature::TranscriptPrefix`;
+    /// an error elsewhere, and in batch and streaming runs). `text` holds only
+    /// the continuation; `raw_text` leads with the prefix.
+    pub prefix: Option<String>,
 }
 
 impl Default for RunOptions {
@@ -58,6 +69,9 @@ impl Default for RunOptions {
             keep_special_tags: false,
             spec_k_drafts: -1,
             family: None,
+            vocabulary: Vec::new(),
+            prompt: None,
+            prefix: None,
         }
     }
 }
@@ -150,7 +164,7 @@ impl Session {
     /// transcript is preserved on the returned [`Error::Aborted`] /
     /// [`Error::OutputTruncated`] / [`Error::OutputRepetition`].
     pub fn run(&mut self, pcm: &[f32], options: &RunOptions) -> Result<Transcript> {
-        let (params, _lang, _target, _family) = build_run_params(options)?;
+        let (params, _lang, _target, _family, _prompting) = build_run_params(options)?;
         let n = clamp_len(pcm.len())?;
 
         // The compute path is serialized per model; hold the lock for the native
@@ -194,7 +208,7 @@ impl Session {
         pcms: &[&[f32]],
         options: &RunOptions,
     ) -> Result<Vec<Result<Transcript>>> {
-        let (params, _lang, _target, _family) = build_run_params(options)?;
+        let (params, _lang, _target, _family, _prompting) = build_run_params(options)?;
         let ptrs: Vec<*const f32> = pcms.iter().map(|p| p.as_ptr()).collect();
         let lens: Vec<i32> = pcms
             .iter()
@@ -266,12 +280,13 @@ impl Session {
 
     /// Begin a streaming run, returning a [`Stream`] that borrows this session
     /// for its lifetime (so the session can't be used for an offline `run`
-    /// while a stream is active). `run` supplies task / language / timestamps;
+    /// while a stream is active). `run` supplies task / language / timestamps /
+    /// vocabulary / prompt;
     /// `stream` supplies the commit policy and any stream-slot family extension.
     /// Dropping the returned `Stream` abandons it and returns the session to
     /// idle.
     pub fn stream(&mut self, run: &RunOptions, stream: &StreamOptions) -> Result<Stream<'_>> {
-        let (run_params, _lang, _target, _family) = build_run_params(run)?;
+        let (run_params, _lang, _target, _family, _prompting) = build_run_params(run)?;
         let (stream_params, _stream_family) = build_stream_params(stream);
         {
             // Claim the model's compute lease for the whole stream lifetime: a
@@ -427,7 +442,16 @@ type RunParamsBundle = (
     Option<CString>,
     Option<CString>,
     Option<RunExtRaw>,
+    PromptingKeepalive,
 );
+
+/// Owns the buffers behind the prompting pointers of a `transcribe_run_params`.
+struct PromptingKeepalive {
+    _terms: Vec<CString>,
+    _term_ptrs: Vec<*const std::os::raw::c_char>,
+    _prompt: Option<CString>,
+    _prefix: Option<CString>,
+}
 
 /// Build `transcribe_run_params` from options. The returned keepalives own the
 /// buffers the params' pointers borrow, so the caller must hold them for the
@@ -456,7 +480,30 @@ fn build_run_params(o: &RunOptions) -> Result<RunParamsBundle> {
         .transpose()?;
     params.family = family.as_ref().map_or(std::ptr::null(), |f| f.ext_ptr());
 
-    Ok((params, lang, target, family))
+    let terms = o
+        .vocabulary
+        .iter()
+        .map(|t| CString::new(t.as_str()))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let term_ptrs: Vec<*const std::os::raw::c_char> = terms.iter().map(|c| c.as_ptr()).collect();
+    let prompt = o.prompt.as_deref().map(CString::new).transpose()?;
+    let prefix = o.prefix.as_deref().map(CString::new).transpose()?;
+    params.vocabulary = if term_ptrs.is_empty() {
+        std::ptr::null()
+    } else {
+        term_ptrs.as_ptr()
+    };
+    params.n_vocabulary = clamp_len(term_ptrs.len())?;
+    params.prompt = prompt.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
+    params.prefix = prefix.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
+    let prompting = PromptingKeepalive {
+        _terms: terms,
+        _term_ptrs: term_ptrs,
+        _prompt: prompt,
+        _prefix: prefix,
+    };
+
+    Ok((params, lang, target, family, prompting))
 }
 
 /// PCM/utterance lengths cross the ABI as `int`; reject anything that overflows.

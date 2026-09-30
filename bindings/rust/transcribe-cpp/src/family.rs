@@ -19,6 +19,7 @@ use crate::error::Result;
 
 /// Whisper run-extension knobs (run slot): initial prompt, temperature
 /// fallback, and decode thresholds. `None` keeps the family default.
+/// `initial_prompt` cannot be combined with `RunOptions::vocabulary` / `prompt`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WhisperRunOptions {
     pub initial_prompt: Option<String>,

@@ -46,6 +46,17 @@ and streams.
 const result = await model.transcribe(pcm, { pnc: "off", itn: "on" });
 ```
 
+### Prompting
+
+`vocabulary` (custom terms), `prompt` (context, or the instruction under
+`task: "instruct"`) and `prefix` (text the model continues from) take effect
+where `model.supports()` reports `"vocabulary"`, `"context_prompt"`,
+`"instruct"` or `"transcript_prefix"`.
+
+```ts
+const result = await model.transcribe(pcm, { vocabulary: ["Kubernetes", "gRPC"] });
+```
+
 ### Streaming
 
 ```ts

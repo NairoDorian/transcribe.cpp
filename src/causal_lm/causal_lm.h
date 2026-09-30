@@ -106,6 +106,12 @@ bool kv_init_batched(KvCache &      cache,
                      int            n_batch,
                      ggml_type      kv_type);
 
+// Grow a single-utterance cache (n_batch == 1) to n_ctx positions in place:
+// a new cache is allocated, rows [0, cache.n) of every layer are copied over,
+// and the fill / write head carry across. For decodes whose length is not
+// known up front. On failure (allocation) the old cache is left intact.
+bool kv_grow(KvCache & cache, ggml_backend_t backend, int n_ctx, int n_kv_heads, int head_dim, int n_layer);
+
 struct BlockOpts {
     bool use_flash = true;
 

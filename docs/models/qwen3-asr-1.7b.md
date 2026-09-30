@@ -17,6 +17,8 @@ Same contract as the 0.6B: offline multilingual STT, 30-language
 auto-detect, 16 kHz mono WAV in → transcript text out. Targets the same
 use cases as Qwen3-ASR-0.6B with more parameters for accuracy headroom.
 
+**Prompting:** vocabulary (`--vocabulary`, space-joined) and context prompt (`--prompt`), both in the system message.
+
 See the
 [Qwen3-ASR-1.7B model card](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
 for training data and upstream evaluation.

@@ -43,6 +43,17 @@ and the one-shot `transcribe()` helper.
 result = session.run(pcm, pnc="off", itn="on")
 ```
 
+### Prompting
+
+`vocabulary` (custom terms), `prompt` (context, or the instruction under
+`task="instruct"`) and `prefix` (text the model continues from) take effect
+where `model.supports()` reports `"vocabulary"`, `"context_prompt"`,
+`"instruct"` or `"transcript_prefix"`.
+
+```python
+result = session.run(pcm, vocabulary=["Kubernetes", "gRPC"])
+```
+
 Streaming models expose incremental transcription with committed/tentative
 text views — see `examples/stream_wav.py`:
 

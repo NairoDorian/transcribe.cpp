@@ -44,6 +44,8 @@ For Mandarin-only / dialect-heavy use, the regular
 [Fun-ASR-Nano](fun-asr-nano-2512.md) was trained on a much larger
 zh/en/ja corpus and may give better Chinese accuracy.
 
+**Prompting:** vocabulary (`--vocabulary`) as the upstream hotword list (`热词列表：[…]`).
+
 See FunAudioLLM's [model card](https://huggingface.co/FunAudioLLM/Fun-ASR-MLT-Nano-2512)
 for training data, intended use, and upstream evaluation methodology.
 

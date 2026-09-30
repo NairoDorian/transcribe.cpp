@@ -72,6 +72,17 @@ let options = RunOptions(pnc: .off, itn: .on)
 let transcript = try session.run(pcm, options: options)
 ```
 
+### Prompting
+
+`vocabulary` (custom terms), `prompt` (context, or the instruction under
+`.instruct`) and `prefix` (text the model continues from) take effect where
+`model.supports()` reports `.vocabulary`, `.contextPrompt`, `.instruct` or
+`.transcriptPrefix`.
+
+```swift
+let transcript = try session.run(pcm, options: RunOptions(vocabulary: ["Kubernetes", "gRPC"]))
+```
+
 Streaming models expose committed/tentative text for UI display:
 
 ```swift

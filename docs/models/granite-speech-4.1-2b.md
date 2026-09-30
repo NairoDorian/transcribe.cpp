@@ -26,6 +26,8 @@ English-to-Mandarin. Always via English — there is no direct fr↔de, fr↔es,
 etc. Pass the target language as a BCP-47 code via `--translate
 --target-language <code>`; the source language is inferred from the audio.
 
+**Prompting:** vocabulary (`--vocabulary`) as IBM's `Keywords:` list biasing, on transcription and translation. Needs a GGUF converted with the `stt.capability.*` prompting keys; older GGUFs report no prompting support.
+
 See IBM's [model card](https://huggingface.co/ibm-granite/granite-speech-4.1-2b)
 for training data, intended use, and upstream evaluation methodology.
 

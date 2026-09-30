@@ -183,6 +183,18 @@ class Tokenizer {
     //                                  merges (the encoder needs them).
     transcribe_status encode(const std::string & text, std::vector<int32_t> & out_ids) const;
 
+    // SentencePiece BPE encode over the pieces with ids in [lo, hi) (hi < 0 =
+    // whole vocab; canary passes one language's sub-vocab range). Piece
+    // order is the merge rank, so scores are not needed. Input normalization
+    // approximates nmt_nfkc, not full NFKC. A run of uncoverable characters
+    // becomes one unknown piece. Accepts GGUF model "unigram" or "bpe" (the
+    // canary converter labels these BPE models "unigram").
+    transcribe_status encode_sentencepiece_bpe(const std::string &    text,
+                                               std::vector<int32_t> & out_ids,
+                                               int                    lo,
+                                               int                    hi,
+                                               bool                   remove_extra_whitespaces) const;
+
     // Identification + special token ids. -1 if the corresponding key
     // was absent from the GGUF.
     const std::string & model_type() const { return model_; }

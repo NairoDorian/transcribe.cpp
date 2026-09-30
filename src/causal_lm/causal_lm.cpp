@@ -111,6 +111,33 @@ bool kv_init(KvCache &      cache,
     return true;
 }
 
+bool kv_grow(KvCache & cache, ggml_backend_t backend, int n_ctx, int n_kv_heads, int head_dim, int n_layer) {
+    if (cache.self_k == nullptr || cache.n_batch != 1 || n_ctx <= cache.n_ctx) {
+        return false;
+    }
+    KvCache grown;
+    if (!kv_init(grown, backend, n_ctx, n_kv_heads, head_dim, n_layer, cache.self_k->type)) {
+        return false;
+    }
+    // Layout is layer-major (layer, position, head, dim), so each layer's
+    // filled rows move to a new offset; copy them layer by layer.
+    const size_t         row  = static_cast<size_t>(n_kv_heads) * head_dim * ggml_type_size(cache.self_k->type);
+    const size_t         keep = static_cast<size_t>(std::min(cache.n, cache.n_ctx)) * row;
+    std::vector<uint8_t> host(keep);
+    for (ggml_tensor * const * pair : { &cache.self_k, &cache.self_v }) {
+        ggml_tensor * dst = pair == &cache.self_k ? grown.self_k : grown.self_v;
+        for (int l = 0; l < n_layer && keep > 0; ++l) {
+            ggml_backend_tensor_get(*pair, host.data(), static_cast<size_t>(l) * cache.n_ctx * row, keep);
+            ggml_backend_tensor_set(dst, host.data(), static_cast<size_t>(l) * n_ctx * row, keep);
+        }
+    }
+    grown.n    = cache.n;
+    grown.head = cache.head;
+    cache.free();
+    cache = grown;
+    return true;
+}
+
 bool kv_init_batched(KvCache &      cache,
                      ggml_backend_t backend,
                      int            n_ctx,

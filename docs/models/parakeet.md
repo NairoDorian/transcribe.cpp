@@ -120,7 +120,8 @@ CLI surface. Other Parakeet variants run offline only.
 What's not supported (consistent across the family): translation,
 VAD, speaker diarization. Language coverage is English-only except
 `parakeet-tdt-0.6b-v3` and `parakeet-primeline` (25 European languages,
-no auto-detect — language hint required). Note that the v3 lineage,
+auto-detected; the language hint is accepted but does not change the
+output). Note that the v3 lineage,
 including `parakeet-primeline`, writes German `ss` where standard
 orthography uses `ß`; see
 [parakeet-primeline.md](parakeet-primeline.md#orthography-ß-vs-ss) for

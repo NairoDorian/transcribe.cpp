@@ -18,6 +18,8 @@ covered including English, Chinese, Japanese, Korean, German, French,
 Spanish, Arabic, Russian, Hindi, and Vietnamese. `transcribe-cli` reads
 a 16 kHz mono WAV and returns the transcript text.
 
+**Prompting:** vocabulary (`--vocabulary`, space-joined) and context prompt (`--prompt`), both in the system message. This size echoes the dictionary into the output more often than the 1.7B.
+
 See the
 [Qwen3-ASR model card](https://huggingface.co/Qwen/Qwen3-ASR-0.6B)
 for training data, intended use, and upstream evaluation methodology.

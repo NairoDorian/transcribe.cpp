@@ -13,6 +13,7 @@
 #include "wav.h"
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -21,6 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <thread>
 #include <vector>
@@ -223,12 +225,13 @@ struct cli_args {
     std::string                wav_path;
     std::string                model_path;
     std::string                language;
-    std::string                target_language;  // --target-language: target lang for translation
-    std::string                batch_file;       // --batch: one wav path per line
-    int                        batch_size = 0;   // --batch-size: >1 groups utterances into
-                                                 // transcribe_run_batch calls (offline only).
-                                                 // 0/1 keeps the per-file serial loop.
+    std::string                target_language;       // --target-language: target lang for translation
+    std::string                batch_file;            // --batch: one wav path per line
+    int                        batch_size = 0;        // --batch-size: >1 groups utterances into
+                                                      // transcribe_run_batch calls (offline only).
+                                                      // 0/1 keeps the per-file serial loop.
     bool                       translate  = false;
+    bool                       instruct   = false;    // --task instruct
     bool                       quiet      = false;
     std::string                multi_models;          // --multi M1,M2,...: concurrent multi-model mode
     bool                       multi_serial = false;  // --multi-serial: run the set serially instead
@@ -242,6 +245,11 @@ struct cli_args {
     transcribe_backend_request backend      = TRANSCRIBE_BACKEND_AUTO;
     int                        device_index = -1;  // --device N: -1 = auto, >=0 = exact registry device
     transcribe_timestamp_kind  timestamps   = TRANSCRIBE_TIMESTAMPS_AUTO;
+
+    // Generic prompting (transcribe_run_params::vocabulary / prompt / prefix).
+    std::vector<std::string> vocabulary;  // --vocabulary TERMS / --vocabulary-file PATH
+    std::string              prompt;      // --prompt TEXT
+    std::string              prefix;      // --prefix TEXT
 
     // Whisper-family knobs. Ignored for non-Whisper models.
     std::string                              initial_prompt;                    // --initial-prompt TEXT
@@ -313,6 +321,22 @@ struct cli_args {
     int spec_k_drafts        = -1;
 };
 
+// Point rp's generic prompting fields at args' storage; vocabulary_ptrs
+// backs rp.vocabulary and must outlive the run.
+void apply_prompting(const cli_args & args, transcribe_run_params & rp, std::vector<const char *> & vocabulary_ptrs) {
+    if (args.instruct) {
+        rp.task = TRANSCRIBE_TASK_INSTRUCT;
+    }
+    vocabulary_ptrs.clear();
+    for (const std::string & term : args.vocabulary) {
+        vocabulary_ptrs.push_back(term.c_str());
+    }
+    rp.vocabulary   = vocabulary_ptrs.empty() ? nullptr : vocabulary_ptrs.data();
+    rp.n_vocabulary = static_cast<int32_t>(vocabulary_ptrs.size());
+    rp.prompt       = args.prompt.empty() ? nullptr : args.prompt.c_str();
+    rp.prefix       = args.prefix.empty() ? nullptr : args.prefix.c_str();
+}
+
 void print_usage(const char * argv0) {
     std::fprintf(stderr,
                  "usage: %s [options] audio.wav\n"
@@ -321,6 +345,13 @@ void print_usage(const char * argv0) {
                  "  -m, --model PATH      GGUF model file\n"
                  "  -l, --language ISO    BCP-47-ish language hint (e.g. en, de)\n"
                  "  -t, --translate       set task to TRANSLATE\n"
+                 "  --task T              transcribe, translate or instruct (instruct: --prompt\n"
+                 "                        is the instruction; output is free text)\n"
+                 "  --vocabulary TERMS    comma-separated custom terms, priority order;\n"
+                 "                        repeatable (models with the vocabulary feature)\n"
+                 "  --vocabulary-file P   custom terms, one per line\n"
+                 "  --prompt TEXT         context text, or the instruction for --task instruct\n"
+                 "  --prefix TEXT         transcript text the model continues from\n"
                  "  --target-language ISO target language for translation (e.g. de, es, fr)\n"
                  "  -q, --quiet           suppress library log output\n"
                  "  -r, --repeat N        run N times per file (benchmark)\n"
@@ -470,6 +501,68 @@ bool parse_args(int argc, char ** argv, cli_args & out) {
             out.target_language = v;
         } else if (a == "-t" || a == "--translate") {
             out.translate = true;
+            out.instruct  = false;
+        } else if (a == "--task") {
+            const char * v = take_value(a.c_str());
+            if (!v) {
+                return false;
+            }
+            const std::string t = v;
+            out.translate       = t == "translate";
+            out.instruct        = t == "instruct";
+            if (!out.translate && !out.instruct && t != "transcribe") {
+                std::fprintf(stderr, "error: --task must be transcribe, translate or instruct\n");
+                return false;
+            }
+        } else if (a == "--vocabulary" || a == "--vocabulary-file") {
+            const char * v = take_value(a.c_str());
+            if (!v) {
+                return false;
+            }
+            std::string text = v;
+            char        sep  = ',';
+            if (a == "--vocabulary-file") {
+                std::ifstream f(v);
+                if (!f) {
+                    std::fprintf(stderr, "error: cannot read %s\n", v);
+                    return false;
+                }
+                text.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+                if (text.rfind("\xEF\xBB\xBF", 0) == 0) {
+                    text.erase(0, 3);  // UTF-8 byte-order mark
+                }
+                sep = '\n';
+            }
+            size_t start = 0;
+            while (start <= text.size()) {
+                size_t end = text.find(sep, start);
+                if (end == std::string::npos) {
+                    end = text.size();
+                }
+                size_t a0 = start, b0 = end;
+                while (a0 < b0 && std::isspace(static_cast<unsigned char>(text[a0]))) {
+                    ++a0;
+                }
+                while (b0 > a0 && std::isspace(static_cast<unsigned char>(text[b0 - 1]))) {
+                    --b0;
+                }
+                if (b0 > a0) {
+                    out.vocabulary.emplace_back(text.substr(a0, b0 - a0));
+                }
+                start = end + 1;
+            }
+        } else if (a == "--prompt") {
+            const char * v = take_value(a.c_str());
+            if (!v) {
+                return false;
+            }
+            out.prompt = v;
+        } else if (a == "--prefix") {
+            const char * v = take_value(a.c_str());
+            if (!v) {
+                return false;
+            }
+            out.prefix = v;
         } else if (a == "-q" || a == "--quiet") {
             out.quiet = true;
         } else if (a == "-r" || a == "--repeat") {
@@ -734,6 +827,10 @@ bool parse_args(int argc, char ** argv, cli_args & out) {
         std::fprintf(stderr, "error: cannot combine positional audio.wav with --batch\n");
         return false;
     }
+    if (!out.prefix.empty() && !out.batch_file.empty()) {
+        std::fprintf(stderr, "error: --prefix describes one utterance and cannot be combined with --batch\n");
+        return false;
+    }
     if (out.stream_chunk_ms > 0 && out.repeat > 1) {
         std::fprintf(stderr, "error: --stream-chunk-ms cannot be combined with --repeat\n");
         return false;
@@ -912,6 +1009,8 @@ static int multi_main(const cli_args & args) {
     auto run_one = [&args, &pcm](Slot & sl) {
         struct transcribe_run_params rp;
         transcribe_run_params_init(&rp);
+        std::vector<const char *> vocabulary_ptrs;
+        apply_prompting(args, rp, vocabulary_ptrs);
         if (sl.lang_ok) {
             rp.language = args.language.c_str();
         }
@@ -1090,6 +1189,8 @@ int main(int argc, char ** argv) {
         if (args.translate) {
             rp.task = TRANSCRIBE_TASK_TRANSLATE;
         }
+        std::vector<const char *> vocabulary_ptrs;
+        apply_prompting(args, rp, vocabulary_ptrs);
         if (!args.language.empty()) {
             rp.language = args.language.c_str();
         }
@@ -1531,6 +1632,8 @@ int main(int argc, char ** argv) {
         if (args.translate) {
             rp.task = TRANSCRIBE_TASK_TRANSLATE;
         }
+        std::vector<const char *> vocabulary_ptrs;
+        apply_prompting(args, rp, vocabulary_ptrs);
         if (!args.language.empty()) {
             rp.language = args.language.c_str();
         }

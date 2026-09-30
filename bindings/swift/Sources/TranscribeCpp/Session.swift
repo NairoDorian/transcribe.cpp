@@ -50,6 +50,7 @@ public final class Session {
 
     /// Transcribe one utterance. `pcm` is mono float32 at 16 kHz in [-1, 1].
     public func run(_ pcm: [Float], options: RunOptions = .init()) throws -> Transcript {
+        try options.checkCStrings()
         model.runLock.lock()
         defer { model.runLock.unlock() }
         if model.streamActive {
@@ -70,6 +71,7 @@ public final class Session {
     public func runBatch(
         _ inputs: [[Float]], options: RunOptions = .init()
     ) throws -> [Result<Transcript, Error>] {
+        try options.checkCStrings()
         model.runLock.lock()
         defer { model.runLock.unlock() }
         if model.streamActive {

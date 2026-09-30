@@ -171,9 +171,11 @@ code alone.
   back to `token_embd.weight` with `TENSOR_DUPLICATED` (same as
   llama.cpp and the existing Cohere decoder path).
 - **Prompt template.** The Qwen3 chat template (in
-  `chat_template.json`) carries language and hotword context fields.
-  The rendered prompt is embedded into the GGUF as a string KV; at
-  inference the caller-provided language/context is spliced into it.
+  `chat_template.json`) has no dedicated hotword field: context is just
+  the system message, and a language hint is the `language X<asr_text>`
+  assistant prefix. The rendered prompt is embedded into the GGUF as a
+  string KV; at inference the caller-provided language/context is
+  spliced into it.
   The tokenizer merge table and special-token ids are the durable part;
   the template is a separate KV.
 - **Reuse Cohere's mel frontend.** Same underlying Whisper

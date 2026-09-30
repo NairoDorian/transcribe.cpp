@@ -50,6 +50,20 @@ let result = session.run(&pcm, &options)?;
 # Ok::<(), transcribe_cpp::Error>(())
 ```
 
+### Prompting
+
+`RunOptions::vocabulary` (custom terms), `prompt` (context, or the instruction
+under `Task::Instruct`) and `prefix` (text the model continues from) take
+effect where `model.supports()` reports `Feature::Vocabulary`,
+`ContextPrompt`, `Instruct` or `TranscriptPrefix`.
+
+```rust
+use transcribe_cpp::RunOptions;
+let options = RunOptions { vocabulary: vec!["Kubernetes".into()], ..Default::default() };
+let result = session.run(&pcm, &options)?;
+# Ok::<(), transcribe_cpp::Error>(())
+```
+
 Streaming exposes both UI-stable text and a fully materialized structured
 snapshot:
 

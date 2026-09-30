@@ -31,6 +31,8 @@ is supported by the model. Pass `--itn` on the CLI, or set
 For multilingual coverage beyond zh/en/ja, see the sibling
 [Fun-ASR-MLT-Nano](fun-asr-mlt-nano-2512.md) (31 languages).
 
+**Prompting:** vocabulary (`--vocabulary`) as the upstream hotword list (`热词列表：[…]`).
+
 See FunAudioLLM's [model card](https://huggingface.co/FunAudioLLM/Fun-ASR-Nano-2512)
 for training data, intended use, and upstream evaluation methodology.
 

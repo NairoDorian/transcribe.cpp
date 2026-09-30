@@ -52,7 +52,7 @@ __version__ = "0.2.4"
 # String-enum types, exported so callers (and type checkers) can name them.
 Backend = Literal["auto", "cpu", "metal", "vulkan", "cpu_accel", "cuda", "rocm"]
 KVType = Literal["auto", "f32", "f16"]
-Task = Literal["transcribe", "translate"]
+Task = Literal["transcribe", "translate", "instruct"]
 Timestamps = Literal["none", "auto", "segment", "word", "token"]
 Pnc = Literal["default", "off", "on"]
 Itn = Literal["default", "off", "on"]
@@ -62,6 +62,7 @@ CommitPolicy = Literal["auto", "on_finalize", "stable_prefix"]
 Feature = Literal[
     "initial_prompt", "temperature_fallback", "long_form",
     "cancellation", "pnc", "itn", "diarization",
+    "vocabulary", "context_prompt", "instruct", "transcript_prefix",
 ]
 
 __all__ = [
@@ -203,6 +204,7 @@ _KV_TYPES = {
 _TASKS = {
     "transcribe": _generated.TRANSCRIBE_TASK_TRANSCRIBE,
     "translate": _generated.TRANSCRIBE_TASK_TRANSLATE,
+    "instruct": _generated.TRANSCRIBE_TASK_INSTRUCT,
 }
 _TIMESTAMPS = {
     "none": _generated.TRANSCRIBE_TIMESTAMPS_NONE,
@@ -250,6 +252,10 @@ _FEATURES = {
     "pnc": _generated.TRANSCRIBE_FEATURE_PNC,
     "itn": _generated.TRANSCRIBE_FEATURE_ITN,
     "diarization": _generated.TRANSCRIBE_FEATURE_DIARIZATION,
+    "vocabulary": _generated.TRANSCRIBE_FEATURE_VOCABULARY,
+    "context_prompt": _generated.TRANSCRIBE_FEATURE_CONTEXT_PROMPT,
+    "instruct": _generated.TRANSCRIBE_FEATURE_INSTRUCT,
+    "transcript_prefix": _generated.TRANSCRIBE_FEATURE_TRANSCRIPT_PREFIX,
 }
 
 
@@ -653,9 +659,17 @@ def _stream_update_from(u) -> StreamUpdate:
     )
 
 
+def _cstr(value: str, name: str) -> bytes:
+    """UTF-8 bytes for a C string option; a NUL would silently cut it in C."""
+    if "\x00" in value:
+        raise InvalidArgument(f"{name} contains a NUL character")
+    return value.encode("utf-8")
+
+
 def _build_run_params(task, language, target_language, timestamps,
                       keep_special_tags, spec_k_drafts, diarize="default",
-                      pnc="default", itn="default"):
+                      pnc="default", itn="default", vocabulary=None,
+                      prompt=None, prefix=None):
     if not isinstance(spec_k_drafts, int) or spec_k_drafts < -1:
         raise InvalidArgument(
             f"spec_k_drafts must be -1 (family default), 0 (disabled), or a "
@@ -668,10 +682,27 @@ def _build_run_params(task, language, target_language, timestamps,
     params.pnc = _enum(_PNC, pnc, "pnc")
     params.itn = _enum(_ITN, itn, "itn")
     params.diarize = _enum(_DIARIZE, diarize, "diarize")
-    params.language = language.encode("utf-8") if language else None
-    params.target_language = target_language.encode("utf-8") if target_language else None
+    params.language = _cstr(language, "language") if language else None
+    params.target_language = _cstr(target_language, "target_language") if target_language else None
     params.keep_special_tags = keep_special_tags
     params.spec_k_drafts = spec_k_drafts
+    if vocabulary is not None:
+        if isinstance(vocabulary, (str, bytes)):
+            raise InvalidArgument("vocabulary must be a sequence of terms, not a single string")
+        if isinstance(vocabulary, (set, frozenset, dict)):
+            raise InvalidArgument("vocabulary is in priority order; pass a list, not a set or dict")
+        vocabulary = list(vocabulary)  # an iterator would be used up by the check below
+        if not all(isinstance(t, str) for t in vocabulary):
+            raise InvalidArgument("vocabulary terms must be strings")
+        terms = [_cstr(t, "vocabulary") for t in vocabulary]
+        if terms:
+            arr = (ctypes.c_char_p * len(terms))(*terms)
+            params.vocabulary = ctypes.cast(arr, ctypes.POINTER(ctypes.c_char_p))
+            params.n_vocabulary = len(terms)
+            # The C struct holds raw pointers; keep the buffers alive with it.
+            params._prompting_keepalive = (arr, terms)
+    params.prompt = _cstr(prompt, "prompt") if prompt else None
+    params.prefix = _cstr(prefix, "prefix") if prefix else None
     return params
 
 
@@ -740,7 +771,7 @@ class WhisperRunOptions(FamilyExtension):
 
     def _apply(self, ext) -> None:
         if self.initial_prompt is not None:
-            ext.initial_prompt = self.initial_prompt.encode("utf-8")
+            ext.initial_prompt = _cstr(self.initial_prompt, "initial_prompt")
         if self.condition_on_prev_tokens is not None:
             ext.condition_on_prev_tokens = self.condition_on_prev_tokens
         if self.temperature is not None:
@@ -981,8 +1012,7 @@ class Model:
         )
 
     def supports(self, feature: Feature) -> bool:
-        """Whether the model exposes a behavioral feature (initial prompt,
-        temperature fallback, long-form, cancellation, pnc, itn)."""
+        """Whether the model exposes a behavioral feature (see ``Feature``)."""
         return bool(_lib.transcribe_model_supports(
             self._h, _enum(_FEATURES, feature, "feature")))
 
@@ -1103,7 +1133,10 @@ class Session:
             diarize: Diarize = "default",
             keep_special_tags: bool = False,
             spec_k_drafts: int = -1,
-            family: FamilyExtension | None = None) -> Result:
+            family: FamilyExtension | None = None,
+            vocabulary: Sequence[str] | None = None,
+            prompt: str | None = None,
+            prefix: str | None = None) -> Result:
         """Transcribe 16 kHz mono float32 PCM and return a materialized Result.
 
         ``pnc`` controls punctuation/capitalization and ``itn`` controls
@@ -1113,6 +1146,14 @@ class Session:
         ``spec_k_drafts`` tunes speculative decoding on models whose
         capabilities advertise ``supports_spec_decode`` (-1 = family default,
         0 = disabled, >0 = draft length; silently ignored elsewhere).
+        ``vocabulary`` (terms, priority order), ``prompt`` and ``prefix`` are
+        the generic prompting inputs; probe ``model.supports()`` for
+        ``"vocabulary"``, ``"context_prompt"``, ``"instruct"`` and
+        ``"transcript_prefix"``. With ``task="instruct"`` the ``prompt`` is the
+        required instruction and the output is free text. Unsupported
+        vocabulary/context is ignored with a warning; an unsupported prefix
+        or instruct task raises. With ``prefix``, ``text`` holds only the
+        continuation and ``raw_text`` leads with the prefix.
 
         On ``Aborted`` (via :meth:`cancel`) and ``OutputTruncated`` (including
         its ``OutputRepetition`` subclass) the partial transcript is preserved
@@ -1120,7 +1161,8 @@ class Session:
         self._cancel.clear()
         array, n_samples = _pcm_to_carray(pcm)
         params = _build_run_params(task, language, target_language, timestamps,
-                                   keep_special_tags, spec_k_drafts, diarize, pnc, itn)
+                                   keep_special_tags, spec_k_drafts, diarize, pnc, itn,
+                                   vocabulary, prompt, prefix)
         ext = self._resolve_family(family, "run") if family is not None else None
         if ext is not None:
             params.family = ctypes.cast(
@@ -1146,7 +1188,9 @@ class Session:
                   keep_special_tags: bool = False,
                   spec_k_drafts: int = -1,
                   family: FamilyExtension | None = None,
-                  return_exceptions: bool = False) -> list[Result | TranscribeError]:
+                  return_exceptions: bool = False,
+                  vocabulary: Sequence[str] | None = None,
+                  prompt: str | None = None) -> list[Result | TranscribeError]:
         """Transcribe several utterances in one dispatch — one Result each.
 
         Families with a batched compute path process every utterance in a single
@@ -1163,7 +1207,10 @@ class Session:
         view (``Result`` or ``TranscribeError`` each) so completed work is
         never discarded. With ``return_exceptions=True`` no exception is
         raised for utterance failures and that mixed list is returned
-        directly (the ``asyncio.gather`` convention)."""
+        directly (the ``asyncio.gather`` convention).
+
+        ``vocabulary`` / ``prompt`` apply to every utterance (see :meth:`run`);
+        a transcript prefix is per-utterance and so is not accepted here."""
         self._cancel.clear()
         pcms = list(pcms)
         if not pcms:
@@ -1179,7 +1226,8 @@ class Session:
             counts[k] = n
 
         params = _build_run_params(task, language, target_language, timestamps,
-                                   keep_special_tags, spec_k_drafts, diarize, pnc, itn)
+                                   keep_special_tags, spec_k_drafts, diarize, pnc, itn,
+                                   vocabulary, prompt)
         ext = self._resolve_family(family, "run") if family is not None else None
         if ext is not None:
             params.family = ctypes.cast(
@@ -1234,19 +1282,24 @@ class Session:
                diarize: Diarize = "default",
                keep_special_tags: bool = False, commit_policy: CommitPolicy = "auto",
                stable_prefix_agreement_n: int = 0,
-               family: FamilyExtension | None = None) -> Stream:
+               family: FamilyExtension | None = None,
+               vocabulary: Sequence[str] | None = None,
+               prompt: str | None = None) -> Stream:
         """Begin streaming on this session and return a Stream to feed audio to.
 
         Requires a model whose capabilities advertise ``supports_streaming``;
         otherwise raises NotImplementedByModel. ``family`` is an optional
         family-specific stream extension (e.g. MoonshineStreamingOptions). The
         session is single-threaded and runs at most one stream at a time. Use
-        the Stream as a context manager so it is reset when you are done."""
+        the Stream as a context manager so it is reset when you are done.
+        ``vocabulary`` and ``prompt`` are as in :meth:`run`; ``task="instruct"``
+        raises."""
         self._cancel.clear()
         # spec_k_drafts is an offline-decode knob; streaming always uses the
         # family default (-1).
         run_params = _build_run_params(task, language, target_language, timestamps,
-                                       keep_special_tags, -1, diarize, pnc, itn)
+                                       keep_special_tags, -1, diarize, pnc, itn,
+                                       vocabulary, prompt)
         sp = _StreamParams()
         _lib.transcribe_stream_params_init(_byref(sp))
         sp.commit_policy = _enum(_COMMIT_POLICIES, commit_policy, "commit_policy")
@@ -1499,6 +1552,9 @@ def transcribe(
     keep_special_tags: bool = False,
     spec_k_drafts: int = -1,
     family: FamilyExtension | None = None,
+    vocabulary: Sequence[str] | None = None,
+    prompt: str | None = None,
+    prefix: str | None = None,
 ) -> Result:
     """Transcribe *pcm* in one call and return a materialized Result.
 
@@ -1507,13 +1563,15 @@ def transcribe(
     many clips keep a Model and call ``model.session().run(...)`` yourself; this
     helper is for the one-shot case. ``backend`` / ``device`` apply only when
     *model* is a path — they are ignored when an already-loaded Model is passed.
-    ``family`` / ``spec_k_drafts`` pass through to :meth:`Session.run`.
+    ``family`` / ``spec_k_drafts`` and the prompting inputs (``vocabulary``,
+    ``prompt``, ``prefix``) pass through to :meth:`Session.run`.
     """
     session_opts = dict(n_threads=n_threads, kv_type=kv_type, n_ctx=n_ctx)
     run_opts = dict(task=task, language=language, target_language=target_language,
                     timestamps=timestamps, pnc=pnc, itn=itn, diarize=diarize,
                     keep_special_tags=keep_special_tags,
-                    spec_k_drafts=spec_k_drafts, family=family)
+                    spec_k_drafts=spec_k_drafts, family=family,
+                    vocabulary=vocabulary, prompt=prompt, prefix=prefix)
 
     if isinstance(model, Model):
         with model.session(**session_opts) as session:

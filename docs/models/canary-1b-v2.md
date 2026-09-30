@@ -33,6 +33,8 @@ variants (180m-flash, 1b-flash) cover only English/German/Spanish/French.
 Not a streaming model. Word and segment timestamps from the upstream
 model are not exposed in the v1 port.
 
+**Prompting:** transcript prefix (`--prefix`) via NeMo's `user_prefix` turn. The decoder-context slot is not exposed: context text made the output loop and over-insert in testing.
+
 See NVIDIA's [model card](https://huggingface.co/nvidia/canary-1b-v2)
 for training data, intended use, and upstream evaluation methodology.
 

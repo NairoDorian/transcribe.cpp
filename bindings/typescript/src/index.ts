@@ -82,6 +82,7 @@ const KV_TYPES: Record<KvType, number> = {
 const TASKS = {
   transcribe: g.TRANSCRIBE_TASK_TRANSCRIBE,
   translate: g.TRANSCRIBE_TASK_TRANSLATE,
+  instruct: g.TRANSCRIBE_TASK_INSTRUCT,
 };
 const TIMESTAMPS: Record<TimestampKind, number> = {
   none: g.TRANSCRIBE_TIMESTAMPS_NONE,
@@ -116,6 +117,10 @@ const FEATURES: Record<Feature, number> = {
   pnc: g.TRANSCRIBE_FEATURE_PNC,
   itn: g.TRANSCRIBE_FEATURE_ITN,
   diarization: g.TRANSCRIBE_FEATURE_DIARIZATION,
+  vocabulary: g.TRANSCRIBE_FEATURE_VOCABULARY,
+  context_prompt: g.TRANSCRIBE_FEATURE_CONTEXT_PROMPT,
+  instruct: g.TRANSCRIBE_FEATURE_INSTRUCT,
+  transcript_prefix: g.TRANSCRIBE_FEATURE_TRANSCRIPT_PREFIX,
 };
 
 // ---- helpers ---------------------------------------------------------------
@@ -563,7 +568,8 @@ const FAMILY: Record<string, FamilyReg> = {
     type: "transcribe_whisper_run_ext",
     init: "whisperRunExtInit",
     map: (o) => ({
-      initial_prompt: o.initialPrompt,
+      initial_prompt:
+        o.initialPrompt === undefined ? undefined : cstr(o.initialPrompt, "initialPrompt"),
       condition_on_prev_tokens: o.conditionOnPrevTokens,
       temperature: o.temperature,
       temperature_inc: o.temperatureInc,
@@ -661,6 +667,22 @@ function buildFamily(
   const buf = n.koffi.alloc(n.T[reg.type], 1);
   n.koffi.encode(buf, n.T[reg.type], ext);
   return buf;
+}
+
+/** A string option as passed to C, which would silently cut it at a NUL. */
+function cstr(value: string, name: string): string {
+  if (value.includes("\0"))
+    throw new InvalidArgument(`${name} contains a NUL character`);
+  return value;
+}
+
+/** Free what #buildRunParams allocated; call once the native call returns. */
+function freeRunParams(n: Native, p: any): void {
+  if (p.vocabulary) {
+    n.koffi.free(p.vocabulary);
+    p.vocabulary = null;
+    p.n_vocabulary = 0;
+  }
 }
 
 function toStreamUpdate(u: any): StreamUpdate {
@@ -832,7 +854,7 @@ export class Session {
         aborted: F.wasAborted(h),
         truncated: F.wasTruncated(h),
       };
-    });
+    }).finally(() => freeRunParams(n, p));
   }
 
   #buildRunParams(opts: TranscribeOptions): any {
@@ -847,14 +869,30 @@ export class Session {
     p.pnc = lookup(PNC, opts.pnc ?? "default", "pnc");
     p.itn = lookup(ITN, opts.itn ?? "default", "itn");
     p.diarize = lookup(DIARIZE, opts.diarize ?? "default", "diarize");
-    if (opts.language !== undefined) p.language = opts.language;
+    if (opts.language !== undefined) p.language = cstr(opts.language, "language");
     if (opts.targetLanguage !== undefined)
-      p.target_language = opts.targetLanguage;
+      p.target_language = cstr(opts.targetLanguage, "targetLanguage");
     if (opts.keepSpecialTags !== undefined)
       p.keep_special_tags = opts.keepSpecialTags;
     if (opts.specKDrafts !== undefined) p.spec_k_drafts = opts.specKDrafts;
     if (opts.family)
       p.family = buildFamily(n, this.#model.handle, opts.family, "run");
+    if (opts.vocabulary !== undefined) {
+      const terms = opts.vocabulary;
+      if (!Array.isArray(terms) || !terms.every((t) => typeof t === "string"))
+        throw new InvalidArgument("vocabulary must be an array of strings");
+      if (terms.length > 0) {
+        // Freed by freeRunParams after the call; the library copies the terms.
+        terms.forEach((t) => cstr(t, "vocabulary"));
+        const type = n.koffi.array("char *", terms.length);
+        const arr = n.koffi.alloc(type, 1);
+        n.koffi.encode(arr, type, terms);
+        p.vocabulary = arr;
+        p.n_vocabulary = terms.length;
+      }
+    }
+    if (opts.prompt !== undefined) p.prompt = cstr(opts.prompt, "prompt");
+    if (opts.prefix !== undefined) p.prefix = cstr(opts.prefix, "prefix");
     return p;
   }
 
@@ -937,7 +975,7 @@ export class Session {
         }
       }
       return out;
-    });
+    }).finally(() => freeRunParams(n, p));
   }
 
   /** Begin a streaming session. The returned Stream owns the begin params. */
@@ -955,6 +993,8 @@ export class Session {
       diarize: opts.diarize,
       keepSpecialTags: opts.keepSpecialTags,
       specKDrafts: -1,
+      vocabulary: opts.vocabulary,
+      prompt: opts.prompt,
     });
     const sp: any = {};
     F.streamParamsInit(sp);
@@ -984,7 +1024,7 @@ export class Session {
       if (!control) throw new TranscribeError("session control is missing");
       control.replaceCurrentStream(stream);
       return stream;
-    });
+    }).finally(() => freeRunParams(n, rp)); // begin copied the prompting strings
   }
 
   /**

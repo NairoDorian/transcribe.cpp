@@ -10,6 +10,8 @@ OpenAI Whisper medium — converted to GGUF for transcribe.cpp. Multilingual tra
 
 Offline multilingual speech-to-text and any-language → English speech translation. The model auto-detects the audio's language (99 languages covered) and emits a transcript in that language; passing `language="<code>"` and `task="translate"` to the underlying `whisper_full_params` produces an English translation instead. `transcribe-cli` reads a 16 kHz mono WAV and returns the transcript text. Long audio is handled via 30-second chunked decoding.
 
+**Prompting:** vocabulary (`--vocabulary`, rendered as `Glossary: …`), context prompt (`--prompt`) and transcript prefix (`--prefix`, first 30 s window only) through the generic `transcribe_run_params` fields; vocabulary and context share Whisper's 223-token prompt budget and cannot be combined with the Whisper extension's `initial_prompt` / `prompt_tokens`. A prefix does not compose with segment timestamps: `AUTO` falls back to none and an explicit segment request is an error.
+
 See the [upstream model card](https://huggingface.co/openai/whisper-medium) for training data, intended
 use, and the original evaluation methodology.
 

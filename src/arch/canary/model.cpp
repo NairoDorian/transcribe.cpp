@@ -606,15 +606,18 @@ int canary2_base_prompt_tokens(const CanaryHParams & hp) {
     return hp.tokenizer_single_sp ? 10 : 9;
 }
 
-// The decoder prompt must leave the generation reserve inside the decoder
-// self-KV ceiling. Only a transcript prefix makes it variable-length; an
-// unbounded one would overrun the KV cache during the prompt prefill.
+// The decoder prompt is prefilled into the self-KV cache, so it must fit the
+// decoder context ceiling. Only the prompt is gated: k_gen_reserve is a
+// decode-budget floor, not a required margin (canary-1b's whole context is
+// 512 tokens), and a decode that runs out of room is kept as a partial and
+// flagged truncated (see (b) above k_gen_reserve). The prompt grows with a
+// transcript prefix or shrinks against a lowered n_ctx knob.
 transcribe_status check_prompt_fits(int prompt_len, int ceiling) {
-    if (prompt_len + k_gen_reserve > ceiling) {
+    if (prompt_len > ceiling) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
-                "canary run: transcript prefix is too long — a %d-token prompt leaves no room for output "
-                "within the %d-token decoder context (need %d)",
-                prompt_len, ceiling, prompt_len + k_gen_reserve);
+                "canary run: a %d-token decoder prompt does not fit the %d-token decoder context; "
+                "shorten the transcript prefix or raise transcribe_session_params.n_ctx",
+                prompt_len, ceiling);
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
     return TRANSCRIBE_OK;
@@ -1677,6 +1680,12 @@ transcribe_status run_batch(transcribe_session *          session,
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
     const int prompt_len = static_cast<int>(prompt_ids.size());
+    // The batched prompt feed writes one KV row per prompt token, capped at
+    // the context ceiling, so a longer prompt would write past the cache.
+    // Go serial instead: run() rejects each row, as on the CPU path.
+    if (prompt_len > canary_context_ceiling(cc->n_ctx, hp)) {
+        return run_batch_serial(cc, pcm, n_samples, n, params);
+    }
 
     // Pass 0: parallel mel.
     std::vector<char>               valid(n, 0);
@@ -1953,9 +1962,8 @@ transcribe_status run_batch(transcribe_session *          session,
 }
 
 // Pre-clear gate for the transcript prefix (canary2): it must encode in the
-// target language's tokenizer and fit the decoder context with the
-// generation reserve, checked before the dispatcher clears the previous
-// result.
+// target language's tokenizer and the prompt it extends must fit the decoder
+// context, checked before the dispatcher clears the previous result.
 transcribe_status run_validate(const transcribe_session * session, const transcribe_run_params * params) {
     if (session == nullptr || session->model == nullptr || params == nullptr || params->prefix == nullptr) {
         return TRANSCRIBE_OK;

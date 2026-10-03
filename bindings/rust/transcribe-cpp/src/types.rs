@@ -10,6 +10,7 @@ use transcribe_cpp_sys as sys;
 /// The task a run performs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Task {
     /// Transcribe speech in its source language.
     #[default]
@@ -34,6 +35,7 @@ impl Task {
 
 /// Requested (or returned) timestamp granularity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TimestampKind {
     /// Text only, no alignment data.
     None,
@@ -75,6 +77,7 @@ impl TimestampKind {
 
 /// K/V activation precision for the decoder's flash-attention path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum KvType {
     /// f16 for quantized weights, f32 for f32 weights. The best default.
     #[default]
@@ -98,6 +101,7 @@ impl KvType {
 
 /// Punctuation + capitalization runtime toggle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Pnc {
     /// The family's shipped default (what its published WER was measured at).
     #[default]
@@ -121,6 +125,7 @@ impl Pnc {
 
 /// Inverse-text-normalization runtime toggle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Itn {
     /// The family's shipped default.
     #[default]
@@ -133,6 +138,7 @@ pub enum Itn {
 
 /// Speaker-attribution runtime toggle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Diarize {
     /// Library default: speaker attribution is disabled for every family.
     #[default]
@@ -167,6 +173,7 @@ impl Itn {
 
 /// Which compute backend to request when loading a model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Backend {
     /// Best available device; CPU is the always-present fallback. The default.
     #[default]
@@ -203,6 +210,7 @@ impl Backend {
 /// A yes/no model capability probe (`transcribe_model_supports`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Feature {
     /// The whisper run extension's initial prompt / prompt tokens.
     InitialPrompt,
@@ -249,6 +257,7 @@ impl Feature {
 
 /// When the UI-facing committed text grows during a stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CommitPolicy {
     /// The family's stable-prefix implementation. The default.
     #[default]
@@ -272,6 +281,7 @@ impl CommitPolicy {
 
 /// Stream lifecycle state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum StreamState {
     Idle,
     Active,
@@ -336,6 +346,7 @@ impl AbiStruct {
 
 /// The slot a family extension is pointed at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ExtSlot {
     /// `transcribe_run_params::family`.
     Run,

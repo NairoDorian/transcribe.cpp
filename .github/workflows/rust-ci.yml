@@ -244,11 +244,16 @@ jobs:
             echo "=== example: $ex ==="
             cargo run -p transcribe-cpp --example "$ex" ${{ matrix.features }}
           done
+      - name: Serde feature tests
+        # Pure Rust, no model needed; one leg suffices.
+        if: matrix.label == 'linux-static'
+        run: cargo test -p transcribe-cpp --features serde --test serde
       - name: Clippy (deny warnings)
         # Once is enough; the linux-static leg covers it (clippy on another
         # leg would force a second full native build for no extra lint signal).
+        # `serde` on so the cfg_attr derives and tests/serde.rs are linted too.
         if: matrix.label == 'linux-static'
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --features transcribe-cpp/serde -- -D warnings
       - name: ccache stats
         if: runner.os == 'Linux'
         run: ccache -s | head -8

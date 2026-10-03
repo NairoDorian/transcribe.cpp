@@ -21,6 +21,11 @@ use crate::error::Result;
 /// fallback, and decode thresholds. `None` keeps the family default.
 /// `initial_prompt` cannot be combined with `RunOptions::vocabulary` / `prompt`.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
 pub struct WhisperRunOptions {
     pub initial_prompt: Option<String>,
     pub condition_on_prev_tokens: Option<bool>,
@@ -36,18 +41,33 @@ pub struct WhisperRunOptions {
 
 /// Moonshine-streaming stream-extension knobs (stream slot).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
 pub struct MoonshineStreamingOptions {
     pub min_decode_interval_ms: Option<i32>,
 }
 
 /// Parakeet cache-aware streaming knobs (stream slot).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
 pub struct ParakeetStreamOptions {
     pub att_context_right: Option<i32>,
 }
 
 /// Parakeet chunked-attention buffered streaming knobs (stream slot).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
 pub struct ParakeetBufferedStreamOptions {
     pub left_ms: Option<i32>,
     pub chunk_ms: Option<i32>,
@@ -56,6 +76,11 @@ pub struct ParakeetBufferedStreamOptions {
 
 /// Voxtral-realtime streaming knobs (stream slot).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
 pub struct VoxtralRealtimeStreamOptions {
     pub num_delay_tokens: Option<i32>,
     pub min_decode_interval_ms: Option<i32>,
@@ -79,6 +104,11 @@ pub struct VoxtralRealtimeStreamOptions {
 /// `include/transcribe/r2t2.h`; the authoritative answer comes from the
 /// stream call itself.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
 pub struct R2T2StreamOptions {
     pub chunk_size_ms: Option<u32>,
 }
@@ -87,6 +117,7 @@ pub struct R2T2StreamOptions {
 /// The menu is discrete (jointly-tuned bundles), not a latency dial;
 /// `Default` keeps the GGUF-shipped checkpoint configuration.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SortformerPreset {
     #[default]
     Default,
@@ -122,6 +153,11 @@ impl SortformerPreset {
 /// speaker segments, no text; read results via the speaker-segment
 /// accessors. `None` keeps the family default (the GGUF-shipped cfg).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
 pub struct SortformerStreamOptions {
     pub preset: Option<SortformerPreset>,
 }
@@ -129,6 +165,7 @@ pub struct SortformerStreamOptions {
 /// A family extension for the run slot (offline `run`/`run_batch`).
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RunExtension {
     Whisper(WhisperRunOptions),
     Sortformer(SortformerStreamOptions),
@@ -137,6 +174,7 @@ pub enum RunExtension {
 /// A family extension for the stream slot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum StreamExtension {
     ParakeetStream(ParakeetStreamOptions),
     ParakeetBuffered(ParakeetBufferedStreamOptions),

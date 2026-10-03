@@ -41,6 +41,9 @@ dynamic-backends = ["shared", "transcribe-cpp-sys/dynamic-backends"]
 # crate's build.rs rpath gate as well as for -sys).
 arch-dl = ["shared", "transcribe-cpp-sys/arch-dl"]
 minimal-multilingual = ["transcribe-cpp-sys/minimal-multilingual"]
+# Serialize/Deserialize on the plain-data option and result types (not handles
+# or Error). No native-build impact.
+serde = ["dep:serde"]
 
 [dependencies]
 # default-features = false so the safe crate's own features are the ONLY control
@@ -51,6 +54,9 @@ minimal-multilingual = ["transcribe-cpp-sys/minimal-multilingual"]
 transcribe-cpp-sys = { version = "0.2.4", path = "../../..", default-features = false }
 thiserror = "2"
 log = "0.4"
+serde = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]
 hound = "3"
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+serde_json = "1"

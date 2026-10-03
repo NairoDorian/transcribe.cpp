@@ -22,6 +22,7 @@ use crate::types::Backend;
 /// classification themselves, so use it as a runtime hint rather than a
 /// portable hardware-memory taxonomy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DeviceType {
     /// CPU using system memory.
     Cpu,

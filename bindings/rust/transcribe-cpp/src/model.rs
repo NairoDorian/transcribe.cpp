@@ -49,6 +49,7 @@ impl Default for ModelOptions {
 
 /// Immutable, model-level capabilities read from GGUF metadata.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Capabilities {
     pub native_sample_rate: i32,
     /// Supported language codes (empty if the model is language-agnostic).
@@ -289,6 +290,11 @@ fn check_model_load(status: sys::transcribe_status, context: &str) -> Result<()>
 
 /// Options for creating a session.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
 pub struct SessionOptions {
     /// CPU threads for ops that run on CPU; 0 = library default.
     pub n_threads: i32,
@@ -310,6 +316,7 @@ impl Default for SessionOptions {
 
 /// Per-session effective limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SessionLimits {
     /// Decoder context cap in force for this session (0 = unbounded family).
     pub effective_n_ctx: i32,

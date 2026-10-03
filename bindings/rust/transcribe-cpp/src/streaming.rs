@@ -12,6 +12,11 @@ use crate::types::CommitPolicy;
 
 /// Options for beginning a stream.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
 pub struct StreamOptions {
     /// When committed text grows. Default [`CommitPolicy::Auto`].
     pub commit_policy: CommitPolicy,
@@ -48,6 +53,11 @@ impl Default for StreamOptions {
 
 /// Per-call change metadata from `feed`/`finalize`.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
 pub struct StreamUpdate {
     /// Any observable property of the snapshot changed this call.
     pub result_changed: bool,
@@ -96,6 +106,11 @@ impl StreamUpdate {
 
 /// A UI-facing snapshot of the stream's text, fully owned.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
 pub struct StreamText {
     /// The raw current model hypothesis (authoritative; may rewrite anywhere).
     pub full: String,

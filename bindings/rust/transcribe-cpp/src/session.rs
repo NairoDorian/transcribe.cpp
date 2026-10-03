@@ -27,6 +27,11 @@ use crate::types::{Diarize, Itn, Pnc, StreamState, Task, TimestampKind};
 
 /// Per-run parameters.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
 pub struct RunOptions {
     pub task: Task,
     pub timestamps: TimestampKind,

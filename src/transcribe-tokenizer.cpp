@@ -92,13 +92,32 @@ const std::string & Tokenizer::token(int id) const {
     return tokens_[static_cast<size_t>(id)];
 }
 
-bool Tokenizer::is_control(int id) const {
-    // llama.cpp / scripts/lib/gguf_common.py convention.
-    constexpr int32_t k_token_type_control = 3;
+bool Tokenizer::has_token_type(int id, int32_t type) const {
     if (id < 0 || static_cast<size_t>(id) >= token_type_.size()) {
         return false;
     }
-    return token_type_[static_cast<size_t>(id)] == k_token_type_control;
+    return token_type_[static_cast<size_t>(id)] == type;
+}
+
+// Token-type values follow the llama.cpp / scripts/lib/gguf_common.py
+// convention: 1 NORMAL, 2 UNKNOWN, 3 CONTROL.
+bool Tokenizer::is_control(int id) const {
+    constexpr int32_t k_token_type_control = 3;
+    return has_token_type(id, k_token_type_control);
+}
+
+bool Tokenizer::is_unknown(int id) const {
+    constexpr int32_t k_token_type_unknown = 2;
+    return has_token_type(id, k_token_type_unknown);
+}
+
+bool Tokenizer::is_strippable_special(int id) const {
+    // The "<unk>" piece match mirrors encode_sentencepiece_bpe's unk
+    // detection and covers aggregate-tokenizer GGUFs (canary-1b,
+    // canary-1b-flash, canary-180m-flash) converted before each
+    // per-language <unk> was typed UNKNOWN. token() returns "" for
+    // out-of-range ids.
+    return is_control(id) || is_unknown(id) || (id >= 0 && id == unk_id_) || token(id) == "<unk>";
 }
 
 int Tokenizer::find(const std::string & piece) const {

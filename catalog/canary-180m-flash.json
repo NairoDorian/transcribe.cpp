@@ -24,12 +24,12 @@
     "batching": {"supported":true,"verified":false}
   },
   "downloads": [
-    {"quant":"F32","filename":"canary-180m-flash-F32.gguf","size_bytes":756498112},
-    {"quant":"F16","filename":"canary-180m-flash-F16.gguf","size_bytes":381632192},
-    {"quant":"Q8_0","filename":"canary-180m-flash-Q8_0.gguf","size_bytes":218447552},
-    {"quant":"Q6_K","filename":"canary-180m-flash-Q6_K.gguf","size_bytes":176291520},
-    {"quant":"Q5_K_M","filename":"canary-180m-flash-Q5_K_M.gguf","size_bytes":158704320},
-    {"quant":"Q4_K_M","filename":"canary-180m-flash-Q4_K_M.gguf","size_bytes":139223744}
+    {"quant":"F32","filename":"canary-180m-flash-F32.gguf","size_bytes":756498208},
+    {"quant":"F16","filename":"canary-180m-flash-F16.gguf","size_bytes":381632288},
+    {"quant":"Q8_0","filename":"canary-180m-flash-Q8_0.gguf","size_bytes":218447648},
+    {"quant":"Q6_K","filename":"canary-180m-flash-Q6_K.gguf","size_bytes":176291616},
+    {"quant":"Q5_K_M","filename":"canary-180m-flash-Q5_K_M.gguf","size_bytes":158704416},
+    {"quant":"Q4_K_M","filename":"canary-180m-flash-Q4_K_M.gguf","size_bytes":139223840}
   ],
   "accuracy_benchmarks": [
     {"dataset":"fleurs","split":"test","language":"de","quant":"Q8_0","metric":"wer","err_pct":7.33,"ci95":[6.67,8.0],"n_utts":862,"batch_size":8,"timestamps":"none","engine_sha":null,"measured_on":null,"errors":{"sub":977,"del":182,"ins":212},"empty_hyp":0,"utts_over_50pct":5,"measurement_provenance":"legacy-published"},

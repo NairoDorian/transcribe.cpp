@@ -1247,14 +1247,18 @@ transcribe_status run(transcribe_session *          session,
             // carries language/task/PNC control tokens at CONTROL type.
             // They shouldn't appear after the prompt is consumed, but the
             // strip is defensive — and only applied when the caller wants
-            // clean text. --raw-tokens / keep_special_tags=true exposes
-            // whatever the decoder emitted.
+            // clean text. <unk> is stripped too: the vocabs lack some
+            // characters (e.g. … everywhere, « „ in de, ¡ in es), so the
+            // decoder can emit it -- for aggregate-tokenizer variants at
+            // a per-language offset, not only id 0 (see
+            // Tokenizer::is_strippable_special). --raw-tokens /
+            // keep_special_tags=true exposes whatever the decoder emitted.
             const bool       strip = (params == nullptr) ? true : !params->keep_special_tags;
             std::vector<int> text_ids;
             if (strip) {
                 text_ids.reserve(generated_ids.size());
                 for (int id : generated_ids) {
-                    if (tok.is_control(id)) {
+                    if (tok.is_strippable_special(id)) {
                         continue;
                     }
                     text_ids.push_back(id);
@@ -1887,7 +1891,7 @@ transcribe_status run_batch(transcribe_session *          session,
     }
     const int64_t dec_us = ggml_time_us() - t_dec0;
 
-    // Capture (strip control tokens like serial commit_result).
+    // Capture (strip control / <unk> tokens like serial commit_result).
     const bool strip       = (params == nullptr) ? true : !params->keep_special_tags;
     const int  valid_count = std::max(1, static_cast<int>(std::count(valid.begin(), valid.end(), char(1))));
     for (int b = 0; b < n; ++b) {
@@ -1900,7 +1904,7 @@ transcribe_status run_batch(transcribe_session *          session,
         std::vector<int> text_ids;
         if (strip) {
             for (int id : generated[b]) {
-                if (!cm->tok.is_control(id)) {
+                if (!cm->tok.is_strippable_special(id)) {
                     text_ids.push_back(id);
                 }
             }

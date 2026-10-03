@@ -746,10 +746,13 @@ static bool is_lang_tag_piece(const std::string & p) {
 }
 
 // Drop this piece from the public result when keep_special_tags is off:
-// stripped if CONTROL-typed or matching the <ll-RR> locale-tag pattern
-// (transitional fallback). Shared by the offline and streaming builders.
+// the shared Tokenizer::is_strippable_special set (CONTROL, UNKNOWN /
+// <unk>; see its comment for why nemotron-3.5 emits <unk>) plus the
+// <ll-RR> locale-tag pattern (transitional fallback for GGUFs predating
+// the converter marking them CONTROL). Shared by the offline and
+// streaming builders.
 static bool is_strippable_special(const transcribe::Tokenizer & tok, int id) {
-    return tok.is_control(id) || is_lang_tag_piece(tok.token(id));
+    return tok.is_strippable_special(id) || is_lang_tag_piece(tok.token(id));
 }
 
 // Collapse runs of ASCII spaces to one and trim both ends — cleans up the
@@ -868,10 +871,9 @@ transcribe_status build_result_from_raw_tokens(ParakeetSession *             pc,
     const transcribe::Tokenizer & tok = pm->tok;
 
     pc->tokens.reserve(pc->raw_tokens.size());
-    // Strip multilingual <ll-RR> language tags by default (gated on
-    // keep_special_tags / CLI --raw-tokens). Detection is
-    // Tokenizer::is_control (CONTROL token_type); is_lang_tag_piece is a
-    // transitional fallback for GGUFs predating that converter change.
+    // Strip special pieces (multilingual <ll-RR> language tags, <unk>) by
+    // default (gated on keep_special_tags / CLI --raw-tokens). See
+    // is_strippable_special for the detection rules.
     const bool strip_tags = (params == nullptr) ? true : !params->keep_special_tags;
     for (const TdtToken & rt : pc->raw_tokens) {
         if (strip_tags && is_strippable_special(tok, rt.id)) {
@@ -2381,7 +2383,7 @@ void rebuild_streaming_result_text(ParakeetSession * pc, const ParakeetModel * p
 
     const double frame_to_ms = parakeet_ms_per_enc_frame(pm->hparams);
 
-    // Strip CONTROL / <ll-RR> tag pieces from the public result, mirroring
+    // Strip CONTROL / UNKNOWN / <ll-RR> pieces from the public result, mirroring
     // decode_and_populate (gated on keep_special_tags). Only the public
     // projection is filtered; pc->raw_tokens stays whole.
     const transcribe::Tokenizer & tok        = pm->tok;

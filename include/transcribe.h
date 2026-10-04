@@ -381,21 +381,22 @@ TRANSCRIBE_API const char * transcribe_build_id(void);
  * is append-only; do not renumber existing values.
  */
 typedef enum {
-    TRANSCRIBE_ABI_MODEL_LOAD_PARAMS = 0,
-    TRANSCRIBE_ABI_SESSION_PARAMS    = 1,
-    TRANSCRIBE_ABI_RUN_PARAMS        = 2,
-    TRANSCRIBE_ABI_STREAM_PARAMS     = 3,
-    TRANSCRIBE_ABI_CAPABILITIES      = 4,
-    TRANSCRIBE_ABI_TIMINGS           = 5,
-    TRANSCRIBE_ABI_SEGMENT           = 6,
-    TRANSCRIBE_ABI_WORD              = 7,
-    TRANSCRIBE_ABI_TOKEN             = 8,
-    TRANSCRIBE_ABI_STREAM_UPDATE     = 9,
-    TRANSCRIBE_ABI_STREAM_TEXT       = 10,
-    TRANSCRIBE_ABI_SESSION_LIMITS    = 11,
-    TRANSCRIBE_ABI_EXT               = 12,
-    TRANSCRIBE_ABI_DEVICE_INFO       = 13,
-    TRANSCRIBE_ABI_SPEAKER_SEGMENT   = 14,
+    TRANSCRIBE_ABI_MODEL_LOAD_PARAMS   = 0,
+    TRANSCRIBE_ABI_SESSION_PARAMS      = 1,
+    TRANSCRIBE_ABI_RUN_PARAMS          = 2,
+    TRANSCRIBE_ABI_STREAM_PARAMS       = 3,
+    TRANSCRIBE_ABI_CAPABILITIES        = 4,
+    TRANSCRIBE_ABI_TIMINGS             = 5,
+    TRANSCRIBE_ABI_SEGMENT             = 6,
+    TRANSCRIBE_ABI_WORD                = 7,
+    TRANSCRIBE_ABI_TOKEN               = 8,
+    TRANSCRIBE_ABI_STREAM_UPDATE       = 9,
+    TRANSCRIBE_ABI_STREAM_TEXT         = 10,
+    TRANSCRIBE_ABI_SESSION_LIMITS      = 11,
+    TRANSCRIBE_ABI_EXT                 = 12,
+    TRANSCRIBE_ABI_DEVICE_INFO         = 13,
+    TRANSCRIBE_ABI_SPEAKER_SEGMENT     = 14,
+    TRANSCRIBE_ABI_BACKEND_INIT_PARAMS = 15,
 } transcribe_abi_struct;
 
 /* sizeof / alignof of the selected public struct, or 0 for an unknown id.
@@ -862,6 +863,47 @@ TRANSCRIBE_API transcribe_status transcribe_register_arch_dir(const char * dir);
  * Returns TRANSCRIBE_OK on success, or an error code describing failure.
  */
 TRANSCRIBE_API transcribe_status transcribe_load_arch_plugin(const char * path);
+
+/*
+ * Allowed-backend mask. Registering a GPU backend runs driver code, so a
+ * broken driver can crash the process before any model loads. A backend
+ * outside the mask is never registered: its module is never opened and its
+ * registration function never runs. CPU (incl. BLAS/ZenDNN) is always
+ * allowed; OTHER covers backends without a bit (SYCL, OpenCL, RPC, ...).
+ *
+ * TRANSCRIBE_BACKENDS=cpu,vulkan,... (also metal, cuda, rocm, other, all)
+ * can only narrow the mask, and applies even if _ex() is never called.
+ *
+ * The mask is fixed at first backend registration (first init call, or in
+ * static builds the first device query / model load). A later call with a
+ * different effective mask returns TRANSCRIBE_ERR_BACKEND. Call once, first.
+ */
+#define TRANSCRIBE_BACKEND_MASK_CPU    0x00000001u
+#define TRANSCRIBE_BACKEND_MASK_METAL  0x00000002u
+#define TRANSCRIBE_BACKEND_MASK_VULKAN 0x00000004u
+#define TRANSCRIBE_BACKEND_MASK_CUDA   0x00000008u
+#define TRANSCRIBE_BACKEND_MASK_ROCM   0x00000010u
+#define TRANSCRIBE_BACKEND_MASK_OTHER  0x80000000u
+#define TRANSCRIBE_BACKEND_MASK_ALL    0xFFFFFFFFu
+
+struct transcribe_backend_init_params {
+    uint64_t     struct_size;      /* sizeof(*this); set by _init() */
+    const char * artifact_dir;     /* NULL: package-local default */
+    uint32_t     allowed_backends; /* TRANSCRIBE_BACKEND_MASK_*; default ALL */
+};
+
+TRANSCRIBE_API void transcribe_backend_init_params_init(struct transcribe_backend_init_params * p);
+
+/*
+ * Fix the mask, then behave as transcribe_init_backends(artifact_dir), or
+ * _default() when artifact_dir is NULL. NULL params means all defaults.
+ * Also returns TRANSCRIBE_ERR_BACKEND if the mask was already fixed to a
+ * different value or no device is registered afterwards.
+ */
+TRANSCRIBE_API transcribe_status transcribe_init_backends_ex(const struct transcribe_backend_init_params * params);
+
+/* The effective mask: the host's (ALL until _ex()) narrowed by the env. */
+TRANSCRIBE_API uint32_t transcribe_allowed_backends(void);
 
 /*
  * Opaque process-local compute-device handle. Handles are owned by the

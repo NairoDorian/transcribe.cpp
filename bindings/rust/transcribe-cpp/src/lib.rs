@@ -73,8 +73,8 @@ mod version;
 #[cfg(feature = "arch-dl")]
 pub use arch::{load_arch_plugin, register_arch_dir};
 pub use backend::{
-    backend_available, device_count, devices, init_backends, init_backends_default, Device,
-    DeviceType,
+    allowed_backends, backend_available, device_count, devices, init_backends,
+    init_backends_default, init_backends_with, BackendMask, Device, DeviceType,
 };
 pub use cancel::CancelToken;
 pub use error::{Error, Result};

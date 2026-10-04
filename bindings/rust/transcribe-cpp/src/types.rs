@@ -319,6 +319,7 @@ pub enum AbiStruct {
     Ext,
     DeviceInfo,
     SpeakerSegment,
+    BackendInitParams,
 }
 
 impl AbiStruct {
@@ -340,6 +341,7 @@ impl AbiStruct {
             AbiStruct::Ext => A::TRANSCRIBE_ABI_EXT,
             AbiStruct::DeviceInfo => A::TRANSCRIBE_ABI_DEVICE_INFO,
             AbiStruct::SpeakerSegment => A::TRANSCRIBE_ABI_SPEAKER_SEGMENT,
+            AbiStruct::BackendInitParams => A::TRANSCRIBE_ABI_BACKEND_INIT_PARAMS,
         }
     }
 }

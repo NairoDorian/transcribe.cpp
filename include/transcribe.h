@@ -313,6 +313,8 @@ typedef enum {
      * the check. See docs/input-limits.md.
      */
     TRANSCRIBE_ERR_OUTPUT_REPETITION      = 19,
+    /* The model does not serve the role this call needs; see transcribe_model_roles(). */
+    TRANSCRIBE_ERR_UNSUPPORTED_ROLE       = 20,
 } transcribe_status;
 
 /*
@@ -381,22 +383,26 @@ TRANSCRIBE_API const char * transcribe_build_id(void);
  * is append-only; do not renumber existing values.
  */
 typedef enum {
-    TRANSCRIBE_ABI_MODEL_LOAD_PARAMS   = 0,
-    TRANSCRIBE_ABI_SESSION_PARAMS      = 1,
-    TRANSCRIBE_ABI_RUN_PARAMS          = 2,
-    TRANSCRIBE_ABI_STREAM_PARAMS       = 3,
-    TRANSCRIBE_ABI_CAPABILITIES        = 4,
-    TRANSCRIBE_ABI_TIMINGS             = 5,
-    TRANSCRIBE_ABI_SEGMENT             = 6,
-    TRANSCRIBE_ABI_WORD                = 7,
-    TRANSCRIBE_ABI_TOKEN               = 8,
-    TRANSCRIBE_ABI_STREAM_UPDATE       = 9,
-    TRANSCRIBE_ABI_STREAM_TEXT         = 10,
-    TRANSCRIBE_ABI_SESSION_LIMITS      = 11,
-    TRANSCRIBE_ABI_EXT                 = 12,
-    TRANSCRIBE_ABI_DEVICE_INFO         = 13,
-    TRANSCRIBE_ABI_SPEAKER_SEGMENT     = 14,
-    TRANSCRIBE_ABI_BACKEND_INIT_PARAMS = 15,
+    TRANSCRIBE_ABI_MODEL_LOAD_PARAMS      = 0,
+    TRANSCRIBE_ABI_SESSION_PARAMS         = 1,
+    TRANSCRIBE_ABI_RUN_PARAMS             = 2,
+    TRANSCRIBE_ABI_STREAM_PARAMS          = 3,
+    TRANSCRIBE_ABI_CAPABILITIES           = 4,
+    TRANSCRIBE_ABI_TIMINGS                = 5,
+    TRANSCRIBE_ABI_SEGMENT                = 6,
+    TRANSCRIBE_ABI_WORD                   = 7,
+    TRANSCRIBE_ABI_TOKEN                  = 8,
+    TRANSCRIBE_ABI_STREAM_UPDATE          = 9,
+    TRANSCRIBE_ABI_STREAM_TEXT            = 10,
+    TRANSCRIBE_ABI_SESSION_LIMITS         = 11,
+    TRANSCRIBE_ABI_EXT                    = 12,
+    TRANSCRIBE_ABI_DEVICE_INFO            = 13,
+    TRANSCRIBE_ABI_SPEAKER_SEGMENT        = 14,
+    TRANSCRIBE_ABI_BACKEND_INIT_PARAMS    = 15,
+    /* include/transcribe/diarize.h */
+    TRANSCRIBE_ABI_DIARIZE_INFO           = 16,
+    TRANSCRIBE_ABI_DIARIZE_SESSION_PARAMS = 17,
+    TRANSCRIBE_ABI_DIARIZE_PARAMS         = 18,
 } transcribe_abi_struct;
 
 /* sizeof / alignof of the selected public struct, or 0 for an unknown id.
@@ -680,9 +686,11 @@ TRANSCRIBE_API transcribe_status transcribe_ext_check(const struct transcribe_ex
  */
 typedef enum {
     /* transcribe_run_params::family */
-    TRANSCRIBE_EXT_SLOT_RUN    = 0,
+    TRANSCRIBE_EXT_SLOT_RUN         = 0,
     /* transcribe_stream_params::family */
-    TRANSCRIBE_EXT_SLOT_STREAM = 1,
+    TRANSCRIBE_EXT_SLOT_STREAM      = 1,
+    /* transcribe_diarize_params::family (include/transcribe/diarize.h) */
+    TRANSCRIBE_EXT_SLOT_DIARIZE_RUN = 2,
 } transcribe_ext_slot;
 
 /*
@@ -1384,15 +1392,37 @@ struct transcribe_capabilities {
 TRANSCRIBE_API void transcribe_capabilities_init(struct transcribe_capabilities * out);
 
 /*
+ * Roles: the kinds of work a loaded model can do. ASR is this header's
+ * transcribe_session_* / transcribe_run* API. The other roles each have
+ * their own header under include/transcribe/ and their own session type.
+ * A model may serve more than one role. Values are bits; append-only.
+ */
+typedef enum {
+    TRANSCRIBE_ROLE_ASR     = 1u << 0,
+    TRANSCRIBE_ROLE_DIARIZE = 1u << 1,
+} transcribe_role;
+
+/*
+ * Bitmask of transcribe_role values the loaded model serves. Fixed at load
+ * and never changes for the model's lifetime. Returns 0 for NULL. Entry
+ * points that need a role the model lacks return
+ * TRANSCRIBE_ERR_UNSUPPORTED_ROLE.
+ */
+TRANSCRIBE_API uint32_t transcribe_model_roles(const struct transcribe_model * model);
+
+/*
  * Read model capabilities into caller-owned storage. The caller
  * initializes *out_caps via transcribe_capabilities_init() (zero-fill);
  * the library writes only the fields that fit and leaves tail bytes
  * beyond the caller's struct_size untouched.
  *
  * Returns:
- *   TRANSCRIBE_ERR_INVALID_ARG     model or out_caps is NULL.
- *   TRANSCRIBE_ERR_BAD_STRUCT_SIZE out_caps->struct_size is 0 or
- *                                  smaller than the library's minimum.
+ *   TRANSCRIBE_ERR_INVALID_ARG      model or out_caps is NULL.
+ *   TRANSCRIBE_ERR_BAD_STRUCT_SIZE  out_caps->struct_size is 0 or
+ *                                   smaller than the library's minimum.
+ *   TRANSCRIBE_ERR_UNSUPPORTED_ROLE the model does not serve
+ *                                   TRANSCRIBE_ROLE_ASR. These are ASR
+ *                                   capabilities; *out_caps is untouched.
  *
  * Pointer fields written by the library (e.g. `languages`) point at
  * model-owned storage and remain valid until transcribe_model_free().
@@ -1575,6 +1605,10 @@ TRANSCRIBE_API void transcribe_model_free(struct transcribe_model * model);
  *
  * params may be NULL for library defaults, or initialize a struct with
  * transcribe_session_params_init(). See transcribe_model_load_file.
+ *
+ * Returns TRANSCRIBE_ERR_UNSUPPORTED_ROLE when the model does not serve
+ * TRANSCRIBE_ROLE_ASR (see transcribe_model_roles); transcribe_open
+ * returns the same and frees the model it loaded.
  */
 TRANSCRIBE_API transcribe_status transcribe_session_init(struct transcribe_model *                model,
                                                          const struct transcribe_session_params * params,
@@ -1642,7 +1676,10 @@ TRANSCRIBE_API const struct transcribe_model * transcribe_get_model(const struct
 /*
  * Run one batch transcription.
  *
- * pcm:        mono float32 PCM samples in [-1.0, 1.0] at 16 kHz.
+ * pcm:        mono float32 PCM samples in [-1.0, 1.0] at 16 kHz. Every
+ *             sample must be finite: NaN or +-Inf returns
+ *             TRANSCRIBE_ERR_INVALID_ARG and leaves the previous result
+ *             in place. Silence is valid.
  * n_samples:  number of samples in pcm. Must be strictly positive;
  *             a non-positive count returns TRANSCRIBE_ERR_INVALID_ARG
  *             (same rule as transcribe_stream_feed).
@@ -1721,7 +1758,10 @@ TRANSCRIBE_API transcribe_status transcribe_run(struct transcribe_session *     
  *                                  or n_samples[i] <= 0) fails only that
  *                                  utterance and is reported there.
  *   TRANSCRIBE_ERR_INVALID_ARG     session / pcm / n_samples NULL, n <= 0,
- *                                  or the session is in an ACTIVE stream.
+ *                                  any utterance holds a non-finite sample
+ *                                  (NaN / +-Inf; the previous result is
+ *                                  preserved), or the session is in an
+ *                                  ACTIVE stream.
  *   TRANSCRIBE_ERR_BAD_STRUCT_SIZE params->struct_size below the minimum.
  *   TRANSCRIBE_ERR_NOT_IMPLEMENTED the model has no run path at all.
  *   ... plus the same shared-param rejections as transcribe_run
@@ -2271,8 +2311,10 @@ TRANSCRIBE_API transcribe_status transcribe_stream_begin(struct transcribe_sessi
  * Feed PCM into the active stream. 16 kHz mono float32, same as
  * transcribe_run.
  *
- * pcm must be non-null and n_samples must be strictly greater than
- * zero. Polling the stream without supplying audio is unsupported —
+ * pcm must be non-null, n_samples must be strictly greater than zero,
+ * and every sample must be finite (NaN / +-Inf returns
+ * TRANSCRIBE_ERR_INVALID_ARG and the stream stays ACTIVE, unchanged).
+ * Polling the stream without supplying audio is unsupported —
  * use the stream accessors (transcribe_stream_revision,
  * transcribe_stream_get_text, transcribe_stream_n_committed_*,
  * transcribe_stream_last_status, transcribe_stream_get_state) to inspect

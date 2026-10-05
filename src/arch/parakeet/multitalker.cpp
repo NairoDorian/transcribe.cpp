@@ -653,7 +653,7 @@ transcribe_status run_multitalker(ParakeetSession *             pc,
 
     // Transcript-independent "who spoke when" rows from the diarizer preds
     // (same emission as the standalone sortformer family).
-    sf::probs_to_speaker_segments(pc, probs, T_diar, n_spk, diar_ms_per_frame, /*threshold=*/0.5f);
+    transcribe::probs_to_segments(probs.data(), T_diar, n_spk, diar_ms_per_frame, pc->speaker_segments);
 
     // ---- Elide to the caller's requested granularity (same convention
     // as decode_and_populate). ----

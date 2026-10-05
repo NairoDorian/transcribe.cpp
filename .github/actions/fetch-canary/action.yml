@@ -6,7 +6,8 @@ description: >
   secret): the model tests then skip, exactly as before this action existed.
   Always fetches ALL CI canaries (whisper-tiny + moonshine-streaming ~95 MB,
   Canary+SenseVoice text-control canaries ~290 MB, plus the two parakeet 0.6b
-  family-extension canaries — cache-aware + buffered — at Q4_K_M ~0.95 GB)
+  family-extension canaries — cache-aware + buffered — at Q4_K_M ~0.95 GB,
+  plus the Sortformer DIARIZE canary at Q8_0 ~140 MB)
   under one cache key — a per-consumer subset would let one job save the shared
   key with only its subset in it, and every other consumer would re-download
   forever (exact-key hits are never re-saved), which is also why the key carries
@@ -35,7 +36,7 @@ runs:
       uses: actions/cache@v6
       with:
         path: canary
-        key: canary-models-v3
+        key: canary-models-v4
     - name: Fetch canary models (cache miss only)
       if: inputs.hf-token != ''
       shell: bash
@@ -67,6 +68,12 @@ runs:
           uvx --from huggingface_hub hf download \
             handy-computer/parakeet-unified-en-0.6b-gguf \
             parakeet-unified-en-0.6b-Q4_K_M.gguf --local-dir canary
+        # Sortformer DIARIZE canary (Q8_0, ~140 MB) for the binding diarize
+        # tests.
+        [ -f canary/diar_streaming_sortformer_4spk-v2.1-Q8_0.gguf ] || \
+          uvx --from huggingface_hub hf download \
+            handy-computer/diar_streaming_sortformer_4spk-v2.1-gguf \
+            diar_streaming_sortformer_4spk-v2.1-Q8_0.gguf --local-dir canary
         # GITHUB_WORKSPACE (not bash's $PWD) so Windows exports a path
         # Python can open rather than an MSYS one.
         prefix='${{ inputs.model-path-prefix }}'
@@ -77,3 +84,4 @@ runs:
         echo "TRANSCRIBE_SMOKE_ITN_MODEL=$prefix/canary/SenseVoiceSmall-Q4_K_M.gguf" >> "$GITHUB_ENV"
         echo "TRANSCRIBE_SMOKE_PARAKEET_STREAM_MODEL=$prefix/canary/nemotron-speech-streaming-en-0.6b-Q4_K_M.gguf" >> "$GITHUB_ENV"
         echo "TRANSCRIBE_SMOKE_PARAKEET_BUFFERED_MODEL=$prefix/canary/parakeet-unified-en-0.6b-Q4_K_M.gguf" >> "$GITHUB_ENV"
+        echo "TRANSCRIBE_SMOKE_SORTFORMER_MODEL=$prefix/canary/diar_streaming_sortformer_4spk-v2.1-Q8_0.gguf" >> "$GITHUB_ENV"

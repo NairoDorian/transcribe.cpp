@@ -76,6 +76,23 @@ let transcript = stream.snapshot(); // language, segments, words, tokens, timing
 # Ok::<(), transcribe_cpp::Error>(())
 ```
 
+### Diarization (who spoke when)
+
+A model whose `roles()` contain `Role::Diarize` (e.g. Sortformer) opens a
+`DiarizeSession` that returns speaker turns; calls for a role the model lacks
+return `Error::UnsupportedRole`.
+
+```rust
+use transcribe_cpp::{DiarizeOptions, Model, Role};
+let model = Model::load("diarizer.gguf")?;
+assert!(model.roles().contains(Role::Diarize));
+let mut diarize = model.diarize_session()?;
+for turn in diarize.run(&pcm, &DiarizeOptions::default())? {
+    println!("speaker {}: {}..{} ms", turn.speaker_id, turn.t0_ms, turn.t1_ms);
+}
+# Ok::<(), transcribe_cpp::Error>(())
+```
+
 Runnable examples:
 
 ```sh
@@ -198,6 +215,7 @@ fn main() {
 - `Session` is `Send` but not `Sync`; mutating calls take `&mut self`.
 - In 0.x the C library allows at most one in-flight run across all sessions of a
   model; this crate enforces it with a per-model mutex, so concurrent calls
-  queue rather than race. For real parallelism, use one `Model` per worker.
+  queue rather than race. `DiarizeSession`s share the same lock. For real
+  parallelism, use one `Model` per worker.
 
 - License: MIT

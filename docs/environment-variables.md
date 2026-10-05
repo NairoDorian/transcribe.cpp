@@ -86,7 +86,7 @@ its var is unset. Convention: `TRANSCRIBE_<FAMILY>_GGUF`.
 | `TRANSCRIBE_PARAKEET_UNIFIED_GGUF` | `parakeet_buffered_stream_eos_smoke`, `stream_offline_interleave_smoke` |
 | `TRANSCRIBE_GIGAAM_GGUF` | `gigaam_workspace_release_smoke` |
 | `TRANSCRIBE_MULTITALKER_BUNDLE_GGUF` | `parakeet_multitalker_e2e_smoke` |
-| `TRANSCRIBE_SORTFORMER_GGUF` | `sortformer_stream_ext_unit` |
+| `TRANSCRIBE_SORTFORMER_GGUF` | `sortformer_diarize_unit`, `cli_diarize_smoke` |
 | `TRANSCRIBE_COHERE_GGUF` | `cohere_real_smoke`, `cohere_e2e_smoke` |
 | `TRANSCRIBE_GRANITE5_CTC_GGUF` | `granite5_ctc_real_smoke`, `granite5_ctc_e2e_smoke` |
 | `TRANSCRIBE_WHISPER_GGUF` | `whisper_e2e_smoke`, `whisper_tokenize_parity` |

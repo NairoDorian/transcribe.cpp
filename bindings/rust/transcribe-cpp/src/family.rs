@@ -5,7 +5,8 @@
 //! every field is an `Option`, and only the fields you set override the
 //! defaults the C `*_init()` stamps. A [`RunExtension`] attaches to
 //! [`RunOptions`](crate::RunOptions); a [`StreamExtension`] attaches to
-//! [`StreamOptions`](crate::StreamOptions).
+//! [`StreamOptions`](crate::StreamOptions); a [`DiarizeExtension`] attaches to
+//! [`DiarizeOptions`](crate::DiarizeOptions).
 //!
 //! Probe [`Model::accepts_ext`](crate::Model::accepts_ext) to learn whether a
 //! loaded model accepts a given kind on a slot; an unaccepted extension is
@@ -149,17 +150,54 @@ impl SortformerPreset {
     }
 }
 
-/// Sortformer diarizer run-extension knobs (run slot). Sortformer produces
-/// speaker segments, no text; read results via the speaker-segment
-/// accessors. `None` keeps the family default (the GGUF-shipped cfg).
+/// Sortformer diarize-extension knobs (diarize-run slot). `None` keeps the
+/// family default (the GGUF-shipped cfg).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
     serde(default)
 )]
-pub struct SortformerStreamOptions {
+pub struct SortformerDiarizeOptions {
     pub preset: Option<SortformerPreset>,
+}
+
+/// A family extension for the diarize-run slot
+/// ([`DiarizeSession::run`](crate::DiarizeSession::run)).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum DiarizeExtension {
+    Sortformer(SortformerDiarizeOptions),
+}
+
+/// Owns a materialized diarize-slot C extension struct.
+pub(crate) enum DiarizeExtRaw {
+    Sortformer(Box<sys::transcribe_sortformer_diarize_ext>),
+}
+
+impl DiarizeExtRaw {
+    pub(crate) fn ext_ptr(&self) -> *const sys::transcribe_ext {
+        match self {
+            DiarizeExtRaw::Sortformer(e) => {
+                (&**e) as *const sys::transcribe_sortformer_diarize_ext
+                    as *const sys::transcribe_ext
+            }
+        }
+    }
+}
+
+impl DiarizeExtension {
+    pub(crate) fn materialize(&self) -> DiarizeExtRaw {
+        match self {
+            DiarizeExtension::Sortformer(o) => {
+                let mut e: sys::transcribe_sortformer_diarize_ext = unsafe { std::mem::zeroed() };
+                unsafe { sys::transcribe_sortformer_diarize_ext_init(&mut e) };
+                set(&mut e.preset, o.preset.map(SortformerPreset::to_sys));
+                DiarizeExtRaw::Sortformer(Box::new(e))
+            }
+        }
+    }
 }
 
 /// A family extension for the run slot (offline `run`/`run_batch`).
@@ -168,7 +206,6 @@ pub struct SortformerStreamOptions {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RunExtension {
     Whisper(WhisperRunOptions),
-    Sortformer(SortformerStreamOptions),
 }
 
 /// A family extension for the stream slot.
@@ -197,7 +234,6 @@ pub(crate) enum RunExtRaw {
         ext: Box<sys::transcribe_whisper_run_ext>,
         _prompt: Option<CString>,
     },
-    Sortformer(Box<sys::transcribe_sortformer_stream_ext>),
 }
 
 impl RunExtRaw {
@@ -206,9 +242,6 @@ impl RunExtRaw {
             // `ext` is field 0, so &ext == &the family struct.
             RunExtRaw::Whisper { ext, .. } => {
                 (&**ext) as *const sys::transcribe_whisper_run_ext as *const sys::transcribe_ext
-            }
-            RunExtRaw::Sortformer(e) => {
-                (&**e) as *const sys::transcribe_sortformer_stream_ext as *const sys::transcribe_ext
             }
         }
     }
@@ -242,12 +275,6 @@ impl RunExtension {
                     ext: Box::new(ext),
                     _prompt: prompt,
                 })
-            }
-            RunExtension::Sortformer(o) => {
-                let mut ext: sys::transcribe_sortformer_stream_ext = unsafe { std::mem::zeroed() };
-                unsafe { sys::transcribe_sortformer_stream_ext_init(&mut ext) };
-                set(&mut ext.preset, o.preset.map(SortformerPreset::to_sys));
-                Ok(RunExtRaw::Sortformer(Box::new(ext)))
             }
         }
     }

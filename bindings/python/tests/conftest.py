@@ -59,6 +59,11 @@ VOXTRAL_MODEL = (
     REPO
     / "models/Voxtral-Mini-4B-Realtime-2602/Voxtral-Mini-4B-Realtime-2602-Q4_K_M.gguf"
 )
+SORTFORMER_MODEL = (
+    REPO
+    / "models/diar_streaming_sortformer_4spk-v2.1"
+    / "diar_streaming_sortformer_4spk-v2.1-F32.gguf"
+)
 PNC_MODEL = REPO / "models/canary-180m-flash/canary-180m-flash-Q8_0.gguf"
 ITN_MODEL = REPO / "models/SenseVoiceSmall/SenseVoiceSmall-Q8_0.gguf"
 
@@ -159,6 +164,12 @@ def parakeet_buffered_model_path() -> Path:
 def voxtral_model_path() -> Path:
     """Voxtral realtime streaming canary (accepts VOXTRAL_REALTIME_STREAM)."""
     return _family_model("TRANSCRIBE_SMOKE_VOXTRAL_MODEL", VOXTRAL_MODEL)
+
+
+@pytest.fixture(scope="session")
+def sortformer_model_path() -> Path:
+    """Sortformer diarizer (serves only the DIARIZE role)."""
+    return _family_model("TRANSCRIBE_SMOKE_SORTFORMER_MODEL", SORTFORMER_MODEL)
 
 
 @pytest.fixture(scope="session")

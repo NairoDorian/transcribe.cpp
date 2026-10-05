@@ -369,12 +369,12 @@ def doc_for(record: dict) -> pathlib.Path | None:
 
 def block_family_index(records: dict[str, dict], attrs: dict[str, str]) -> list[str]:
     """The root README's supported-models table: one row per documentation
-    page, listing the variants it covers. `transcribe=false` selects the
-    models that only diarize."""
-    want = as_bool(attrs.get("transcribe"), True)
+    page, listing the variants it covers, for one role (`role=`, default
+    asr)."""
+    want = attrs.get("role", "asr")
     groups: dict[str, dict] = {}
     for variant, record in records.items():
-        if bool(record.get("capabilities", {}).get("transcribe", {}).get("supported")) != want:
+        if record.get("role", "asr") != want:
             continue
         doc = doc_for(record)
         if doc is not None:

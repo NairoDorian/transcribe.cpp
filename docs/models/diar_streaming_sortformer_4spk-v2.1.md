@@ -63,12 +63,12 @@ Q5_K_M on one AMI meeting; details in
 cmake -B build
 cmake --build build
 
-# Speaker segments as JSON (one line per file):
-echo audio.wav > files.txt
 build/bin/transcribe-cli \
   -m models/diar_streaming_sortformer_4spk-v2.1/diar_streaming_sortformer_4spk-v2.1-Q8_0.gguf \
-  --batch files.txt --batch-jsonl
-# {"file":"audio.wav","text":"","speakers":[{"t0_ms":320,"t1_ms":2400,"speaker_id":1},...]}
+  audio.wav
+# speaker segments: 5
+#   [   0.32 ->    2.40] S1
+#   ...
 ```
 
 If your audio is not already 16 kHz mono WAV, convert it first:
@@ -77,16 +77,17 @@ If your audio is not already 16 kHz mono WAV, convert it first:
 ffmpeg -i input.mp3 -ar 16000 -ac 1 output.wav
 ```
 
-From the C API, read results via `transcribe_n_speaker_segments` /
-`transcribe_get_speaker_segment` (the transcript accessors return empty
-text). The streaming operating point (latency / accuracy trade-off) is
-selected with the run extension in `include/transcribe/sortformer.h`:
+From the C API, use the DIARIZE role (`include/transcribe/diarize.h`):
+`transcribe_diarize_session_init`, `transcribe_diarize_run`, then
+`transcribe_diarize_n_segments` / `transcribe_diarize_get_segment`. The
+streaming operating point (latency / accuracy trade-off) is selected with
+the extension in `include/transcribe/sortformer.h`:
 
 ```c
-transcribe_sortformer_stream_ext ext;
-transcribe_sortformer_stream_ext_init(&ext);        /* DEFAULT = model cfg */
+transcribe_sortformer_diarize_ext ext;
+transcribe_sortformer_diarize_ext_init(&ext);       /* DEFAULT = model cfg */
 ext.preset = TRANSCRIBE_SORTFORMER_PRESET_VERY_HIGH_LATENCY;
-run_params.family = &ext.ext;
+diarize_params.family = &ext.ext;
 ```
 
 `VERY_HIGH_LATENCY` (~30 s lookahead) is the offline-file operating
@@ -150,8 +151,8 @@ full 39-minute AMI meeting (87 compression calls).
 - **`LOW_LATENCY` is compute-heavy on CPU** (~1.2x realtime on Apple M4;
   the 0.5 s chunks rebuild the compute graph often). Use Metal or a
   higher-latency preset for offline files.
-- **No batch fast path** (`run_batch`); multi-file CLI batches run
-  serially.
+- **No batch mode**: run one file per call (`transcribe-cli --batch` is
+  ASR-only).
 
 ## Reproduction
 

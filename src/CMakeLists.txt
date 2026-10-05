@@ -95,6 +95,8 @@ message(STATUS "transcribe model composite: ${TRANSCRIBE_MODEL_SET} [${_enabled_
 
 set(TRANSCRIBE_SRCS
     transcribe.cpp
+    transcribe-asr.cpp
+    transcribe-diarize.cpp
     transcribe-loader.cpp
     transcribe-arch.cpp
     transcribe-meta.cpp
@@ -197,7 +199,6 @@ set(_srcs_moss
 set(_srcs_sortformer
     arch/sortformer/model.cpp
     arch/sortformer/stream.cpp
-    arch/sortformer/capabilities.cpp
     arch/sortformer/weights.cpp
     conformer/conformer.cpp
 )

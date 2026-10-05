@@ -10,7 +10,8 @@
 
 #include <stdint.h>
 
-#define TRANSCRIBE_ARCH_PLUGIN_ABI_VERSION 1
+// The role split changes Arch and the session base layout; rebuild v1 modules.
+#define TRANSCRIBE_ARCH_PLUGIN_ABI_VERSION 2
 
 #if defined(_WIN32)
 #    define TRANSCRIBE_PLUGIN_EXPORT __declspec(dllexport)

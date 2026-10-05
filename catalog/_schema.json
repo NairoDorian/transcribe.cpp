@@ -24,6 +24,10 @@
       "type": "string",
       "description": "Loader family (the GGUF's general.architecture)"
     },
+    "role": {
+      "enum": ["asr", "diarize"],
+      "description": "The role the model is published for (transcribe_model_roles). Absent means asr."
+    },
     "display_name": {
       "type": "string"
     },

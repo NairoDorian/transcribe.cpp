@@ -22,6 +22,9 @@ export const ITN_MODEL =
 // Voxtral realtime is local-only (~2.5 GB+, too heavy for the CI canary set):
 // its env var is NOT exported by fetch-canary, so this skips cleanly in CI.
 export const VOXTRAL_MODEL = process.env.TRANSCRIBE_SMOKE_VOXTRAL_MODEL || "";
+// Sortformer (DIARIZE role only): fetch-canary exports the Q8_0 canary.
+export const SORTFORMER_MODEL = process.env.TRANSCRIBE_SMOKE_SORTFORMER_MODEL || "";
+export const SORTFORMER_AUDIO = path.resolve(HERE, "../../../samples/sortformer-2spk-mix.wav");
 
 // jfk.wav ships in-repo; fetch-canary exports only the model paths.
 export const AUDIO =

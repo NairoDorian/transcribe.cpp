@@ -14,6 +14,7 @@
 #define TRANSCRIBE_EXTENSIONS_H
 
 #include "transcribe.h"
+#include "transcribe/diarize.h"
 #include "transcribe/moonshine_streaming.h"
 #include "transcribe/parakeet.h"
 #include "transcribe/r2t2.h"

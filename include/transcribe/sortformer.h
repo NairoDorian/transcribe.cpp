@@ -1,23 +1,12 @@
 /*
  * include/transcribe/sortformer.h - Sortformer-family public extension.
  *
- * Includes transcribe.h; safe to include in C or C++ TUs. Holds the
- * streaming-operating-point run extension, its kind constant, and its
- * init function.
- *
- * Sortformer (diar_streaming_sortformer_4spk-v2.1) is a diarization-only model: a run
- * produces no text; the product is the who-spoke-when rows read back via
- * transcribe_n_speaker_segments / transcribe_get_speaker_segment
- * (TRANSCRIBE_FEATURE_DIARIZATION). The compute core is streaming
- * (AOSC speaker cache + FIFO) but the shipped entry point is the batch
- * transcribe_run over a whole recording, so this extension lives on the
- * RUN slot. A future push-audio entry point (transcribe_stream_begin/
- * feed) would register a separate STREAM-slot kind taking the same
- * preset enum.
- *
- * Probe via transcribe_model_accepts_ext_kind(model,
- * TRANSCRIBE_EXT_SLOT_RUN, TRANSCRIBE_EXT_KIND_SORTFORMER_STREAM)
- * before pointing transcribe_run_params::family at the struct.
+ * Includes transcribe.h; safe to include in C or C++ TUs. Sortformer
+ * (diar_streaming_sortformer_4spk-v2.1) serves the DIARIZE role
+ * (include/transcribe/diarize.h). Its one extension picks the streaming
+ * operating point for transcribe_diarize_run; probe with
+ * transcribe_model_accepts_ext_kind(model, TRANSCRIBE_EXT_SLOT_DIARIZE_RUN,
+ * TRANSCRIBE_EXT_KIND_SORTFORMER_DIARIZE).
  *
  * FourCC kinds are reserved in docs/extension-kinds.md.
  */
@@ -30,9 +19,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/* 'SFST' little-endian = 0x54534653 */
-#define TRANSCRIBE_EXT_KIND_SORTFORMER_STREAM 0x54534653u
 
 /*
  * Streaming operating point (latency / accuracy trade-off).
@@ -56,8 +42,8 @@ extern "C" {
  *                       (many small windows); see the family doc for
  *                       measured throughput.
  *
- * Values outside the enum range are rejected by transcribe_run with
- * TRANSCRIBE_ERR_INVALID_ARG before the previous result is cleared.
+ * Values outside the enum range are rejected by transcribe_diarize_run
+ * with TRANSCRIBE_ERR_INVALID_ARG before the previous result is cleared.
  */
 typedef enum {
     TRANSCRIBE_SORTFORMER_PRESET_DEFAULT           = 0,
@@ -66,13 +52,18 @@ typedef enum {
     TRANSCRIBE_SORTFORMER_PRESET_LOW_LATENCY       = 3,
 } transcribe_sortformer_preset;
 
-struct transcribe_sortformer_stream_ext {
+/* 'SFDR' little-endian = 0x52444653 (DIARIZE_RUN slot) */
+#define TRANSCRIBE_EXT_KIND_SORTFORMER_DIARIZE 0x52444653u
+
+/* transcribe_diarize_params::family: the operating point for
+ * transcribe_diarize_run. */
+struct transcribe_sortformer_diarize_ext {
     struct transcribe_ext        ext;
     transcribe_sortformer_preset preset;
 };
 
-/* Fills ext.size/kind and preset = DEFAULT (GGUF-shipped cfg). */
-TRANSCRIBE_API void transcribe_sortformer_stream_ext_init(struct transcribe_sortformer_stream_ext * ext);
+/* Fills ext.size/kind and preset = DEFAULT. */
+TRANSCRIBE_API void transcribe_sortformer_diarize_ext_init(struct transcribe_sortformer_diarize_ext * ext);
 
 #ifdef __cplusplus
 }

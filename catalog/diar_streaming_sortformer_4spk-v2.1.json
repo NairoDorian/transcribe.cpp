@@ -2,6 +2,7 @@
   "schema": "transcribe-catalog-v1",
   "variant": "diar_streaming_sortformer_4spk-v2.1",
   "family": "sortformer",
+  "role": "diarize",
   "display_name": "diar_streaming_sortformer_4spk-v2.1",
   "params": 117711368,
   "license": {

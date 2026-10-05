@@ -42,6 +42,7 @@ def test_every_status_maps_to_documented_subclass():
         errors.ERR_INPUT_TOO_LONG: t.InputTooLong,
         errors.ERR_OUTPUT_TRUNCATED: t.OutputTruncated,
         errors.ERR_OUTPUT_REPETITION: t.OutputRepetition,
+        errors.ERR_UNSUPPORTED_ROLE: t.UnsupportedRole,
     }
     # The mapping table covers every non-OK status the header defines, and
     # nothing else (a new C status must be mapped deliberately, not by
@@ -71,6 +72,12 @@ def test_output_repetition_is_an_output_truncated():
     assert isinstance(exc, t.OutputRepetition)
     assert isinstance(exc, t.OutputTruncated)
     assert exc.partial_result is None
+
+
+def test_unsupported_role_is_its_own_type():
+    # A role mismatch is a property of the loaded model, not of a run option:
+    # it must not be caught by an UnsupportedRequest handler.
+    assert not issubclass(t.UnsupportedRole, t.UnsupportedRequest)
 
 
 def test_exception_for_status_builds_without_raising():

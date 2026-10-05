@@ -303,6 +303,7 @@ impl StreamState {
 
 /// A public ABI struct, for size/alignment introspection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AbiStruct {
     ModelLoadParams,
     SessionParams,
@@ -320,6 +321,9 @@ pub enum AbiStruct {
     DeviceInfo,
     SpeakerSegment,
     BackendInitParams,
+    DiarizeInfo,
+    DiarizeSessionParams,
+    DiarizeParams,
 }
 
 impl AbiStruct {
@@ -342,18 +346,24 @@ impl AbiStruct {
             AbiStruct::DeviceInfo => A::TRANSCRIBE_ABI_DEVICE_INFO,
             AbiStruct::SpeakerSegment => A::TRANSCRIBE_ABI_SPEAKER_SEGMENT,
             AbiStruct::BackendInitParams => A::TRANSCRIBE_ABI_BACKEND_INIT_PARAMS,
+            AbiStruct::DiarizeInfo => A::TRANSCRIBE_ABI_DIARIZE_INFO,
+            AbiStruct::DiarizeSessionParams => A::TRANSCRIBE_ABI_DIARIZE_SESSION_PARAMS,
+            AbiStruct::DiarizeParams => A::TRANSCRIBE_ABI_DIARIZE_PARAMS,
         }
     }
 }
 
 /// The slot a family extension is pointed at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ExtSlot {
     /// `transcribe_run_params::family`.
     Run,
     /// `transcribe_stream_params::family`.
     Stream,
+    /// `transcribe_diarize_params::family`.
+    DiarizeRun,
 }
 
 impl ExtSlot {
@@ -362,6 +372,39 @@ impl ExtSlot {
         match self {
             ExtSlot::Run => E::TRANSCRIBE_EXT_SLOT_RUN,
             ExtSlot::Stream => E::TRANSCRIBE_EXT_SLOT_STREAM,
+            ExtSlot::DiarizeRun => E::TRANSCRIBE_EXT_SLOT_DIARIZE_RUN,
         }
+    }
+}
+
+/// A kind of work a model can do (`transcribe_role`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum Role {
+    /// Transcription: [`Session`](crate::Session).
+    Asr,
+    /// Speaker diarization: [`DiarizeSession`](crate::DiarizeSession).
+    Diarize,
+}
+
+/// The set of [`Role`]s a model serves ([`Model::roles`](crate::Model::roles)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Roles(pub(crate) u32);
+
+impl Roles {
+    /// Whether the model serves `role`.
+    pub fn contains(self, role: Role) -> bool {
+        let bit = match role {
+            Role::Asr => sys::transcribe_role::TRANSCRIBE_ROLE_ASR,
+            Role::Diarize => sys::transcribe_role::TRANSCRIBE_ROLE_DIARIZE,
+        };
+        self.0 & bit.0 != 0
+    }
+
+    /// The raw `transcribe_role` bitmask (`TRANSCRIBE_ROLE_*` bits).
+    pub fn bits(self) -> u32 {
+        self.0
     }
 }

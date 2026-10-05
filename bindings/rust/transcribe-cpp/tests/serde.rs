@@ -4,11 +4,12 @@
 #![cfg(feature = "serde")]
 
 use transcribe_cpp::{
-    Backend, Capabilities, CommitPolicy, DeviceType, Diarize, ExtSlot, Feature, Itn, KvType,
-    MoonshineStreamingOptions, ParakeetBufferedStreamOptions, ParakeetStreamOptions, Pnc,
-    RunExtension, RunOptions, Segment, SessionLimits, SessionOptions, SortformerPreset,
-    SortformerStreamOptions, SpeakerSegment, StreamExtension, StreamOptions, StreamState,
-    StreamText, StreamUpdate, Task, TimestampKind, Timings, Token, Transcript,
+    Backend, Capabilities, CommitPolicy, DeviceType, Diarize, DiarizeExtension, DiarizeInfo,
+    DiarizeOptions, DiarizeSessionOptions, ExtSlot, Feature, Itn, KvType,
+    MoonshineStreamingOptions, ParakeetBufferedStreamOptions, ParakeetStreamOptions, Pnc, Role,
+    Roles, RunExtension, RunOptions, Segment, SessionLimits, SessionOptions,
+    SortformerDiarizeOptions, SortformerPreset, SpeakerSegment, StreamExtension, StreamOptions,
+    StreamState, StreamText, StreamUpdate, Task, TimestampKind, Timings, Token, Transcript,
     VoxtralRealtimeStreamOptions, WhisperRunOptions, Word,
 };
 
@@ -28,9 +29,13 @@ fn plain_data_types_are_serializable() {
     assert_serde::<ParakeetStreamOptions>();
     assert_serde::<ParakeetBufferedStreamOptions>();
     assert_serde::<VoxtralRealtimeStreamOptions>();
-    assert_serde::<SortformerStreamOptions>();
     assert_serde::<SortformerPreset>();
+    assert_serde::<DiarizeOptions>();
+    assert_serde::<DiarizeSessionOptions>();
+    assert_serde::<DiarizeExtension>();
+    assert_serde::<SortformerDiarizeOptions>();
     // Results.
+    assert_serde::<DiarizeInfo>();
     assert_serde::<Transcript>();
     assert_serde::<Segment>();
     assert_serde::<SpeakerSegment>();
@@ -54,6 +59,8 @@ fn plain_data_types_are_serializable() {
     assert_serde::<StreamState>();
     assert_serde::<DeviceType>();
     assert_serde::<ExtSlot>();
+    assert_serde::<Role>();
+    assert_serde::<Roles>();
 }
 
 fn nan_transcript() -> Transcript {

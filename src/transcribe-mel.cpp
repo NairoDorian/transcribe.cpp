@@ -954,24 +954,10 @@ transcribe_status MelFrontend::compute(const float *        pcm,
 
     // Per-thread worker dispatcher. Strided frame assignment (stride =
     // stft_threads) keeps load balanced and per-thread memory access
-    // patterns mostly sequential.
+    // patterns mostly sequential. run_on_threads joins every thread and
+    // hands worker exceptions back to the caller.
     auto run_threaded = [&](auto && worker) {
-        if (stft_threads <= 1) {
-            worker(0);
-            return;
-        }
-
-        std::vector<std::thread> pool;
-        pool.reserve(static_cast<size_t>(stft_threads - 1));
-        for (int tid = 1; tid < stft_threads; ++tid) {
-            pool.emplace_back([&worker, tid]() { worker(tid); });
-        }
-
-        worker(0);
-
-        for (auto & th : pool) {
-            th.join();
-        }
+        run_on_threads(stft_threads, worker);
     };
 
     if (!n_fft_is_pow2) {
@@ -1028,6 +1014,14 @@ transcribe_status MelFrontend::compute(const float *        pcm,
         FFTSetupD    fft_setup = vDSP_create_fftsetupD(log2n, FFT_RADIX2);
         const size_t half_n    = static_cast<size_t>(n_fft / 2);
 
+        // Destroyed on every exit, including a worker exception rethrown by
+        // run_threaded.
+        struct FftSetupGuard {
+            FFTSetupD setup;
+
+            ~FftSetupGuard() { vDSP_destroy_fftsetupD(setup); }
+        } fft_setup_guard{ fft_setup };
+
         auto worker = [&](int tid) {
             std::vector<double>   fft_real(half_n);
             std::vector<double>   fft_imag(half_n);
@@ -1052,7 +1046,6 @@ transcribe_status MelFrontend::compute(const float *        pcm,
             }
         };
         run_threaded(worker);
-        vDSP_destroy_fftsetupD(fft_setup);
 #else
         // Hand-rolled radix-2 Cooley-Tukey FFT fallback for non-Apple.
         auto worker = [&](int tid) {

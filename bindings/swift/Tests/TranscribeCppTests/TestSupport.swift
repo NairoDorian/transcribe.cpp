@@ -86,6 +86,16 @@ enum Fixtures {
             "models/SenseVoiceSmall/SenseVoiceSmall-Q8_0.gguf")
     }
 
+    /// Sortformer (DIARIZE only) + its in-repo two-speaker sample.
+    static func sortformerModelAndAudio() throws -> (model: String, pcm: [Float]) {
+        guard let model = familyModel(
+            "TRANSCRIBE_SMOKE_SORTFORMER_MODEL",
+            "models/diar_streaming_sortformer_4spk-v2.1/diar_streaming_sortformer_4spk-v2.1-F32.gguf")
+        else { throw XCTSkip("no Sortformer model (set TRANSCRIBE_SMOKE_SORTFORMER_MODEL)") }
+        let audio = repoRoot().appendingPathComponent("samples/sortformer-2spk-mix.wav").path
+        return (model, try loadWav(audio))
+    }
+
     /// The model path + decoded PCM, or `XCTSkip` when either is absent.
     static func modelAndAudio() throws -> (model: String, pcm: [Float]) {
         guard let model = modelPath() else {

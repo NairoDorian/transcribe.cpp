@@ -42,7 +42,7 @@ WER progress:
 
 ### Step 1: Acceptance manifest (execute or ask-point)
 
-Read the acceptance dataset and metric from `upstream_benchmarks[0].{dataset, metric}`. Slugify: lowercase, spaces → hyphens. `"LibriSpeech test-clean"` → `librispeech-test-clean`. Resolve to `$MANIFEST`; every later step uses `$MANIFEST`, never a reconstructed path. Confirm `metric` is `wer` or `cer`; anything else is out of scope. Do not use any publisher-reported score for pass/fail; the measured Oracle reference score is the gate target.
+Read the acceptance dataset and metric from `upstream_benchmarks[0].{dataset, metric}`. Slugify: lowercase, spaces → hyphens. `"LibriSpeech test-clean"` → `librispeech-test-clean`. Resolve to `$MANIFEST`; every later step uses `$MANIFEST`, never a reconstructed path. Confirm `metric` is `wer` or `cer` (`der` for a DIARIZE-role model: score with `scripts/diar/` instead; anything else is out of scope). Do not use any publisher-reported score for pass/fail; the measured Oracle reference score is the gate target.
 
 If the intake's dataset is not covered by `scripts/wer/ingest.py`, extend
 that script before running this step.

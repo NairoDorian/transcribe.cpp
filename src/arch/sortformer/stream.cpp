@@ -83,8 +83,8 @@ SortformerStreamParams resolve_stream_params(const SortformerHParams & hp, trans
     p.spkcache_update_period =
         hp.stream_spkcache_update_period > 0 ? hp.stream_spkcache_update_period : p.spkcache_update_period;
 
-    // Public run-ext preset (DEFAULT keeps the GGUF cfg). Range-checked by
-    // run_validate before the dispatcher clears the previous result.
+    // Public diarize-ext preset (DEFAULT keeps the GGUF cfg). Range-checked by
+    // diarize_run_validate before the dispatcher clears the previous result.
     const char * ext_name = nullptr;
     switch (preset) {
         case TRANSCRIBE_SORTFORMER_PRESET_DEFAULT:

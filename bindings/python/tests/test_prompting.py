@@ -113,4 +113,4 @@ def test_control_token_literal_rejected(model_path, audio_pcm):
         first = session.run(audio_pcm)
         with pytest.raises(t.InvalidArgument):
             session.run(audio_pcm, prompt="hello <|endoftext|>")
-        assert session._materialize().text == first.text
+        assert session._materialize(session._h).text == first.text

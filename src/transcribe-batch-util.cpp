@@ -263,15 +263,7 @@ bool parallel_for_all(int n, int n_threads, const std::function<bool(int)> & wor
         }
     };
 
-    std::vector<std::thread> pool;
-    pool.reserve(static_cast<size_t>(n_threads - 1));
-    for (int w = 0; w < n_threads - 1; ++w) {
-        pool.emplace_back(worker);
-    }
-    worker();  // the calling thread participates
-    for (auto & th : pool) {
-        th.join();
-    }
+    run_on_threads(n_threads, [&](int) { worker(); });  // the calling thread participates
 
     return all_ok.load(std::memory_order_relaxed);
 }

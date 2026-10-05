@@ -14,10 +14,10 @@
 #include "../parakeet/encoder.h"  // build_encoder_graph
 #include "../parakeet/weights.h"  // ParakeetHParams / ParakeetWeights (conformer)
 #include "transcribe-backend.h"
+#include "transcribe-diarize.h"
 #include "transcribe-mel.h"
 #include "transcribe-model.h"
-#include "transcribe-session.h"
-#include "transcribe/sortformer.h"  // public preset enum + run ext
+#include "transcribe/sortformer.h"  // public preset enum + diarize ext
 #include "weights.h"
 
 #include <cstdint>
@@ -36,11 +36,6 @@ typedef struct ggml_backend_buffer * ggml_backend_buffer_t;
 typedef struct ggml_backend_sched *  ggml_backend_sched_t;
 
 namespace transcribe::sortformer {
-
-// Family defaults, applied before transcribe::read_capability_kv (KV
-// present overrides, KV absent keeps the default). Defined in
-// capabilities.cpp.
-void apply_family_invariants(transcribe_model & model);
 
 // Concrete model. Owns ctx_meta (every weight tensor's data buffer);
 // the destructor frees it, invalidating every borrowed ggml_tensor* in
@@ -186,19 +181,16 @@ struct DiarStreamScratch {
     ~DiarStreamScratch();
 };
 
-// Concrete context. The per-call compute context and multi-backend
-// scheduler are owned by the transcribe_session base (sched / compute_ctx).
-struct SortformerSession final : public transcribe_session {
-    // Per-context scratch reused across runs.
+// Concrete DIARIZE session. The per-call compute context and multi-backend
+// scheduler are owned by the SessionCore base (sched / compute_ctx).
+struct SortformerSession final : public transcribe_diarize_session {
+    // Per-session scratch reused across runs.
     std::vector<float> mel_buf;
     std::vector<float> probs_host;  // [n_spk * T], read back from diar.preds
 
     // Streaming scratch (AOSC/FIFO path + rel-pos tables, shared with the
     // offline forward's pos_emb fill).
     DiarStreamScratch scratch;
-
-    SortformerSession() = default;
-    ~SortformerSession() override;
 };
 
 // ---- Embedded-diarizer surface (multitalker bundle) -------------------- //
@@ -252,15 +244,6 @@ transcribe_status run_diar_streaming_core(DiarStreamScratch &                   
                                           const float *                                 mel_buf,
                                           int                                           mel_n_mels,
                                           int                                           mel_n_frames,
-                                          transcribe_session *                          abort_session);
-
-// Threshold-based probs -> speaker_segment rows (probs row-major [T, n_spk],
-// speaker_id 1-based, p = NaN). Shared with the multitalker bundle path.
-void probs_to_speaker_segments(transcribe_session *       session,
-                               const std::vector<float> & probs,
-                               int                        T,
-                               int                        n_spk,
-                               double                     ms_per_frame,
-                               float                      threshold);
+                                          transcribe::SessionCore *                     abort_session);
 
 }  // namespace transcribe::sortformer

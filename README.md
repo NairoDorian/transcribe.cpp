@@ -33,7 +33,7 @@ C/C++ speech-to-text inference library. Runs diverse STT model families via [GGU
 
 **Speaker diarization models** (no transcription; verified by DER/JER rather than WER):
 
-<!-- catalog:family-index transcribe=false -->
+<!-- catalog:family-index role=diarize -->
 | Family | Variants | Available capabilities | Docs |
 | --- | --- | --- | --- |
 | Streaming Sortformer Diarizer 4spk v2.1 | `diar_streaming_sortformer_4spk-v2.1` | diarize, streaming | [docs/models/diar_streaming_sortformer_4spk-v2.1.md](docs/models/diar_streaming_sortformer_4spk-v2.1.md) |

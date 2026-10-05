@@ -29,6 +29,7 @@ from ._generated import (
     TRANSCRIBE_ERR_UNSUPPORTED_ITN as ERR_UNSUPPORTED_ITN,
     TRANSCRIBE_ERR_UNSUPPORTED_LANGUAGE as ERR_UNSUPPORTED_LANGUAGE,
     TRANSCRIBE_ERR_UNSUPPORTED_PNC as ERR_UNSUPPORTED_PNC,
+    TRANSCRIBE_ERR_UNSUPPORTED_ROLE as ERR_UNSUPPORTED_ROLE,
     TRANSCRIBE_ERR_UNSUPPORTED_TASK as ERR_UNSUPPORTED_TASK,
     TRANSCRIBE_ERR_UNSUPPORTED_TIMESTAMPS as ERR_UNSUPPORTED_TIMESTAMPS,
     TRANSCRIBE_ERR_UNSUPPORTED_VARIANT as ERR_UNSUPPORTED_VARIANT,
@@ -83,12 +84,25 @@ class UnsupportedRequest(TranscribeError):
     """Task / language / timestamp granularity the model does not support."""
 
 
+class UnsupportedRole(TranscribeError):
+    """The model does not serve the role the call needs, e.g. opening a
+    transcription session on, or reading the (ASR) capabilities of, a model
+    without the ASR role. A property of the loaded model, not of the request
+    options, so retrying with different run options cannot succeed."""
+
+
 class AbiError(TranscribeError):
     """Caller-owned struct layout did not match the library (struct_size)."""
 
 
 class InputTooLong(TranscribeError):
     pass
+
+
+class Busy(TranscribeError):
+    """A stream is active on this model, so the call was refused instead of
+    started (see ``Model``). Finalize or reset the stream first, or use one
+    Model per worker. Raised by the binding, so ``status`` is 0."""
 
 
 class Aborted(TranscribeError):
@@ -145,6 +159,7 @@ _STATUS_TO_EXC = {
     ERR_INPUT_TOO_LONG: InputTooLong,
     ERR_OUTPUT_TRUNCATED: OutputTruncated,
     ERR_OUTPUT_REPETITION: OutputRepetition,
+    ERR_UNSUPPORTED_ROLE: UnsupportedRole,
 }
 
 

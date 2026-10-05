@@ -27,7 +27,8 @@
 //! - [`Session`] is `Send` but not `Sync`; its mutating calls take `&mut self`,
 //!   so the type system enforces one-call-at-a-time.
 //! - **0.x concurrency:** the C library permits at most one in-flight
-//!   `run`/stream across all sessions of a model. This crate enforces that with
+//!   `run`/stream across all sessions of a model, [`DiarizeSession`]s
+//!   included. This crate enforces that with
 //!   a per-model mutex (held only for the native compute call), so concurrent
 //!   calls from many sessions queue rather than race. For real parallelism, use
 //!   one [`Model`] per worker today.
@@ -59,6 +60,7 @@ pub use transcribe_cpp_sys as sys;
 mod arch;
 mod backend;
 mod cancel;
+mod diarize;
 mod error;
 mod family;
 mod logging;
@@ -77,11 +79,12 @@ pub use backend::{
     init_backends_default, init_backends_with, BackendMask, Device, DeviceType,
 };
 pub use cancel::CancelToken;
+pub use diarize::{DiarizeInfo, DiarizeOptions, DiarizeSession, DiarizeSessionOptions};
 pub use error::{Error, Result};
 pub use family::{
-    MoonshineStreamingOptions, ParakeetBufferedStreamOptions, ParakeetStreamOptions,
-    R2T2StreamOptions, RunExtension, SortformerPreset, SortformerStreamOptions, StreamExtension,
-    VoxtralRealtimeStreamOptions, WhisperRunOptions,
+    DiarizeExtension, MoonshineStreamingOptions, ParakeetBufferedStreamOptions,
+    ParakeetStreamOptions, R2T2StreamOptions, RunExtension, SortformerDiarizeOptions,
+    SortformerPreset, StreamExtension, VoxtralRealtimeStreamOptions, WhisperRunOptions,
 };
 pub use logging::{disable_logging, init_logging};
 pub use model::{Capabilities, Model, ModelOptions, SessionLimits, SessionOptions};
@@ -89,8 +92,8 @@ pub use result::{Segment, SpeakerSegment, Timings, Token, Transcript, Word};
 pub use session::{RunOptions, Session, Stream};
 pub use streaming::{StreamOptions, StreamText, StreamUpdate};
 pub use types::{
-    AbiStruct, Backend, CommitPolicy, Diarize, ExtSlot, Feature, Itn, KvType, Pnc, StreamState,
-    Task, TimestampKind,
+    AbiStruct, Backend, CommitPolicy, Diarize, ExtSlot, Feature, Itn, KvType, Pnc, Role, Roles,
+    StreamState, Task, TimestampKind,
 };
 pub use vad::VoiceActivityDetector;
 pub use version::{

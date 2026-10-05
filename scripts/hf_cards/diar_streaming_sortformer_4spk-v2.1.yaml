@@ -40,22 +40,19 @@ usage: |
   cmake -B build && cmake --build build
   ```
 
-  Run on a 16 kHz mono WAV. This is a diarizer, not a transcription model —
-  use the JSONL output to get the speaker segments (the plain output's
-  `text:` line is empty by design):
+  Run on a 16 kHz mono WAV. This is a diarizer, not a transcription model:
+  the CLI prints speaker segments.
 
   ```bash
-  echo input.wav > files.txt
-  build/bin/transcribe-cli \
-    -m diar_streaming_sortformer_4spk-v2.1-Q8_0.gguf \
-    --batch files.txt --batch-jsonl
-  # {"file":"input.wav","text":"","speakers":[{"t0_ms":320,"t1_ms":2400,"speaker_id":1},...]}
+  build/bin/transcribe-cli -m diar_streaming_sortformer_4spk-v2.1-Q8_0.gguf input.wav
+  # speaker segments: 5
+  #   [   0.32 ->    2.40] S1
+  #   ...
   ```
 
-  From the C API, read segments via `transcribe_n_speaker_segments` /
-  `transcribe_get_speaker_segment`, and select the streaming operating
-  point (latency / accuracy trade-off) with the run extension in
-  `include/transcribe/sortformer.h`.
+  From the C API, use the DIARIZE role (`include/transcribe/diarize.h`),
+  and select the streaming operating point (latency / accuracy trade-off)
+  with the extension in `include/transcribe/sortformer.h`.
 
   If your audio isn't already 16 kHz mono WAV, convert it first:
 

@@ -13,11 +13,11 @@ Shipped matrix: **F32 + F16 + Q8_0** (k tiers withdrawn; see "Quant policy
 `handy-computer/diar_streaming_sortformer_4spk-v2.1-gguf`.
 
 Batch posture: **ACCEPTED GAP — no `run_batch()`** (user-approved Stage 4
-deferral; single-session `transcribe_run` is the shipped path; revisit with
+deferral; single-session `transcribe_diarize_run` is the shipped path; revisit with
 multitalker interop). Streaming posture: **natively streaming — PASS**; the
-chunk/lookahead contract is the preset menu in "Public API (run extension)"
+chunk/lookahead contract is the preset menu in "Public API (diarize extension)"
 (default = GGUF-shipped checkpoint cfg; very_high_latency ~30.4 s lookahead
-... low_latency ~1.04 s), exposed via `transcribe_sortformer_stream_ext`.
+... low_latency ~1.04 s), exposed via `transcribe_sortformer_diarize_ext`.
 Push-audio `transcribe_stream_*` entry point is future work (STREAM-slot
 kind reserved by design).
 
@@ -57,21 +57,20 @@ verbatim). A diarizer meeting neither clause (e.g. a pyannote
 segmentation+clustering port: new architecture, new dependency surface, no
 in-repo ASR consumer) is out of scope. Standalone diarization output is
 exposed because it falls out of the multitalker dependency for free, via
-the pre-existing transcript-independent `transcribe_speaker_segment` ABI —
-no diarizer-specific output surface was added.
+the DIARIZE role (`include/transcribe/diarize.h`).
 
-## Public API (run extension)
+## Public API (diarize extension)
 
-`include/transcribe/sortformer.h` — `TRANSCRIBE_EXT_KIND_SORTFORMER_STREAM`
-(`SFST`, RUN slot; registered in `docs/extension-kinds.md`). A run produces
-no text; results are read via `transcribe_n_speaker_segments` /
-`transcribe_get_speaker_segment` (`TRANSCRIBE_FEATURE_DIARIZATION`).
+Sortformer serves the DIARIZE role only (`include/transcribe/diarize.h`).
+`include/transcribe/sortformer.h` — `TRANSCRIBE_EXT_KIND_SORTFORMER_DIARIZE`
+(`SFDR`, DIARIZE_RUN slot; registered in `docs/extension-kinds.md`). The
+0.3 RUN-slot kind `SFST` is retired.
 
 ```c
-transcribe_sortformer_stream_ext ext;
-transcribe_sortformer_stream_ext_init(&ext);          /* preset = DEFAULT (GGUF cfg) */
+transcribe_sortformer_diarize_ext ext;
+transcribe_sortformer_diarize_ext_init(&ext);         /* preset = DEFAULT (GGUF cfg) */
 ext.preset = TRANSCRIBE_SORTFORMER_PRESET_LOW_LATENCY;
-run_params.family = &ext.ext;                          /* probe accepts_ext_kind first */
+diarize_params.family = &ext.ext;                      /* probe accepts_ext_kind first */
 ```
 
 Preset menu (frames are 80 ms; chunk/rc/fifo/update/spkcache geometry per
@@ -90,8 +89,8 @@ these bundles are accuracy-validated. Precedence: GGUF cfg < ext preset <
 `TRANSCRIBE_SORTFORMER_STREAM_PRESET` env < per-field env (env layers are
 validation hooks; `small` is a diagnostic-only env preset, deliberately
 not in the public enum). An out-of-range preset or wrong-kind ext is
-rejected pre-clear (`run_validate`), preserving the previous result.
-Unit test: `tests/sortformer_stream_ext_unit.cpp`
+rejected pre-clear (`DiarizeOps::run_validate`), preserving the previous
+result. Unit test: `tests/sortformer_diarize_unit.cpp`
 (`TRANSCRIBE_SORTFORMER_GGUF`-gated).
 
 ## Quant policy (Stage 7)

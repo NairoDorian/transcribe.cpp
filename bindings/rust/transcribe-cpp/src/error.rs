@@ -75,6 +75,9 @@ pub enum Error {
         /// The (incomplete) transcript produced before the loop, one copy kept.
         partial: Option<Box<Transcript>>,
     },
+    /// `TRANSCRIBE_ERR_UNSUPPORTED_ROLE` — see [`Model::roles`](crate::Model::roles).
+    #[error("unsupported role: {0}")]
+    UnsupportedRole(String),
     /// The loaded library's base version disagrees with the headers this crate
     /// was generated against (the pre-1.0 version lock). Raised on first use.
     #[error("native library version mismatch: {0}")]
@@ -113,6 +116,7 @@ impl Error {
             Error::Aborted { .. } => S::TRANSCRIBE_ERR_ABORTED,
             Error::OutputTruncated { .. } => S::TRANSCRIBE_ERR_OUTPUT_TRUNCATED,
             Error::OutputRepetition { .. } => S::TRANSCRIBE_ERR_OUTPUT_REPETITION,
+            Error::UnsupportedRole(_) => S::TRANSCRIBE_ERR_UNSUPPORTED_ROLE,
             _ => S::TRANSCRIBE_OK,
         };
         s.0 as i32
@@ -186,6 +190,7 @@ pub(crate) fn error_for_status(status: sys::transcribe_status, context: &str) ->
             message: msg,
             partial: None,
         },
+        S::TRANSCRIBE_ERR_UNSUPPORTED_ROLE => Error::UnsupportedRole(msg),
         _ => Error::Other(msg),
     }
 }
@@ -196,5 +201,50 @@ pub(crate) fn check(status: sys::transcribe_status, context: &str) -> Result<()>
         Ok(())
     } else {
         Err(error_for_status(status, context))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::mem::discriminant;
+    use sys::transcribe_status as S;
+
+    #[test]
+    fn every_status_maps_to_a_typed_variant() {
+        // Every non-OK status the linked library knows, found by walking codes
+        // upward until `transcribe_status_string` falls back to its "unknown"
+        // text, so a status appended to the header without a mapping fails here.
+        let unknown = status_string(-1);
+        let codes: Vec<S> = (1..256u32)
+            .take_while(|&c| status_string(c as i32) != unknown)
+            .map(S)
+            .collect();
+        assert!(
+            codes.len() >= S::TRANSCRIBE_ERR_UNSUPPORTED_ROLE.0 as usize,
+            "status walk stopped early at {} codes",
+            codes.len()
+        );
+        for status in codes {
+            let code = status.0;
+            let err = error_for_status(status, "ctx");
+            assert!(
+                !matches!(err, Error::Other(_)),
+                "status {code} falls through to Error::Other: {err:?}"
+            );
+            // raw_status must name a status that maps back to the same
+            // variant (grouped codes like SAMPLE_RATE report their group's
+            // primary status, never 0).
+            let raw = err.raw_status();
+            assert_ne!(raw, 0, "status {code} reports raw_status 0: {err:?}");
+            let back = error_for_status(S(raw as u32), "ctx");
+            assert_eq!(
+                discriminant(&back),
+                discriminant(&err),
+                "status {code} -> {err:?} -> raw {raw} -> {back:?}"
+            );
+        }
+        let role = error_for_status(S::TRANSCRIBE_ERR_UNSUPPORTED_ROLE, "ctx");
+        assert!(matches!(role, Error::UnsupportedRole(_)), "{role:?}");
     }
 }

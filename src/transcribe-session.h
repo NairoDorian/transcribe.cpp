@@ -10,25 +10,15 @@
 
 #pragma once
 
+#include "transcribe-session-core.h"
 #include "transcribe-vad.h"
 #include "transcribe.h"
 
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <string>
 #include <vector>
-
-struct transcribe_model;
-
-// ggml handle types for the base-owned compute scratch. Forward-declared so
-// this internal header does not pull the ggml headers into every includer
-// (the public transcribe.h never sees them); transcribe-backend.h uses the
-// same pattern for ggml_backend_t.
-struct ggml_context;
-struct ggml_backend_sched;
-typedef struct ggml_backend_sched * ggml_backend_sched_t;
 
 // Read transcribe_session_params::n_ctx with a struct_size guard. n_ctx is
 // a trailing field appended after kv_type, so an older caller's smaller
@@ -48,12 +38,9 @@ inline int32_t transcribe_session_params_n_ctx(const struct transcribe_session_p
     return params->n_ctx;
 }
 
-struct transcribe_session {
-    // The model this session was constructed from. Borrowed pointer:
-    // the caller is required (per the public threading contract) to keep
-    // the model alive for the lifetime of every derived session.
-    transcribe_model * model = nullptr;
-
+// Common members (model, n_threads, timings, abort callback, compute
+// scratch) live on transcribe::SessionCore; see transcribe-session-core.h.
+struct transcribe_session : transcribe::SessionCore {
     // True only for sessions created via transcribe_open(), which loads
     // and therefore owns its model. Both transcribe_session_free() and
     // transcribe_close() (now an alias) read this flag and free the
@@ -61,10 +48,6 @@ struct transcribe_session {
     // transcribe_session_init() leave this false and their model is
     // freed independently by the caller via transcribe_model_free().
     bool owns_model = false;
-
-    // Cached n_threads value the caller passed at init time. 0 means
-    // "library picks a sensible default" (matches the factory).
-    int n_threads = 0;
 
     // Cached n_ctx value the caller passed at init time (decoder context
     // cap in tokens). 0 means "use the model's true maximum from GGUF".
@@ -81,13 +64,6 @@ struct transcribe_session {
     // this from params; the families resolve AUTO to f16 for the KV cache, so
     // for byte accounting only F32 differs (4 bytes/elem vs 2).
     transcribe_kv_type kv_type = TRANSCRIBE_KV_TYPE_AUTO;
-
-    // Per-call timings, populated by the most recent transcribe_run.
-    // Surfaced via the public transcribe_get_timings accessor; reset
-    // by transcribe_reset_timings.
-    int64_t t_mel_us    = 0;
-    int64_t t_encode_us = 0;
-    int64_t t_decode_us = 0;
 
     // Result storage (family-agnostic; populated by per-family run()).
     // A flat backing array per level (segments / words / tokens) with
@@ -126,16 +102,9 @@ struct transcribe_session {
         int32_t     speaker_id  = 0;  // 1-based; 0 = no attribution
     };
 
-    // "Who spoke when" rows (diarization). Populated only when a run
-    // resolves diarize ON for a supporting family; may overlap in time.
-    // t0_ms == t1_ms == 0 means the family attributes text but has no
-    // timing information for the turn.
-    struct SpeakerSegmentEntry {
-        int64_t t0_ms      = 0;
-        int64_t t1_ms      = 0;
-        int32_t speaker_id = 0;  // 1-based
-        float   p          = NAN;
-    };
+    // Hoisted to transcribe::SpeakerSegmentEntry so every session type
+    // that reports speaker segments shares one row type.
+    using SpeakerSegmentEntry = transcribe::SpeakerSegmentEntry;
 
     std::vector<TokenEntry>          tokens;
     std::vector<WordEntry>           words;
@@ -218,24 +187,6 @@ struct transcribe_session {
     std::string               detected_language;
     transcribe_timestamp_kind result_kind = TRANSCRIBE_TIMESTAMPS_NONE;
     bool                      has_result  = false;
-
-    // Abort / cancellation (set via transcribe_set_abort_callback).
-    // run() drivers call poll_abort() at chunk / decode-step boundaries;
-    // a callback returning true sets was_aborted and the run returns
-    // TRANSCRIBE_ERR_ABORTED with partial segments preserved. was_aborted
-    // is cleared at the top of every transcribe_run, NOT by clear_result
-    // (the partial result may be deliberately retained).
-    transcribe_abort_callback abort_cb       = nullptr;
-    void *                    abort_userdata = nullptr;
-    bool                      was_aborted    = false;
-
-    bool poll_abort() {
-        if (abort_cb != nullptr && abort_cb(abort_userdata)) {
-            was_aborted = true;
-            return true;
-        }
-        return false;
-    }
 
     // Set by a run() driver when decode stops at the model's context /
     // position cap before end-of-stream (output truncated; partial result
@@ -339,58 +290,11 @@ struct transcribe_session {
 
     void clear_result();
 
-    // Per-run ggml compute scratch, owned by the base so every family
-    // releases it the same way and none can forget to: the backend
-    // scheduler (whose graph allocator only ever grows) and the no_alloc
-    // graph context. Families create both lazily inside their run / stream
-    // hooks and use them directly; the base frees them in release_scratch
-    // and in its destructor (scheduler first, then context).
-    ggml_backend_sched_t sched       = nullptr;
-    ggml_context *       compute_ctx = nullptr;
-
-    // Release the per-run ggml compute scratch (sched, then compute_ctx;
-    // see transcribe::release_compute_scratch), then let the family drop
-    // pointers that lived in them (on_scratch_released).
-    // The dispatcher calls this after every offline transcribe_run or
-    // transcribe_run_batch that passes pre-clear validation and reaches its
-    // commit point, whether family execution succeeds, fails, or throws.
-    // Without this, a single long utterance would pin the scheduler's
-    // high-water mark in backend compute memory for the session's lifetime
-    // (Handy #2000). Families re-create the scheduler lazily on the next run.
-    // The measured recreation cost is about 1 ms per run on Metal and up to
-    // about 10 ms on CPU for families that reserve a worst-case decoder
-    // workspace each run, such as Canary and Cohere.
-    //
-    // Host-side vectors that scale with input length, such as mel buffers,
-    // encoder host copies, and positional banks, deliberately retain their
-    // capacity. Family KV caches sized by the last batch are also retained;
-    // this hook releases only the ggml scheduler and compute context.
-    //
-    // Streaming entry points do not invoke this hook. A streaming session
-    // keeps its scheduler until a later offline run or session destruction.
-    // Parakeet and Voxtral Realtime use per-chunk bounded stream workspaces;
-    // Moonshine Streaming's decode graph cross-attends over the complete
-    // committed stream, so its workspace grows with total stream length.
-    // Must not throw. Non-virtual: a family cannot opt out of the release.
-    void release_scratch() noexcept;
-
     transcribe_session() = default;
-    // Frees sched / compute_ctx after the derived destructor has run. The
-    // scheduler owns only its own allocator buffers and references
-    // model-owned backends, so freeing it after the family's KV caches and
-    // stream buffers is order-independent.
-    virtual ~transcribe_session();
+    ~transcribe_session() override;
 
     transcribe_session(const transcribe_session &)             = delete;
     transcribe_session & operator=(const transcribe_session &) = delete;
     transcribe_session(transcribe_session &&)                  = delete;
     transcribe_session & operator=(transcribe_session &&)      = delete;
-
-  protected:
-    // Family hook, called by release_scratch after sched / compute_ctx are
-    // freed: null out tensors borrowed from the freed context (encoder_out)
-    // or reset capacity bookkeeping (whisper compute_ctx_size). Most
-    // families need nothing. Not called from the base destructor because
-    // derived members are already destroyed by then. Must not throw.
-    virtual void on_scratch_released() noexcept {}
 };

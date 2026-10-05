@@ -197,7 +197,7 @@ export type BatchItem =
 
 export type CommitPolicy = "auto" | "on_finalize" | "stable_prefix";
 export type StreamState = "idle" | "active" | "finished" | "failed";
-export type ExtSlot = "run" | "stream";
+export type ExtSlot = "run" | "stream" | "diarize_run";
 
 export interface StreamUpdate {
   resultChanged: boolean;
@@ -276,9 +276,8 @@ export type SortformerPreset =
   | "very_high_latency"
   | "high_latency"
   | "low_latency";
-/** Sortformer diarizer options (run slot). A run produces speaker
- *  segments, no text. */
-export interface SortformerStreamOptions {
+/** Sortformer options for {@link DiarizeOptions.family} (diarize_run slot). */
+export interface SortformerDiarizeOptions {
   preset?: SortformerPreset;
 }
 
@@ -288,4 +287,28 @@ export type FamilyExtension =
   | ({ kind: "parakeet" } & ParakeetStreamOptions)
   | ({ kind: "parakeet_buffered" } & ParakeetBufferedStreamOptions)
   | ({ kind: "voxtral" } & VoxtralRealtimeStreamOptions)
-  | ({ kind: "sortformer" } & SortformerStreamOptions);
+  | ({ kind: "sortformer_diarize" } & SortformerDiarizeOptions);
+
+// ---- roles -----------------------------------------------------------------
+
+/** What a model serves: "asr" (transcription) and/or "diarize" (speaker turns). */
+export type Role = "asr" | "diarize";
+
+export interface DiarizeInfo {
+  /** Input PCM rate. */
+  sampleRate: number;
+  /** Speaker ids are in [1, maxSpeakers]. */
+  maxSpeakers: number;
+}
+
+export interface DiarizeSessionOptions {
+  /** CPU threads for CPU-side ops; 0 = library default. */
+  nThreads?: number;
+}
+
+export interface DiarizeOptions {
+  /** Cancel the run cooperatively. */
+  signal?: AbortSignal;
+  /** A diarize_run-slot family extension (e.g. sortformer_diarize). */
+  family?: FamilyExtension;
+}

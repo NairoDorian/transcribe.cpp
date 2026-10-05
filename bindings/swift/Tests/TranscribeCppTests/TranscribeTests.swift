@@ -24,7 +24,7 @@ final class TranscribeTests: XCTestCase {
     func testFinerThanSupportedTimestampsIsUnsupported() throws {
         let (path, pcm) = try Fixtures.modelAndAudio()
         let model = try Model(path: path)
-        guard let finer = finerThanSupported(model.capabilities.maxTimestampKind) else {
+        guard let finer = finerThanSupported(try model.capabilities.maxTimestampKind) else {
             throw XCTSkip("model already supports the finest timestamps")
         }
         let session = try model.session()
@@ -61,7 +61,7 @@ final class TranscribeTests: XCTestCase {
         let model = try Model(path: path)
         XCTAssertFalse(model.arch.isEmpty)
         XCTAssertFalse(model.backend.isEmpty)
-        XCTAssertGreaterThan(model.capabilities.nativeSampleRate, 0)
+        XCTAssertGreaterThan(try model.capabilities.nativeSampleRate, 0)
     }
 
     func testPncChangesCanaryPrompt() throws {
@@ -125,12 +125,16 @@ final class TranscribeTests: XCTestCase {
         let (path, pcm) = try Fixtures.modelAndAudio()
         // Drop the local Model reference; the Session's strong ref must keep the
         // native model alive (close-ordering safety under ARC).
-        let session: Session = try {
+        weak var weakModel: Model?
+        var session: Session? = try {
             let model = try Model(path: path)
+            weakModel = model
             return try model.session()
         }()
-        let transcript = try session.run(pcm)
-        XCTAssertTrue(transcript.text.lowercased().contains("country"))
+        XCTAssertNotNil(weakModel, "a live Session must keep its Model alive")
+        XCTAssertTrue(try session!.run(pcm).text.lowercased().contains("country"))
+        session = nil
+        XCTAssertNil(weakModel, "the Model is freed once its last Session is")
     }
 
     func testSharedModelAcrossThreadsSerializes() throws {

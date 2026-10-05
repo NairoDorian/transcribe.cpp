@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import CTranscribe
 
 @testable import TranscribeCpp
 
@@ -46,6 +47,29 @@ final class NoModelTests: XCTestCase {
         XCTAssertFalse(TranscribeError.inputTooLong("").isTruncated)
         XCTAssertNil(TranscribeError.outputRepetition(message: "", partial: nil).partial)
         XCTAssertNil(TranscribeError.inputTooLong("").partial)
+    }
+
+    // Every native status maps to its case (compared by case name); the
+    // "unknown status" check below flags a newly appended C status.
+    func testEveryStatusMapsToItsCase() {
+        let expected: [Int32: String] = [
+            1: "invalidArgument", 2: "notImplemented", 3: "modelFileNotFound",
+            4: "modelLoad", 5: "modelLoad", 6: "modelLoad", 7: "outOfMemory",
+            8: "backend",
+            9: "other",  // SAMPLE_RATE: reserved, never returned; not mapped
+            10: "unsupported", 11: "unsupported", 12: "unsupported",
+            13: "aborted", 14: "badStructSize", 15: "unsupported",
+            16: "unsupported", 17: "inputTooLong", 18: "outputTruncated",
+            19: "outputRepetition", 20: "unsupportedRole",
+        ]
+        for raw in 1...20 {
+            let status = transcribe_status(rawValue: UInt32(raw))
+            XCTAssertNotEqual(Transcribe.statusString(Int32(raw)), "unknown status", "status \(raw)")
+            let name = String(describing: TranscribeError.make(status)).prefix { $0 != "(" }
+            XCTAssertEqual(String(name), expected[Int32(raw)], "status \(raw)")
+        }
+        XCTAssertEqual(Transcribe.statusString(21), "unknown status",
+                       "a new status was appended; map it in TranscribeError.make")
     }
 
     func testAtLeastOneDevice() {

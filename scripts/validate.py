@@ -551,6 +551,8 @@ def cmd_cpp(args: argparse.Namespace) -> int:
                 f"with exit code {result.returncode}"
             )
         transcript = parse_cli_transcript(result.stdout or "")
+        if transcript is None and "speaker segments:" in (result.stdout or ""):
+            continue  # a diarizer has no transcript
         if transcript is None:
             raise SystemExit(
                 f"error: cpp dump [{args.family}/{case_name}] did not emit a transcript line"

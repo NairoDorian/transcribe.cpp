@@ -184,18 +184,7 @@ transcribe_status GigaamMelFrontend::compute(const float *        pcm,
             }
         }
     };
-
-    std::vector<std::thread> workers;
-    workers.reserve(n_workers > 0 ? static_cast<size_t>(n_workers - 1) : 0);
-    for (int worker_id = 1; worker_id < n_workers; ++worker_id) {
-        workers.emplace_back([&worker, worker_id]() { worker(worker_id); });
-    }
-
-    worker(0);
-
-    for (auto & thread : workers) {
-        thread.join();
-    }
+    transcribe::run_on_threads(n_workers, worker);
 
     // mel[m, t] = sum_k filterbank[m, k] * power[t, k].
 #if TRANSCRIBE_HAS_BLAS

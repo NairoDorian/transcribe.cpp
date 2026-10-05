@@ -111,6 +111,23 @@ pub fn smoke_itn_model() -> Option<PathBuf> {
     )
 }
 
+/// Sortformer diarizer (DIARIZE role only) plus its two-speaker sample, or
+/// `None` (with a skip note) when either is absent.
+pub fn smoke_sortformer_fixtures(test: &str) -> Option<(PathBuf, Vec<f32>)> {
+    let model = family_model(
+        "TRANSCRIBE_SMOKE_SORTFORMER_MODEL",
+        "models/diar_streaming_sortformer_4spk-v2.1/diar_streaming_sortformer_4spk-v2.1-F32.gguf",
+    );
+    let audio = repo_root().join("samples/sortformer-2spk-mix.wav");
+    match model {
+        Some(m) if audio.is_file() => Some((m, load_wav(&audio))),
+        _ => {
+            eprintln!("skip {test}: sortformer model/audio absent (set TRANSCRIBE_SMOKE_SORTFORMER_MODEL)");
+            None
+        }
+    }
+}
+
 /// Both fixtures together; prints a skip note and returns `None` if either is
 /// missing (so the caller can `return` early — the Rust equivalent of skip).
 pub fn smoke_fixtures(test: &str) -> Option<(PathBuf, Vec<f32>)> {

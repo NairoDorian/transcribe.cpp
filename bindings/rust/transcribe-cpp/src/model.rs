@@ -2,17 +2,19 @@
 //!
 //! A `Model` is `Arc`-backed and `Send + Sync`: cloning it is cheap and hands
 //! out another handle to the same native model. The native model is freed when
-//! the last handle AND every [`Session`](crate::Session) derived from it have
-//! been dropped — Rust ownership gives the C "model must outlive its sessions"
-//! contract (and close-ordering safety) for free, in any drop order.
+//! the last handle AND every [`Session`](crate::Session) /
+//! [`DiarizeSession`](crate::DiarizeSession) derived from it have been dropped
+//! — Rust ownership gives the C "model must outlive its sessions" contract (and
+//! close-ordering safety) for free, in any drop order.
 //!
 //! The `Arc` also carries the per-model compute lock that enforces the C
 //! library's 0.x concurrency limitation: at most one `run` / `run_batch` /
-//! active stream may be in flight across ALL sessions of a model. One-shot
-//! runs/batches queue on the lock (serialized); an *active stream* spans many
-//! native calls (`begin`→`feed`*→`finalize`), so the lock also carries a flag
-//! marking a stream in flight — any run/batch/stream that would overlap it is
-//! refused with [`Error::Busy`](crate::Error) rather than allowed to race.
+//! diarize run / active stream may be in flight across ALL sessions of a model.
+//! One-shot runs/batches queue on the lock (serialized); an *active stream*
+//! spans many native calls (`begin`→`feed`*→`finalize`), so the lock also
+//! carries a flag marking a stream in flight — any run/batch/stream that would
+//! overlap it is refused with [`Error::Busy`](crate::Error) rather than allowed
+//! to race.
 
 use std::ffi::CString;
 use std::path::Path;
@@ -21,10 +23,11 @@ use std::sync::{Arc, Mutex};
 use transcribe_cpp_sys as sys;
 
 use crate::backend::Device;
-use crate::error::{check, Result};
+use crate::diarize::{DiarizeInfo, DiarizeSession, DiarizeSessionOptions};
+use crate::error::{check, Error, Result};
 use crate::result::owned_str;
 use crate::session::Session;
-use crate::types::{Backend, ExtSlot, Feature, TimestampKind};
+use crate::types::{Backend, ExtSlot, Feature, Roles, TimestampKind};
 use crate::version;
 
 /// Options for loading a model.
@@ -73,8 +76,28 @@ pub(crate) struct ModelInner {
     /// is `true` while a stream is ACTIVE (from `begin` until the earliest of
     /// `finalize` / `reset` / the `Stream` being dropped); a held lock plus a
     /// `true` flag is how `run`/`run_batch`/`stream` detect and refuse an
-    /// overlapping compute. See the module docs.
+    /// overlapping compute. Only taken through [`ModelInner::with_compute`].
+    /// See the module docs.
     pub(crate) compute_lock: Mutex<bool>,
+}
+
+impl ModelInner {
+    /// Run `f` under the model's compute lock; every native compute call goes
+    /// through here. With `Some(msg)`, returns `Error::Busy(msg)` instead if a
+    /// stream holds the lease. `f` gets the lease flag to take or release it.
+    pub(crate) fn with_compute<R>(
+        &self,
+        refuse_if_streaming: Option<&str>,
+        f: impl FnOnce(&mut bool) -> R,
+    ) -> Result<R> {
+        let mut lease = self.compute_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(msg) = refuse_if_streaming {
+            if *lease {
+                return Err(Error::Busy(msg.into()));
+            }
+        }
+        Ok(f(&mut lease))
+    }
 }
 
 // SAFETY: the native model is documented thread-safe for query + session
@@ -151,13 +174,46 @@ impl Model {
         Session::new(self, options)
     }
 
-    /// The model's immutable capabilities.
-    pub fn capabilities(&self) -> Capabilities {
+    /// Open a diarization session with default options. Errors with
+    /// [`Error::UnsupportedRole`] unless the model serves [`Role::Diarize`](crate::Role).
+    pub fn diarize_session(&self) -> Result<DiarizeSession> {
+        self.diarize_session_with(&DiarizeSessionOptions::default())
+    }
+
+    /// Open a diarization session with explicit options.
+    pub fn diarize_session_with(&self, options: &DiarizeSessionOptions) -> Result<DiarizeSession> {
+        DiarizeSession::new(self, options)
+    }
+
+    /// Static facts about a diarization model. Errors with
+    /// [`Error::UnsupportedRole`] unless the model serves [`Role::Diarize`](crate::Role).
+    pub fn diarize_info(&self) -> Result<DiarizeInfo> {
+        let mut raw: sys::transcribe_diarize_info = unsafe { std::mem::zeroed() };
+        unsafe { sys::transcribe_diarize_info_init(&mut raw) };
+        check(
+            unsafe { sys::transcribe_diarize_get_info(self.inner.ptr, &mut raw) },
+            "diarize info",
+        )?;
+        Ok(DiarizeInfo {
+            sample_rate: raw.sample_rate,
+            max_speakers: raw.max_speakers,
+        })
+    }
+
+    /// The roles (kinds of work) this model serves.
+    pub fn roles(&self) -> Roles {
+        Roles(unsafe { sys::transcribe_model_roles(self.inner.ptr) })
+    }
+
+    /// The model's immutable ASR capabilities. Errors with
+    /// [`Error::UnsupportedRole`] unless the model serves [`Role::Asr`](crate::Role).
+    pub fn capabilities(&self) -> Result<Capabilities> {
         let mut caps: sys::transcribe_capabilities = unsafe { std::mem::zeroed() };
         unsafe { sys::transcribe_capabilities_init(&mut caps) };
-        // A NULL/struct-size fault cannot happen here (we own a valid model
-        // and an init'd struct), so a non-OK status leaves zeroed defaults.
-        let _ = unsafe { sys::transcribe_model_get_capabilities(self.inner.ptr, &mut caps) };
+        check(
+            unsafe { sys::transcribe_model_get_capabilities(self.inner.ptr, &mut caps) },
+            "capabilities",
+        )?;
 
         let mut languages = Vec::new();
         if !caps.languages.is_null() && caps.n_languages > 0 {
@@ -180,7 +236,7 @@ impl Model {
             }
         }
 
-        Capabilities {
+        Ok(Capabilities {
             native_sample_rate: caps.native_sample_rate,
             languages,
             translate_target_languages,
@@ -190,7 +246,7 @@ impl Model {
             supports_streaming: caps.supports_streaming,
             supports_spec_decode: caps.supports_spec_decode,
             max_audio_ms: caps.max_audio_ms,
-        }
+        })
     }
 
     /// Probe a yes/no feature.

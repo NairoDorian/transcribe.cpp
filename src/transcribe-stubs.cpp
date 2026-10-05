@@ -122,13 +122,13 @@ TRANSCRIBE_API void transcribe_parakeet_buffered_stream_ext_init(struct transcri
 #if !defined(TRANSCRIBE_ENABLE_ARCH_SORTFORMER)
 extern "C" {
 
-TRANSCRIBE_API void transcribe_sortformer_stream_ext_init(struct transcribe_sortformer_stream_ext * p) {
+TRANSCRIBE_API void transcribe_sortformer_diarize_ext_init(struct transcribe_sortformer_diarize_ext * p) {
     if (p == nullptr) {
         return;
     }
     std::memset(p, 0, sizeof(*p));
     p->ext.size = sizeof(*p);
-    p->ext.kind = TRANSCRIBE_EXT_KIND_SORTFORMER_STREAM;
+    p->ext.kind = TRANSCRIBE_EXT_KIND_SORTFORMER_DIARIZE;
     p->preset   = TRANSCRIBE_SORTFORMER_PRESET_DEFAULT;
 }
 

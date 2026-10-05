@@ -134,6 +134,7 @@ set(TRANSCRIBE_SRCS
 # be enabled alongside it.
 set(_srcs_parakeet
     arch/parakeet/model.cpp
+    arch/parakeet/longform.cpp
     arch/parakeet/multitalker.cpp
     arch/parakeet/capabilities.cpp
     arch/parakeet/weights.cpp

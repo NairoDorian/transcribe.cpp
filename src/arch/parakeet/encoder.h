@@ -130,9 +130,11 @@ struct EncoderBuild {
     // (1 on valid time frames, 0 on padded). Null unless variable-length
     // batching on a non-causal pre-encode. The driver fills them from the
     // per-utterance valid length downsampled to each stage.
-    ggml_tensor * pre_encode_mask_s1_in = nullptr;  // after relu0
-    ggml_tensor * pre_encode_mask_s2_in = nullptr;  // after relu3
-    ggml_tensor * pre_encode_mask_s3_in = nullptr;  // after relu6
+    ggml_tensor * pre_encode_mask_s1_in   = nullptr;  // after relu0
+    ggml_tensor * pre_encode_mask_s2_in   = nullptr;  // after relu3
+    ggml_tensor * pre_encode_mask_s3_in   = nullptr;  // after relu6
+    ggml_tensor * pre_encode_extent_s2_in = nullptr;  // kestrel masking, batched (see PreEncodeValidMasks)
+    ggml_tensor * pre_encode_extent_s3_in = nullptr;
 
     // Multitalker speaker-kernel supervision inputs, ne=[1, T_enc] f32
     // each. Null unless build_encoder_graph was called with
@@ -226,6 +228,28 @@ EncoderBuild build_encoder_graph(ggml_context *                     compute_ctx,
                                  // EncoderBuild::mt_keep_in) before injection and
                                  // the conformer blocks. 0 = no gather.
                                  int                                mt_keep_frames  = 0);
+
+// Speech-head graph: pre_encode subsampler, then the VAD head. One utterance
+// (a scan block); the driver fills the subsampler masks like the encoder's.
+struct VadBuild {
+    ggml_tensor * mel_in          = nullptr;  // ne=[T_mel, n_mels, 1, 1]
+    ggml_tensor * pe_mask_s1_in   = nullptr;
+    ggml_tensor * pe_mask_s2_in   = nullptr;
+    ggml_tensor * pe_mask_s3_in   = nullptr;
+    ggml_tensor * pe_extent_s2_in = nullptr;  // single utterance: filled all ones
+    ggml_tensor * pe_extent_s3_in = nullptr;
+    ggml_tensor * pre_encode_out  = nullptr;  // ne=[d_model, T]
+    ggml_tensor * proj_out        = nullptr;  // ne=[H, T], after SiLU
+    ggml_tensor * ctx_out         = nullptr;  // ne=[H, T], after SiLU
+    ggml_tensor * prob            = nullptr;  // ne=[1, T], sigmoid
+    ggml_cgraph * graph           = nullptr;
+};
+
+VadBuild build_vad_graph(ggml_context *          compute_ctx,
+                         const ParakeetWeights & w,
+                         const ParakeetHParams & hp,
+                         int                     n_mel_frames,
+                         const char *            backend_name);
 
 // Per-layer streaming cache I/O for the streaming encoder graph.
 // The inputs are persistent backend tensors (allocated outside the

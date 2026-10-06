@@ -184,9 +184,11 @@ fi
 STAGE_NAME="$(basename "$STAGE_DIR")"
 for patch in "${PATCHES[@]}"; do
     echo "sync-ggml: applying patches/ggml/$(basename "$patch")"
-    git -C "$REPO_ROOT" apply --check --directory="$STAGE_NAME" "$patch" \
+    # The staged archive is canonical LF, including shaders without eol rules.
+    # Do not inherit Windows autocrlf when git apply writes patched files.
+    git -C "$REPO_ROOT" -c core.autocrlf=false -c core.eol=lf apply --check --directory="$STAGE_NAME" "$patch" \
         || die "patch does not apply: patches/ggml/$(basename "$patch")"
-    git -C "$REPO_ROOT" apply --directory="$STAGE_NAME" "$patch"
+    git -C "$REPO_ROOT" -c core.autocrlf=false -c core.eol=lf apply --directory="$STAGE_NAME" "$patch"
 done
 
 # ---- regenerate UPSTREAM ----------------------------------------------------

@@ -68,7 +68,7 @@ CUDA_TOOLKIT = "cuda-toolkit-12-9"
 
 #: sccache: static musl binary (runs on any glibc, unlike EPEL8's ccache 3.x
 #: which predates CUDA support). Handles nvcc.
-SCCACHE_VERSION = "v0.10.0"
+SCCACHE_VERSION = "v0.18.0"
 SCCACHE_URL = (
     "https://github.com/mozilla/sccache/releases/download/"
     f"{SCCACHE_VERSION}/sccache-{SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz"

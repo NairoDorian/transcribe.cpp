@@ -1,11 +1,13 @@
 repo: https://github.com/ggml-org/ggml.git
-sha:  353b63b439f27ab2cc19dac97ab1681ba6d2d084
-version: 0.25.3
-date: 2026-09-24
+sha:  d7cb574130e6f01ad25b3289685489200febcd74
+version: 0.26.0
+date: 2026-10-05
 patches:
   patches/ggml/0001-fix-threadpool-oversubscription.patch
-  patches/ggml/0002-export-cuda-pool-trim-and-graph-evict.patch
   patches/ggml/0002-backend-reg-filter.patch
+  patches/ggml/0002-export-cuda-pool-trim-and-graph-evict.patch
+  patches/ggml/0003-tq1_g128-ternary.patch
+  patches/ggml/0004-cuda-decode-kv-trim-and-mmvq-rows.patch
 
 The `version` and `date` lines are conveniences for humans reviewing a pin bump:
 they are read from the vendored ggml/CMakeLists.txt and the upstream commit

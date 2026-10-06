@@ -33,8 +33,8 @@ app = modal.App("transcribe-multitalker-cpwer")
 
 image = (
     modal.Image.from_registry(
-        "nvidia/cuda:12.4.1-runtime-ubuntu22.04",
-        add_python="3.11",
+        "nvidia/cuda:13.4.2-runtime-ubuntu24.04",
+        add_python="3.12",
     )
     .apt_install("git", "ca-certificates", "ffmpeg", "libsndfile1", "build-essential")
     .pip_install("Cython", "packaging", "huggingface_hub")

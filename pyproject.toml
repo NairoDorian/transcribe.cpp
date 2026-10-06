@@ -16,7 +16,7 @@
 # (the binding is ctypes), only the native artifact directory.
 
 [build-system]
-requires = ["scikit-build-core>=1.0.3"]
+requires = ["scikit-build-core>=1.1.1"]
 build-backend = "scikit_build_core.build"
 
 [project]
@@ -76,8 +76,8 @@ metadata.version.input = "include/transcribe.h"
 metadata.version.regex = '(?sx) TRANSCRIBE_VERSION_MAJOR \s+ (?P<major>\d+) .*? TRANSCRIBE_VERSION_MINOR \s+ (?P<minor>\d+) .*? TRANSCRIBE_VERSION_PATCH \s+ (?P<patch>\d+)'
 metadata.version.result = "{major}.{minor}.{patch}"
 
-cmake.version = ">=3.21"
-ninja.version = ">=1.11"
+cmake.version = ">=4.4.4"
+ninja.version = ">=1.13.2"
 
 # ctypes binding: no compiled Python, one wheel per platform spans all CPythons.
 wheel.py-api = "py3"
@@ -203,7 +203,7 @@ cmake.args = [
 [tool.cibuildwheel]
 build = "cp312-*"
 skip = "*-musllinux*"
-test-requires = ["pytest>=7", "numpy", "huggingface_hub"]
+test-requires = ["pytest>=9.1.1", "numpy", "huggingface_hub"]
 test-command = "python {project}/scripts/ci/wheel_smoke.py {project}"
 
 [tool.cibuildwheel.linux]
@@ -255,6 +255,7 @@ before-build = "pip install delvewheel"
 repair-wheel-command = "delvewheel repair --exclude vulkan-1.dll -w {dest_dir} {wheel}"
 
 [tool.uv]
+prerelease = "allow"
 # Keep `uv run <script>` at the repo root from syncing (= compiling) this
 # package: repo scripts run via PEP-723 inline metadata, and uv must never
 # trigger a surprise native build. Wheel/sdist builds go through the build

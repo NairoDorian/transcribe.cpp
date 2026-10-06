@@ -2,13 +2,39 @@
 name = "transcribe-canary-env"
 version = "0.1.0"
 description = "Python env for Canary multitask AED reference dumps via NeMo (EncDecMultiTaskModel)"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.12,<3.13"
 dependencies = [
-    "torch>=2.2",
-    "nemo_toolkit[asr]>=2.0",
-    "huggingface-hub>=0.20",
-    "soundfile>=0.12",
+    "transformers>=5.19.0",
+    "triton>=3.8 ; sys_platform == 'linux'",
+    "torch>=2.15.0.dev0",
+    "nemo-toolkit[asr]>=3.0.0",
+    "huggingface-hub>=0.30",
+    "soundfile>=0.14.0",
     "numpy>=1.26",
-    "sentencepiece>=0.2",
-    "gguf>=0.10.0",
+    "sentencepiece>=0.2.2",
+    "gguf>=0.19.0",
 ]
+
+# Updated reference environments require Python 3.12 for NumPy/Librosa.
+# CUDA 13.4 nightly packages share a build date through the lockfile.
+
+[[tool.uv.index]]
+name = "pytorch-nightly-cu134"
+url = "https://download.pytorch.org/whl/nightly/cu134"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-nightly-cpu"
+url = "https://download.pytorch.org/whl/nightly/cpu"
+explicit = true
+
+[tool.uv.sources]
+triton = { index = "pytorch-nightly-cu134", marker = "sys_platform == 'linux'" }
+torch = [
+    { index = "pytorch-nightly-cu134", marker = "sys_platform != 'darwin'" },
+    { index = "pytorch-nightly-cpu", marker = "sys_platform == 'darwin'" },
+]
+
+[tool.uv]
+environments = ["sys_platform == 'darwin'", "sys_platform == 'linux'", "sys_platform == 'win32'"]
+prerelease = "allow"

@@ -52,9 +52,9 @@ jobs:
     # never do, because the FFI surface (_generated.ts) is committed.
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.1.0 # for the python gate scripts
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0 # for the python gate scripts
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: 24
       - name: Install libclang (FFI generator)
@@ -108,15 +108,15 @@ jobs:
       # forks (where fetch-canary skips and the model tests skip cleanly).
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: 24
-      - uses: denoland/setup-deno@v2
+      - uses: denoland/setup-deno@v2.0.5
         if: runner.os != 'Windows'   # the Deno smoke below is non-Windows only
         with:
           deno-version: v2.x
-      - uses: astral-sh/setup-uv@v10.1.0 # fetch-canary fetches via uvx
+      - uses: astral-sh/setup-uv@v10.2.0 # fetch-canary fetches via uvx
       - name: Install build deps (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build ccache
@@ -124,7 +124,7 @@ jobs:
       # Ninja generator (else CMake silently falls back to the image's MinGW gcc).
       - name: Set up MSVC (cl.exe on PATH for the Ninja generator)
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
           arch: x64
       - name: Install build deps (Windows)
@@ -142,7 +142,7 @@ jobs:
         run: echo "CPU_SIG=$(grep -m1 '^flags' /proc/cpuinfo | sha256sum | cut -c1-8)" >> "$GITHUB_ENV"
       - name: ccache (native source build)
         if: runner.os == 'Linux'
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         with:
           path: ~/.cache/ccache
           key: ccache-ts-build-${{ matrix.label }}-${{ env.CPU_SIG }}-${{ github.sha }}

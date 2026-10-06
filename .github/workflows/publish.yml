@@ -58,12 +58,12 @@ jobs:
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: 24
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: astral-sh/setup-uv@v10.2.0
       - name: Install preflight deps (libclang for cargo xtask bindgen)
         run: sudo apt-get update && sudo apt-get install -y clang libclang-dev
       - name: Assert the tag / dispatch version equals the source tree
@@ -121,8 +121,8 @@ jobs:
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
       - name: Validate and build catalog.db
         run: |
           set -euo pipefail
@@ -132,7 +132,7 @@ jobs:
           uv run scripts/catalog/db.py --out release-catalog/catalog.db
           test "$(sqlite3 release-catalog/catalog.db 'PRAGMA integrity_check')" = "ok"
           (cd release-catalog && sha256sum catalog.db > catalog.db.sha256)
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: catalog-db
           path: release-catalog/
@@ -162,7 +162,7 @@ jobs:
     needs: [release-preflight]
     runs-on: blacksmith-6vcpu-macos-15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - run: brew install ninja
       - name: Build the full xcframework
         run: scripts/ci/build_xcframework.sh
@@ -176,7 +176,7 @@ jobs:
           echo "binaryTarget(url: .../TranscribeCpp.xcframework.zip,"
           echo "             checksum: \"${{ steps.pkg.outputs.checksum }}\")"
       - name: Stash the xcframework as an artifact (attached to the Release in release-assets)
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: swift-xcframework
           path: bindings/swift/build-apple/TranscribeCpp.xcframework.zip
@@ -194,9 +194,9 @@ jobs:
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@stable
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: astral-sh/setup-uv@v10.2.0
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
       - name: Dry-run transcribe-cpp-sys (full verify build, as cargo would publish it)
@@ -229,7 +229,7 @@ jobs:
     permissions:
       id-token: write  # OIDC for trusted publishing
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.1
         with:
           pattern: dist-*
           merge-multiple: true
@@ -251,11 +251,11 @@ jobs:
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.1
         with:
           name: dist-api
           path: dist-api
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.1
         with:
           # samples/jfk.wav (+ the degradation script), uploaded by api-wheel;
           # files keep their repo-relative paths inside the artifact.
@@ -310,9 +310,9 @@ jobs:
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@stable
-      - uses: astral-sh/setup-uv@v10.1.0  # fetch-canary + the packed-smoke script
+      - uses: astral-sh/setup-uv@v10.2.0  # fetch-canary + the packed-smoke script
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
       - name: Dry-run transcribe-cpp-sys (full verify build, as cargo would publish it)
@@ -338,8 +338,8 @@ jobs:
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
       - run: brew install ninja
       - name: Build the full xcframework (macOS + iOS device + iOS simulator)
         run: scripts/ci/build_xcframework.sh
@@ -362,11 +362,11 @@ jobs:
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: 24
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: astral-sh/setup-uv@v10.2.0
       - run: command -v ninja >/dev/null || brew install ninja
       - name: Build + install a shared libtranscribe (the native-bundle twin)
         run: |
@@ -437,14 +437,14 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.1
         with:
           pattern: dist-*
           merge-multiple: true
           path: dist
       - name: Add cu12 wheels (only once the PyPI size request is granted)
         if: vars.CU12_ON_PYPI == 'true'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.1
         with:
           pattern: cuda-dist-*
           merge-multiple: true
@@ -469,7 +469,7 @@ jobs:
     env:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@stable
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
@@ -489,11 +489,11 @@ jobs:
     needs: [release-preflight, wheels]
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: 24
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.1
         with:
           pattern: native-*
           merge-multiple: true
@@ -541,7 +541,7 @@ jobs:
             (cd "$d" && npm pack --pack-destination /tmp/ts-tarballs/platform)
           done
           npm pack --pack-destination /tmp/ts-tarballs/api
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: ts-tarballs
           path: /tmp/ts-tarballs
@@ -558,11 +558,11 @@ jobs:
     runs-on: blacksmith-2vcpu-ubuntu-2404
     environment: npm
     steps:
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: 24
           registry-url: "https://registry.npmjs.org"
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.1
         with:
           name: ts-tarballs
           path: ts-tarballs
@@ -594,7 +594,7 @@ jobs:
     permissions:
       contents: write  # upload release assets
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.1
         with:
           pattern: cuda-dist-*
           merge-multiple: true
@@ -603,17 +603,17 @@ jobs:
       # python-wheels.yml). On the release they become the distribution home
       # for non-PyPI ecosystems: npm platform packages and prebuilt-Rust
       # fetch these exact bytes by tag instead of rebuilding.
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.1
         with:
           pattern: native-*
           merge-multiple: true
           path: native-bundles
       # The Swift xcframework zip produced by swift-build in the validation phase.
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.1
         with:
           name: swift-xcframework
           path: swift
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.1
         with:
           name: catalog-db
           path: catalog

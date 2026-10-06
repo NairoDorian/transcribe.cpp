@@ -15,11 +15,11 @@ set -euo pipefail
 
 # Pinned clang-format. Bump here and reformat the tree in the SAME commit.
 # Fetched through uvx so the result never depends on a locally installed binary.
-CF_VERSION="22.1.5"
+CF_VERSION="23.1.2"
 
 # Paths we never format: vendored upstream trees, and files copied verbatim from
 # upstream (kept byte-identical so future re-syncs stay clean).
-EXCLUDE_RE='^(ggml/|src/third_party/|src/transcribe-unicode-data\.cpp$)'
+EXCLUDE_RE='^(ggml/|src/third_party/|src/transcribe-unicode-data\.cpp$|examples/common/dr_wav\.h$)'
 
 cd "$(git rev-parse --show-toplevel)"
 

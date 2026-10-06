@@ -18,8 +18,8 @@
 
 set -euo pipefail
 
-VULKAN_SDK_TAG="vulkan-sdk-1.4.350.0"   # Vulkan-Headers + SPIRV-Headers + Vulkan-Loader
-SHADERC_TAG="v2026.2"                   # google/shaderc (glslc)
+VULKAN_SDK_TAG="vulkan-sdk-1.4.363.0"   # Vulkan-Headers + SPIRV-Headers + Vulkan-Loader
+SHADERC_TAG="v2026.4"                   # google/shaderc (glslc)
 
 PREFIX=/usr/local
 CACHE_ROOT="${VK_TOOLCHAIN_CACHE:-}"

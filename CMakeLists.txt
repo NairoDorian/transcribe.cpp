@@ -422,6 +422,11 @@ set(GGML_BLAS OFF CACHE BOOL "" FORCE)
 # overhead dominates; graphs measured +15% decode on R2T2 (RTX 4070). ggml
 # defaults them OFF ("llama.cpp only"). Not FORCE: -DGGML_CUDA_GRAPHS=OFF wins.
 set(GGML_CUDA_GRAPHS ON CACHE BOOL "ggml: use CUDA graphs")
+if(TRANSCRIBE_CUDA)
+    # ggml v0.26.0 can select CCCL independently of the CUDA toolkit.
+    # Keep the tested upstream release; -DGGML_CUDA_CCCL_VERSION= uses bundled headers.
+    set(GGML_CUDA_CCCL_VERSION "v3.4.3" CACHE STRING "ggml: NVIDIA CCCL release (empty uses toolkit headers)")
+endif()
 
 # HIP needs position-independent code even in the default static posture.
 # hipcc does not pick up the distro toolchain's default-PIE codegen the way the

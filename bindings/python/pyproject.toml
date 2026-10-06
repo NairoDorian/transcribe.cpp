@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.32.4"]
 build-backend = "hatchling.build"
 
 [project]
@@ -46,7 +46,7 @@ cu12 = ["transcribe-cpp-native-cu12==0.3.1.*"]
 # Test-only deps. Run with: uv run --extra test pytest (from bindings/python).
 # numpy is here so the numpy PCM-input tests run in every lane instead of
 # silently skipping wherever numpy happens to be absent.
-test = ["pytest>=7", "numpy"]
+test = ["pytest>=9.1.1", "numpy"]
 
 # The fork, not upstream — see the same block in the repo-root pyproject.toml.
 [project.urls]
@@ -58,6 +58,7 @@ Issues = "https://github.com/NairoDorian/transcribe.cpp/issues"
 packages = ["src/transcribe_cpp"]
 
 [tool.uv]
+prerelease = "allow"
 # Dev/CI environments load a locally built library (TRANSCRIBE_LIBRARY or the
 # build-tree fallback) — they must not pull the native provider from an index
 # (it isn't published until release, and a prebuilt artifact would shadow the

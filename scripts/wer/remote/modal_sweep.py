@@ -117,8 +117,8 @@ def _build_dir(gpu_id: str) -> str:
 
 image = (
     modal.Image.from_registry(
-        "nvidia/cuda:12.4.1-devel-ubuntu22.04",
-        add_python="3.11",
+        "nvidia/cuda:13.4.2-devel-ubuntu24.04",
+        add_python="3.12",
     )
     .apt_install(
         "build-essential", "cmake", "ninja-build", "git", "ca-certificates",
@@ -155,8 +155,8 @@ image = (
 # still dropping the heavy vendored local .venv (885 MB - 1.4 GB per family).
 ref_image = (
     modal.Image.from_registry(
-        "nvidia/cuda:12.4.1-runtime-ubuntu22.04",
-        add_python="3.11",
+        "nvidia/cuda:13.4.2-runtime-ubuntu24.04",
+        add_python="3.12",
     )
     .apt_install("git", "ca-certificates", "ffmpeg", "libsndfile1", "curl",
                  "build-essential")

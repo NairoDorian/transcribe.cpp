@@ -33,7 +33,7 @@ runs:
   steps:
     - name: Canary model cache (avoid HF rate limits — 429s were real)
       if: inputs.hf-token != ''
-      uses: actions/cache@v6
+      uses: actions/cache@v6.1.0
       with:
         path: canary
         key: canary-models-v4

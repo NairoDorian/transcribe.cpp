@@ -53,14 +53,14 @@ jobs:
       # LunarG prunes old SDK downloads — when bumping, verify the URL exists.
       # Keep in lockstep with wheel-windows (python-wheels.yml) and
       # rust-windows-deep-path (rust-ci.yml).
-      VULKAN_VERSION: "1.4.350.0"
+      VULKAN_VERSION: "1.4.363.0"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       # vcvars for the whole job: nvcc needs cl.exe, and the Ninja generator
       # needs the MSVC environment (same reasoning as wheel-windows).
       # (still node20 upstream — no node24 release yet; runners force node24 from
       # 2026-06-16, which is fine for this env-setup action)
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@v1.13.0
       - name: Install Vulkan SDK ${{ env.VULKAN_VERSION }} (glslc for the ggml-vulkan module)
         run: |
           curl.exe -o "$env:RUNNER_TEMP\vulkan_sdk.exe" -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkan_sdk.exe"
@@ -75,12 +75,12 @@ jobs:
         # tag/dispatch-rare; a fresh network install per run is fine.
         uses: Jimver/cuda-toolkit@v0.2.36
         with:
-          cuda: "12.9.0"
+          cuda: "12.9.1"
           method: network
           use-github-cache: false
           use-local-cache: false
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: astral-sh/setup-uv@v10.2.0
       - uses: ./.github/actions/fetch-canary
         with:
           hf-token: ${{ secrets.HF_TOKEN }}
@@ -111,7 +111,7 @@ jobs:
           smoke-venv/Scripts/python scripts/ci/wheel_smoke.py .
       # Named OUTSIDE the dist-* pattern, like cuda-dist-linux-x86_64: the
       # co-import job merges dist-* and must never pick up a cu12 provider.
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: cuda-dist-windows-x86_64
           path: wheelhouse-cu12/*.whl
@@ -125,7 +125,7 @@ jobs:
         run: |
           python scripts/ci/extract_native_bundle.py --wheel-dir wheelhouse-cu12 `
             --tuple windows-x86_64-cuda --out bundles
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: native-windows-x86_64-cuda
           path: bundles/*.tar.gz

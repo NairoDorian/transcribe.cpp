@@ -26,7 +26,7 @@
 # runs in the same flow.
 
 [build-system]
-requires = ["scikit-build-core>=1.0.3"]
+requires = ["scikit-build-core>=1.1.1"]
 build-backend = "scikit_build_core.build"
 
 [project]
@@ -56,8 +56,8 @@ classifiers = [
 # The NVIDIA runtime wheels the ggml-cuda module links against. The provider's
 # prepare hook loads these into the process before any backend module loads.
 dependencies = [
-  "nvidia-cuda-runtime-cu12>=12.1",
-  "nvidia-cublas-cu12>=12.1",
+  "nvidia-cuda-runtime-cu12>=12.9.79",
+  "nvidia-cublas-cu12>=12.9.2.10",
 ]
 
 # The fork, not upstream — see the same block in the repo-root pyproject.toml.
@@ -78,8 +78,8 @@ metadata.version.result = "{major}.{minor}.{patch}"
 
 # The C++ project lives at the repo root; this package builds from a checkout.
 cmake.source-dir = "../.."
-cmake.version = ">=3.21"
-ninja.version = ">=1.11"
+cmake.version = ">=4.4.4"
+ninja.version = ">=1.13.2"
 
 wheel.py-api = "py3"
 wheel.install-dir = "transcribe_cpp_native_cu12"

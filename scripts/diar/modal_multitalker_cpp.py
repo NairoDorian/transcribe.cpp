@@ -40,7 +40,7 @@ app = modal.App("transcribe-multitalker-cpp")
 vol = modal.Volume.from_name("transcribe-ami-cpp")
 
 image = (
-    modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.11")
+    modal.Image.from_registry("nvidia/cuda:13.4.2-devel-ubuntu24.04", add_python="3.12")
     .apt_install("build-essential", "git", "ninja-build")
     .pip_install("cmake")
     .add_local_file(REPO / "CMakeLists.txt", "/repo/CMakeLists.txt", copy=True)

@@ -56,7 +56,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  CIBW_PIN: "cibuildwheel>=4,<5"
+  CIBW_PIN: "cibuildwheel>=4.3.0,<5"
 
 jobs:
   wheel-linux:
@@ -89,10 +89,10 @@ jobs:
       CIBW_ARCHS_LINUX: ${{ matrix.cibw-archs }}
       CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_28
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
       - name: Cache the source-built Vulkan toolchain
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         with:
           path: vk-toolchain-cache
           key: vk-toolchain-${{ matrix.arch }}-${{ hashFiles('scripts/ci/manylinux-vulkan-toolchain.sh') }}
@@ -108,7 +108,7 @@ jobs:
         run: |
           mkdir -p vk-toolchain-cache
           uvx --from "$CIBW_PIN" cibuildwheel --output-dir wheelhouse
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: dist-native-linux-${{ matrix.arch }}
           path: wheelhouse/*.whl
@@ -120,7 +120,7 @@ jobs:
         run: |
           python3 scripts/ci/extract_native_bundle.py --wheel-dir wheelhouse \
             --tuple linux-${{ matrix.arch }}-cpu-vulkan --out bundles
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: native-linux-${{ matrix.arch }}-cpu-vulkan
           path: bundles/*.tar.gz
@@ -144,14 +144,14 @@ jobs:
       # Host-side copy of the lane for wheel_smoke's declared-backends assert.
       TRANSCRIBE_WHEEL_LANE: metal
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
       - uses: ./.github/actions/fetch-canary
         with:
           hf-token: ${{ secrets.HF_TOKEN }}
       - name: Build, repair, and test the wheel on real Metal (cibuildwheel)
         run: uvx --from "$CIBW_PIN" cibuildwheel --output-dir wheelhouse
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: dist-native-macos-arm64
           path: wheelhouse/*.whl
@@ -159,7 +159,7 @@ jobs:
         run: |
           python3 scripts/ci/extract_native_bundle.py --wheel-dir wheelhouse \
             --tuple macos-arm64-metal --out bundles
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: native-macos-arm64-metal
           path: bundles/*.tar.gz
@@ -192,14 +192,14 @@ jobs:
         CC=/usr/bin/clang
         CXX=/usr/bin/clang++
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
       - uses: ./.github/actions/fetch-canary
         with:
           hf-token: ${{ secrets.HF_TOKEN }}
       - name: Build, repair, and test the CPU-only wheel (cibuildwheel)
         run: uvx --from "$CIBW_PIN" cibuildwheel --output-dir wheelhouse
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: dist-native-macos-x86_64
           path: wheelhouse/*.whl
@@ -207,7 +207,7 @@ jobs:
         run: |
           python3 scripts/ci/extract_native_bundle.py --wheel-dir wheelhouse \
             --tuple macos-x86_64-cpu --out bundles
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: native-macos-x86_64-cpu
           path: bundles/*.tar.gz
@@ -228,12 +228,12 @@ jobs:
       TRANSCRIBE_WHEEL_LANE: cpu-vulkan
       # LunarG prunes old SDK downloads — when bumping, verify the URL exists.
       # Keep in lockstep with cuda-windows.yml and rust-windows-deep-path (rust-ci.yml).
-      VULKAN_VERSION: "1.4.350.0"
+      VULKAN_VERSION: "1.4.363.0"
       # The hf CLI prints ✓ marks; Windows' default cp1252 console codec
       # chokes on them (charmap codec error). Force UTF-8 for all Python.
       PYTHONUTF8: "1"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       # vcvars for the whole job: the Ninja generator (CMAKE_GENERATOR in
       # pyproject [tool.cibuildwheel.windows]) needs cl.exe on PATH — without
       # it CMake silently picks the runner image's MinGW gcc (observed:
@@ -241,10 +241,10 @@ jobs:
       # ~3x slower on this lane.
       # (still node20 upstream — no node24 release yet; runners force node24 from
       # 2026-06-16, which is fine for this env-setup action)
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
           arch: x64
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: astral-sh/setup-uv@v10.2.0
       - name: Install Vulkan SDK ${{ env.VULKAN_VERSION }}
         run: |
           curl.exe -o "$env:RUNNER_TEMP\vulkan_sdk.exe" -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkan_sdk.exe"
@@ -256,7 +256,7 @@ jobs:
           hf-token: ${{ secrets.HF_TOKEN }}
       - name: Build, repair, and test the wheel (cibuildwheel)
         run: uvx --from "$env:CIBW_PIN" cibuildwheel --output-dir wheelhouse
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: dist-native-windows-amd64
           path: wheelhouse/*.whl
@@ -264,7 +264,7 @@ jobs:
         run: |
           python scripts/ci/extract_native_bundle.py --wheel-dir wheelhouse `
             --tuple windows-x86_64-cpu-vulkan --out bundles
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: native-windows-x86_64-cpu-vulkan
           path: bundles/*.tar.gz
@@ -276,8 +276,8 @@ jobs:
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
       - uses: ./.github/actions/fetch-canary
         with:
           hf-token: ${{ secrets.HF_TOKEN }}
@@ -315,7 +315,7 @@ jobs:
           ./sdist-venv/bin/pip install dist/*.tar.gz
           ./sdist-venv/bin/pip install pytest numpy huggingface_hub
           ./sdist-venv/bin/python scripts/ci/wheel_smoke.py "$PWD"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: dist-sdist
           path: dist/*.tar.gz
@@ -324,20 +324,20 @@ jobs:
     runs-on: [self-hosted, Linux, X64, hetzner]
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
       - name: Build transcribe-cpp (pure wheel + sdist)
         run: |
           cd bindings/python
           rm -rf dist && uv build
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: dist-api
           path: bindings/python/dist/*
       # Assets for the checkout-free jobs (clean-install, smoke-testpypi):
       # test audio + the shared degradation-check script. Paths inside the
       # artifact keep their repo-relative layout (samples/..., scripts/ci/...).
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: smoke-assets
           path: |
@@ -363,8 +363,8 @@ jobs:
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
       - name: Build, repair, packaging-smoke, and T4 runtime smoke (Modal)
         if: env.MODAL_TOKEN_ID != ''
         run: uvx --from modal modal run scripts/ci/modal_cuda_build.py
@@ -380,7 +380,7 @@ jobs:
       # Named OUTSIDE the dist-* pattern on purpose: co-import merges dist-*
       # and must not pick up the cu12 provider (it would outrank the default
       # provider and change what that job tests).
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.1
         if: env.MODAL_TOKEN_ID != ''
         with:
           name: cuda-dist-linux-x86_64
@@ -399,7 +399,7 @@ jobs:
         run: |
           python3 scripts/ci/extract_native_bundle.py --wheel-dir wheelhouse-cu12 \
             --tuple linux-x86_64-cuda --out bundles
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.1
         if: env.MODAL_TOKEN_ID != ''
         with:
           name: native-linux-x86_64-cuda
@@ -429,21 +429,21 @@ jobs:
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.1
         with:
           name: dist-native-linux-x86_64
           path: wheelhouse
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.1
         with:
           name: dist-api
           path: wheelhouse
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.1
         with:
           name: smoke-assets
           path: assets
       - name: Canary model cache (avoid HF rate limits)
         if: env.HF_TOKEN != ''
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         with:
           path: canary
           key: canary-models-v1
@@ -498,21 +498,21 @@ jobs:
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.1
         with:
           name: native-linux-x86_64-cpu-vulkan
           path: bundles
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.1
         with:
           name: dist-api
           path: dist-api
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.1
         with:
           name: smoke-assets
           path: assets
       - name: Canary model cache (avoid HF rate limits)
         if: env.HF_TOKEN != ''
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         with:
           path: canary
           key: canary-models-v1
@@ -570,9 +570,9 @@ jobs:
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.1.0
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: actions/download-artifact@v8.0.1
         with:
           pattern: dist-*
           merge-multiple: true
@@ -644,15 +644,15 @@ jobs:
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.1.0  # for fetch-canary's uvx
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0  # for fetch-canary's uvx
       # setup-python's macOS downloads are built for GitHub's hosted images
       # (non-relocatable, hardcoded /Users/runner prefix) and cannot install
       # on a self-hosted runner under a different user (observed:
       # "mkdir: /Users/runner: Permission denied"). On the mini, use the
       # python.org universal2 CPython already installed for wheel-macos,
       # isolated in a fresh venv so pip installs never touch the system copy.
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@v7.0.0
         if: matrix.label != 'macos-arm64'
         with:
           python-version: "3.12"
@@ -662,7 +662,7 @@ jobs:
           /Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12 \
             -m venv "$RUNNER_TEMP/ci-venv"
           echo "$RUNNER_TEMP/ci-venv/bin" >> "$GITHUB_PATH"
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.1
         with:
           pattern: dist-*
           merge-multiple: true

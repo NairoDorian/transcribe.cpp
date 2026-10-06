@@ -2,7 +2,7 @@
 #
 # Without this file a Windows checkout with Git's default core.autocrlf=true
 # materializes the whole tree with CRLF terminators. The pinned formatter
-# (scripts/ci/clang-format.sh, clang-format 22.1.5) expects the LF form that is
+# (scripts/ci/clang-format.sh, clang-format 23.1.2) expects the LF form that is
 # stored in the index, so it reports every line of every file as unformatted —
 # `--check` fails on 285 files a Windows contributor never touched, and
 # `--fix` cannot converge. Pinning eol=lf for the formatted sources keeps the

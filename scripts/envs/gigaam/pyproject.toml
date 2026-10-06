@@ -2,8 +2,9 @@
 name = "transcribe-gigaam-env"
 version = "0.1.0"
 description = "Python env for GigaAM reference dumps and conversion (author repo)"
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.12,<3.13"
 dependencies = [
+    "triton>=3.8 ; sys_platform == 'linux'",
     # Pin to a specific GitHub commit on salute-developers/GigaAM main.
     # Rationale: the PyPI release (gigaam==0.1.0, 2024) predates GigaAM-v3
     # and only registers v1/v2 model names (`_MODEL_HASHES` is missing
@@ -14,19 +15,43 @@ dependencies = [
     # Commit chosen: 6e4b027c6fb554e09e8b9059b757a175295ab879 (main, 2026-04-15)
     # — "Fine-tuning, batched rnnt, fp16 onnx #67". First commit on main
     # that ships all five v3 variants in `_MODEL_HASHES`.
-    "gigaam[torch] @ git+https://github.com/salute-developers/GigaAM@6e4b027c6fb554e09e8b9059b757a175295ab879",
+    "gigaam[torch] @ git+https://github.com/salute-developers/GigaAM@7447938d791c4f3e643386ee22c33777004293a5",
     # gigaam's `requires` declares `torch>=2.6` / `torchaudio>=2.6` at
     # HEAD; let resolution pick the latest compatible wheels for the
     # local Python.
     # Audio I/O. gigaam uses ffmpeg subprocess for load_audio; the
     # dumper reads with soundfile directly so the bytes match what
     # the C++ port will read at convert time.
-    "soundfile>=0.12",
+    "soundfile>=0.14.0",
     # numpy is unpinned in gigaam HEAD; clamp to the modern range our
     # ref_dump helper expects.
-    "numpy>=1.26,<3",
+    "numpy>=1.26",
     # HF hub for revision-pinned downloads when needed.
     "huggingface-hub>=0.30",
     # Conversion-side helpers (Stage 3 reuses this env).
-    "gguf>=0.10",
+    "gguf>=0.19.0",
 ]
+
+# Updated reference environments require Python 3.12 for NumPy/Librosa.
+# CUDA 13.4 nightly packages share a build date through the lockfile.
+
+[[tool.uv.index]]
+name = "pytorch-nightly-cu134"
+url = "https://download.pytorch.org/whl/nightly/cu134"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-nightly-cpu"
+url = "https://download.pytorch.org/whl/nightly/cpu"
+explicit = true
+
+[tool.uv.sources]
+triton = { index = "pytorch-nightly-cu134", marker = "sys_platform == 'linux'" }
+torch = [
+    { index = "pytorch-nightly-cu134", marker = "sys_platform != 'darwin'" },
+    { index = "pytorch-nightly-cpu", marker = "sys_platform == 'darwin'" },
+]
+
+[tool.uv]
+environments = ["sys_platform == 'darwin'", "sys_platform == 'linux'", "sys_platform == 'win32'"]
+prerelease = "allow"

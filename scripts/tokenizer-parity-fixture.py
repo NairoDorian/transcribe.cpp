@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11,<3.13"
-# dependencies = ["transformers==4.57.6"]
+# dependencies = ["transformers==5.19.0"]
 # ///
 """
 Emit expected (text, token_ids) pairs for the Qwen3-ASR byte-level BPE

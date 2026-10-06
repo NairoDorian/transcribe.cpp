@@ -119,7 +119,8 @@ fn generate(root: &Path) -> String {
     );
     format!(
         "{banner}{}",
-        normalize_enum_newtype_signedness(bindings.to_string())
+        // rustfmt can emit CRLF on Windows; tracked Rust sources use LF.
+        normalize_enum_newtype_signedness(bindings.to_string().replace("\r\n", "\n"))
     )
 }
 

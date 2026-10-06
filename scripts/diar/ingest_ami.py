@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "datasets>=3.6",
+#     "datasets>=5.1.0",
 #     "numpy>=1.26",
 #     "soundfile>=0.12",
 # ]

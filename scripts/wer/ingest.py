@@ -2,7 +2,8 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "datasets==3.6.0",
+#     "datasets>=5.1.0",
+#     "huggingface-hub>=2.1.1",
 #     "librosa>=0.10",
 #     "numpy>=1.26",
 #     "soundfile>=0.12",
@@ -35,6 +36,7 @@ Score.py picks WER vs CER from the `language` field at score time.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import sys
 import tarfile
@@ -48,6 +50,15 @@ from languages import FLEURS_LANGS
 
 
 # -------- Shared helpers --------------------------------------------------
+
+def read_hf_audio(audio: dict) -> tuple[np.ndarray, int]:
+    """Decode an Audio(decode=False) record without a TorchCodec dependency."""
+    raw = audio.get("bytes")
+    source = io.BytesIO(raw) if raw is not None else audio["path"]
+    data, sr = sf.read(source, dtype="float32")
+    if data.ndim > 1:
+        data = data.mean(axis=1)
+    return data, sr
 
 def find_repo_root(start: Path) -> Path:
     p = start.resolve()
@@ -193,10 +204,20 @@ def ingest_fleurs(repo: Path, args: argparse.Namespace) -> int:
     print(f"loading google/fleurs[{config}] split={args.split}")
     # Defer the heavy import so --help is snappy and a librispeech-only
     # invocation doesn't initialize HF datasets state.
-    from datasets import load_dataset
+    from datasets import Audio, load_dataset
+    from huggingface_hub import HfApi, hf_hub_url
 
-    ds = load_dataset("google/fleurs", config, split=args.split,
-                      trust_remote_code=True)
+    # Datasets >=4 no longer runs dataset scripts. Google's converted export
+    # preserves the original columns, recording IDs and train/test splits.
+    revision = "refs/convert/parquet"
+    prefix = f"{config}/{args.split}/"
+    files = HfApi().list_repo_files("google/fleurs", repo_type="dataset", revision=revision)
+    urls = [hf_hub_url("google/fleurs", filename, repo_type="dataset", revision=revision)
+            for filename in sorted(files) if filename.startswith(prefix) and filename.endswith(".parquet")]
+    if not urls:
+        raise ValueError(f"No FLEURS Parquet files for {config}/{args.split}")
+    ds = load_dataset("parquet", data_files={args.split: urls}, split=args.split)
+    ds = ds.cast_column("audio", Audio(decode=False))
     out_dir.mkdir(parents=True, exist_ok=True)
 
     entries: list[dict] = []
@@ -204,7 +225,7 @@ def ingest_fleurs(repo: Path, args: argparse.Namespace) -> int:
     n_skipped = 0
     for row in ds:
         # FLEURS row schema: id (int, transcription/sentence id), path
-        # (full path to source wav), audio {array, sampling_rate, path},
+        # (full path to source wav), encoded audio {bytes, path},
         # transcription (lowercased normalized), raw_transcription,
         # num_samples, lang_id, language, gender, lang_group_id.
         #
@@ -216,8 +237,7 @@ def ingest_fleurs(repo: Path, args: argparse.Namespace) -> int:
         wav_path = out_dir / f"{utt_id}.wav"
         if not wav_path.exists():
             audio = row["audio"]
-            data = np.asarray(audio["array"], dtype=np.float32)
-            sr = int(audio["sampling_rate"])
+            data, sr = read_hf_audio(audio)
             write_wav_16k_mono(data, sr, wav_path)
             n_converted += 1
         else:
@@ -273,10 +293,11 @@ def ingest_eka_medical_asr(repo: Path, args: argparse.Namespace) -> int:
 
     print(f"loading ekacare/eka-medical-asr-evaluation-dataset[{config}] "
           f"split={args.split}")
-    from datasets import load_dataset
+    from datasets import Audio, load_dataset
 
     ds = load_dataset("ekacare/eka-medical-asr-evaluation-dataset",
                       config, split=args.split)
+    ds = ds.cast_column("audio", Audio(decode=False))
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # The eka dataset's `file_name` column is NOT unique — 39 stems
@@ -304,8 +325,7 @@ def ingest_eka_medical_asr(repo: Path, args: argparse.Namespace) -> int:
         wav_path = out_dir / f"{utt_id}.wav"
         if not wav_path.exists():
             audio = row["audio"]
-            data = np.asarray(audio["array"], dtype=np.float32)
-            sr = int(audio["sampling_rate"])
+            data, sr = read_hf_audio(audio)
             write_wav_16k_mono(data, sr, wav_path)
             n_converted += 1
         else:
@@ -344,9 +364,10 @@ def ingest_tedlium_longform(repo: Path, args: argparse.Namespace) -> int:
         return 0
 
     print("loading distil-whisper/tedlium-long-form split=test")
-    from datasets import load_dataset
+    from datasets import Audio, load_dataset
 
     ds = load_dataset("distil-whisper/tedlium-long-form", split="test")
+    ds = ds.cast_column("audio", Audio(decode=False))
     out_dir.mkdir(parents=True, exist_ok=True)
 
     entries: list[dict] = []
@@ -355,8 +376,8 @@ def ingest_tedlium_longform(repo: Path, args: argparse.Namespace) -> int:
         wav_path = out_dir / f"{utt_id}.wav"
         if not wav_path.exists():
             audio = row["audio"]
-            write_wav_16k_mono(np.asarray(audio["array"], dtype=np.float32),
-                               int(audio["sampling_rate"]), wav_path)
+            data, sr = read_hf_audio(audio)
+            write_wav_16k_mono(data, sr, wav_path)
         entries.append({
             "id": utt_id,
             "audio": str(wav_path),

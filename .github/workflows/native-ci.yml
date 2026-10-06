@@ -85,8 +85,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40  # bound the run if the self-hosted mini is offline
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.1.0  # fixtures are generated via uv
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0  # fixtures are generated via uv
+      - name: Dataset ingestion regression checks
+        run: uv run scripts/wer/test_ingest.py
       - name: Install build deps (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build ccache
@@ -104,7 +106,7 @@ jobs:
         run: echo "CPU_SIG=$(grep -m1 '^flags' /proc/cpuinfo | sha256sum | cut -c1-8)" >> "$GITHUB_ENV"
       - name: ccache (compile cache across runs)
         if: runner.os == 'Linux'  # the mini is persistent; its local cache suffices
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         with:
           path: ~/.cache/ccache
           key: ccache-cpp-tests-${{ matrix.label }}-${{ env.CPU_SIG }}-${{ github.sha }}
@@ -142,8 +144,8 @@ jobs:
     # ctypes-shaped caller freeing its params right after stream_begin.
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.1.0  # fixtures are generated via uv
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0  # fixtures are generated via uv
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build ccache
       - name: CPU ISA signature (segregates ccache across the heterogeneous fleet)
@@ -153,7 +155,7 @@ jobs:
         # cache by the CPU's feature flags instead.
         run: echo "CPU_SIG=$(grep -m1 '^flags' /proc/cpuinfo | sha256sum | cut -c1-8)" >> "$GITHUB_ENV"
       - name: ccache (compile cache across runs)
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         with:
           path: ~/.cache/ccache
           key: ccache-asan-${{ env.CPU_SIG }}-${{ github.sha }}
@@ -192,8 +194,8 @@ jobs:
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
       - name: Install build deps (Vulkan SDK pieces + patchelf)
         run: |
           sudo apt-get update
@@ -206,7 +208,7 @@ jobs:
         # cache by the CPU's feature flags instead.
         run: echo "CPU_SIG=$(grep -m1 '^flags' /proc/cpuinfo | sha256sum | cut -c1-8)" >> "$GITHUB_ENV"
       - name: ccache (compile cache across runs)
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         with:
           path: ~/.cache/ccache
           key: ccache-dl-vulkan-${{ env.CPU_SIG }}-${{ github.sha }}
@@ -275,7 +277,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64, hetzner]
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
       - name: Lane/preset mirror gate
         run: uv run --no-project python scripts/ci/check_lane_mirror.py

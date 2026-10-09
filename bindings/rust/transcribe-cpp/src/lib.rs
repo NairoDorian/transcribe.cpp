@@ -63,6 +63,7 @@ mod cancel;
 mod diarize;
 mod error;
 mod family;
+mod langid;
 mod logging;
 mod model;
 mod result;
@@ -80,11 +81,14 @@ pub use backend::{
 };
 pub use cancel::CancelToken;
 pub use diarize::{DiarizeInfo, DiarizeOptions, DiarizeSession, DiarizeSessionOptions};
-pub use error::{Error, Result};
+pub use error::{Error, ErrorKind, ErrorReport, Result};
 pub use family::{
     DiarizeExtension, MoonshineStreamingOptions, ParakeetBufferedStreamOptions,
     ParakeetStreamOptions, R2T2StreamOptions, RunExtension, SortformerDiarizeOptions,
     SortformerPreset, StreamExtension, VoxtralRealtimeStreamOptions, WhisperRunOptions,
+};
+pub use langid::{
+    LangIdCandidate, LangIdInfo, LangIdOptions, LangIdResult, LangIdSession, LangIdSessionOptions,
 };
 pub use logging::{disable_logging, init_logging};
 pub use model::{Capabilities, Model, ModelOptions, SessionLimits, SessionOptions};

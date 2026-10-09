@@ -40,6 +40,11 @@ fn abi_struct_sizes_are_live() {
         AbiStruct::DiarizeInfo,
         AbiStruct::DiarizeSessionParams,
         AbiStruct::DiarizeParams,
+        AbiStruct::LangIdInfo,
+        AbiStruct::LangIdSessionParams,
+        AbiStruct::LangIdParams,
+        AbiStruct::LangIdResult,
+        AbiStruct::LangIdCandidate,
     ] {
         assert!(abi_struct_size(which) > 0, "{which:?} reported size 0");
     }
@@ -144,6 +149,7 @@ fn handles_are_send_sync() {
     assert_send_sync::<Model>();
     assert_send::<transcribe_cpp::Session>();
     assert_send::<transcribe_cpp::DiarizeSession>();
+    assert_send::<transcribe_cpp::LangIdSession>();
     // Sessions are intentionally NOT Sync (single-threaded use).
 }
 

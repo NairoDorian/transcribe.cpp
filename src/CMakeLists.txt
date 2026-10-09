@@ -66,6 +66,7 @@ set(_all_families
     granite5_ctc
     granite_nar
     medasr
+    ecapa_tdnn
 )
 
 if(TRANSCRIBE_MODEL_SET STREQUAL "minimal-multilingual")
@@ -97,6 +98,7 @@ set(TRANSCRIBE_SRCS
     transcribe.cpp
     transcribe-asr.cpp
     transcribe-diarize.cpp
+    transcribe-langid.cpp
     transcribe-loader.cpp
     transcribe-arch.cpp
     transcribe-meta.cpp
@@ -202,6 +204,12 @@ set(_srcs_sortformer
     arch/sortformer/stream.cpp
     arch/sortformer/weights.cpp
     conformer/conformer.cpp
+)
+
+set(_srcs_ecapa_tdnn
+    arch/ecapa_tdnn/graph.cpp
+    arch/ecapa_tdnn/model.cpp
+    arch/ecapa_tdnn/weights.cpp
 )
 
 set(_srcs_voxtral

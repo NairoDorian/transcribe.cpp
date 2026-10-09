@@ -41,8 +41,9 @@ dynamic-backends = ["shared", "transcribe-cpp-sys/dynamic-backends"]
 # crate's build.rs rpath gate as well as for -sys).
 arch-dl = ["shared", "transcribe-cpp-sys/arch-dl"]
 minimal-multilingual = ["transcribe-cpp-sys/minimal-multilingual"]
-# Serialize/Deserialize on the plain-data option and result types (not handles
-# or Error). No native-build impact.
+# Serialize/Deserialize on the plain-data option and result types (not handles),
+# Serialize on Error, and Serialize/Deserialize on its ErrorReport snapshot. No
+# native-build impact.
 serde = ["dep:serde"]
 
 [dependencies]

@@ -127,9 +127,23 @@ for (const t of turns) console.log(t.speakerId, t.t0Ms, t.t1Ms);
 `diarizer.timings` reports the last run. Diarize runs wait on the same
 model-wide lock as other compute calls (see below).
 
+### Language ID (LANGID role)
+
+A `"langid"` model (VoxLingua107 ECAPA-TDNN) ranks its own label codes; match
+`result.code` against an ASR model's `capabilities.languages` yourself.
+Every allowed label is returned, ranked by `p`. Omitting `allowed` scores every
+label, `[]` throws `InvalidArgument`, clips under `model.langidInfo.minAudioMs`
+throw `InputTooShort`, and input longer than `maxAudioMs` is scored on its first `maxAudioMs`.
+
+```ts
+using lid = model.createLangIdSession();
+const result = await lid.run(pcm, { allowed: ["en", "de", "fr"] });
+console.log(result.code, result.candidates[0].p, result.allowedMass);
+```
+
 ### Resource management
 
-`TranscribeModel`, `Session`, `DiarizeSession`, and `Stream` all implement
+`TranscribeModel`, `Session`, `DiarizeSession`, `LangIdSession`, and `Stream` all implement
 `Symbol.dispose`, so `using` works (TypeScript 5.2+ / Node 22+):
 
 ```ts
@@ -141,13 +155,26 @@ using session = model.createSession();
 Disposing a model disposes its sessions; disposing a stream resets it (releasing
 the model lease). Disposal is idempotent and order-independent.
 
+## Startup and UI responsiveness
+
+Initializing compute backends can take seconds (on Metal it compiles the GPU
+shader library). `TranscribeModel.load()` does this on a worker thread, so the
+event loop keeps running. To pay the cost up front, call `await initialize()`
+at startup; `backendState()` reports its progress.
+
+Use `getAvailableBackendsAsync()` / `backendAvailableAsync()` in UI processes.
+The sync variants initialize backends on the calling thread if needed, and
+throw `BackendInitializing` while `initialize()` is running. A failed backend
+initialization is permanent for the process; later calls rethrow its
+`BackendError`.
+
 ## Backend selection
 
 ```ts
-import { getAvailableBackends, backendAvailable } from "transcribe-cpp";
+import { getAvailableBackendsAsync, backendAvailableAsync } from "transcribe-cpp";
 
-const devices = getAvailableBackends();
-backendAvailable("rocm"); // boolean — never throws
+const devices = await getAvailableBackendsAsync();
+await backendAvailableAsync("rocm"); // boolean
 
 // Policy selection: first matching ROCm device.
 const automatic = await TranscribeModel.load("model.gguf", { backend: "rocm" });

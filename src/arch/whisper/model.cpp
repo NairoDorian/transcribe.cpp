@@ -2427,16 +2427,19 @@ transcribe_status whisper_run(transcribe_session *          session,
                     step_mask[p] = mask_zero;
                 }
 
-                // Cross mask is invariant across steps within a chunk —
-                // upload once and reuse.
+                // Cross mask: the same values every step of a chunk, but
+                // uploaded every step with the other inputs (below). The
+                // allocator reuses an input's memory once its last reader has
+                // run, so a mask set once before the loop is garbage from the
+                // second step on: on CPU that turned every transcript into
+                // noise (GPU happened to keep it; TRANSCRIBE_DISABLE_STATIC_DECODE
+                // hid it).
                 if (sb.cross_mask_in != nullptr) {
                     const int n_kv_cross = static_cast<int>(sb.cross_mask_in->ne[0]);
                     step_cross_mask.assign(static_cast<size_t>(n_kv_cross), 0.0f);
                     for (int k = T_enc_local; k < n_kv_cross; ++k) {
                         step_cross_mask[static_cast<size_t>(k)] = -1e9f;
                     }
-                    ggml_backend_tensor_set(sb.cross_mask_in, step_cross_mask.data(), 0,
-                                            step_cross_mask.size() * sizeof(float));
                 }
             }
 
@@ -2474,6 +2477,10 @@ transcribe_status whisper_run(transcribe_session *          session,
                     step_mask[n_past] = mask_zero;
                     ggml_backend_tensor_set(sb.mask_in, step_mask.data(), 0,
                                             static_cast<size_t>(max_n_kv) * sizeof(ggml_fp16_t));
+                    if (sb.cross_mask_in != nullptr) {
+                        ggml_backend_tensor_set(sb.cross_mask_in, step_cross_mask.data(), 0,
+                                                step_cross_mask.size() * sizeof(float));
+                    }
                     cc->perf.step_alloc.add(ggml_time_us() - t_step_alloc_start);
 
                     const int64_t t_step_compute_start = ggml_time_us();
@@ -3295,8 +3302,7 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
         if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, sb.graph, "whisper")) {
             return TRANSCRIBE_ERR_OOM;
         }
-        ggml_backend_tensor_set(sb.cross_mask_in, cmask.data(), 0, cmask.size() * sizeof(ggml_fp16_t));
-        return TRANSCRIBE_OK;
+        return TRANSCRIBE_OK;  // cross mask: uploaded every step by run_step
     };
     if (const transcribe_status st = rebuild_step(kv_window); st != TRANSCRIBE_OK) {
         cleanup_gpu();
@@ -3318,6 +3324,8 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
         ggml_backend_tensor_set(sb.pos_ids_in, pos_buf.data(), 0, B * sizeof(int32_t));
         ggml_backend_tensor_set(sb.kv_idx_in, kvidx_buf.data(), 0, B * sizeof(int64_t));
         ggml_backend_tensor_set(sb.self_mask_in, smask.data(), 0, smask.size() * sizeof(ggml_fp16_t));
+        // Every step, not once per graph: see the single-run step loop.
+        ggml_backend_tensor_set(sb.cross_mask_in, cmask.data(), 0, cmask.size() * sizeof(ggml_fp16_t));
         if (ggml_backend_sched_graph_compute(cc->sched, sb.graph) != GGML_STATUS_SUCCESS) {
             return TRANSCRIBE_ERR_BACKEND;
         }

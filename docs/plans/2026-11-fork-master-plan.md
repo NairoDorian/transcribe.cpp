@@ -319,6 +319,37 @@ Measured (CPU, this branch vs `main`):
 - **SenseVoice Small** (official GGUF): identical text on en / zh / yue / ja /
   zh→en; `--allow yue` on Mandarin reports `yue`, text unchanged.
 
+Where the list earns its keep — **short dictation snippets** (1.2 s and 2 s
+cut from FLEURS / jfk / uk, list = the true language + one other; CUDA,
+7 models × 16 snippets): 98/112 pairs byte-identical, and every change is a fix:
+R2T2 wrote a 1.2 s Indonesian snippet in Korean (`팀 팀`) in auto mode and in
+Latin with `id,en`; Nemotron wrote 2 s of Indonesian in Cyrillic (it detected
+`uk-UA`) and in Latin with the list, and stopped slipping Ukrainian `містах`
+into Russian; Qwen3's label went from `nl` to `fr` and from `ms` to `id`;
+Parakeet v3 lost the Russian `ы` from Ukrainian. Long clean clips were already
+right in auto mode, which is why A.6's long-clip runs show no change.
+
+**Speech in a language outside the list** (CPU, 9 models; German audio with
+`fr`, Spanish with `it,pt`, English with `fr` / `ru`, Russian with `en,fr`,
+Ukrainian with `ru`, Chinese with `en` / `ja`) is forced into the list, by
+design ("no need to detect anything else"), and how depends on the family:
+- *label = output language* (Qwen3, Whisper): the speech is **translated** into
+  a listed language (German → French, Russian → English, Chinese → English or
+  Japanese); Whisper hallucinates on the hard ones;
+- *same script*: Nemotron, R2T2, the TDT models and Granite keep the text as
+  heard, only respelling letters the list does not write (`großer` →
+  `grosser` / `grober`; Ukrainian under `ru` comes out Russified);
+- *other script*: text is lost or garbled (Nemotron and the TDT models write
+  Latin gibberish or nothing, SenseVoice drops it, R2T2 translates);
+- English survives every list (ASCII is never banned);
+- a list naming no language a model knows is `UNSUPPORTED_LANGUAGE` (Granite
+  with `ru`; Parakeet TDT with `ja`): hosts must not send one model's list to a
+  model that cannot take it.
+A softer alphabet (a finite logit penalty instead of a ban) would let
+confident out-of-list speech through at the cost of weaker correction on
+confusions; not done — the measured confusions above were all fixed by the
+ban, and out-of-list speech is outside the setting's contract.
+
 Still open in A: `allowed_mass` reporting, LangID-gated auto (A.3), Canary /
 Cohere (no detection: need a source language — A.3's detect-then-force, or a
 "first listed language" default plus the alphabet), Voxtral, Granite NAR, the

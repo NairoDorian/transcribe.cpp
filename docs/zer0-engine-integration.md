@@ -34,8 +34,8 @@ The app's reciprocal note links back to this contract and the
 | --- | --- | --- |
 | Public PCM/API contract | `include/transcribe.h`, `include/transcribe/vad.h` | `src-tauri/src/managers/transcription.rs`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` |
 | Stream defaults, lifecycle and telemetry | `src/transcribe-asr.cpp`, `bindings/rust/transcribe-cpp/src/streaming.rs`, `session.rs` | StreamOptions builders, workers and StreamRouter in `managers/transcription.rs` |
-| Embedded Earshot and standalone model VAD | `src/transcribe-earshot.*`, `src/transcribe-vad.*`, `src/arch/silero_vad/` | `audio_toolkit/vad/{mod,earshot,smoothed}.rs`, `managers/audio.rs` |
-| Suppression, rate conversion and tails | Proposed optional frontend; ASR itself still expects 16 kHz | `audio_toolkit/audio/{denoise,resampler,recorder}.rs` |
+| Embedded Earshot and standalone model VAD | `src/transcribe-earshot*.*`, `src/transcribe-vad-gate.cpp`, `src/transcribe-vad.*`, `src/arch/silero_vad/` | `audio_toolkit/vad/{mod,earshot,smoothed}.rs`, `managers/audio.rs` |
+| Suppression, rate conversion and tails | `src/transcribe-rnnoise.*`, `src/transcribe-denoise.cpp`; ASR itself still expects 16 kHz | `audio_toolkit/audio/{denoise,resampler,recorder}.rs` |
 | Speech time and endpoint/chunk ownership | VAD telemetry and family stream cursors | `SpeechClock`, `multi_stt_stream.rs`, `multi_streaming.rs`, `live_mode.rs`, `file_transcription.rs` |
 | Capture diagnostics and persistence | Preserve API observations and source positions | `live_fft/`, `managers/history.rs`, `settings.rs`, `shortcut/mod.rs` |
 | Dependency/build provenance | ABI digest, generated bindings, model composite/plugin options | `scripts/check-transcribe-deps.ts`, `scripts/tauri-runner.ts`, `native_build_identity()` |
@@ -77,6 +77,11 @@ was removed. Before Silero integration the fork's Earshot files were also called
   second detector, and the app does not consume its VAD telemetry for the UI.
 - RNNoise is currently app-side, optional, 48 kHz / 10 ms. Its probability gate
   is different from acoustic frame retention and semantic turn completion.
+- Since 2026-11-14 the engine has ports of both app-side layers
+  (`transcribe_vad_gate_*`, `transcribe_denoise_*`; master plan §B.9). Until
+  ZER0 switches to them, the app's Rust copies are what runs; after it does,
+  pass `enable_vad = false` on its native streams so the engine's activity
+  gate is not a second detector in series (§B.7).
 - SmoothedVad already has a preallocated ring. The old proposed allocation
   savings are not work still to do. Resampler output and per-model stream copies
   remain separate measurable costs.

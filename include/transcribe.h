@@ -2500,6 +2500,177 @@ TRANSCRIBE_API void  transcribe_vad_set_threshold(struct transcribe_vad * vad, f
 TRANSCRIBE_API void  transcribe_vad_reset(struct transcribe_vad * vad);
 
 /*
+ * Earshot speech scores for every complete 256-sample frame of a 16 kHz mono
+ * clip, out_scores[0 .. n_samples / 256): the same values a fresh
+ * transcribe_vad_predict_frame() run would give, computed in batch over
+ * n_threads (<= 1: the calling thread). Samples are clamped to [-1, 1].
+ * INVALID_ARG on NULL pcm/out_scores with n_samples > 0, negative n_samples
+ * or a non-finite sample.
+ */
+TRANSCRIBE_API transcribe_status transcribe_vad_score_frames(const float * pcm,
+                                                             int64_t       n_samples,
+                                                             int32_t       n_threads,
+                                                             float *       out_scores);
+
+/* ----------------------------------------------------------------------- */
+/* Speech gate: a capture-side VAD (Earshot + smoothing + speech clock)      */
+/* ----------------------------------------------------------------------- */
+
+/*
+ * Feeds 16 kHz mono audio of any length and keeps the speech: each 16 ms
+ * frame is scored by Earshot (bundled weights, SIMD, nothing to load), goes
+ * through a two-threshold gate (enter at `threshold`, leave below
+ * `exit_threshold`), and a smoother turns those raw decisions into retained
+ * audio:
+ *   - onset: `onset_ms` of consecutive voiced frames start speech, so one
+ *     noisy frame cannot;
+ *   - pre-roll: the `preroll_ms` before the onset is released with it, so
+ *     the first syllable survives; nothing is ever released twice;
+ *   - hangover: `hangover_ms` of audio keeps flowing after the last voiced
+ *     frame, so a streaming decoder sees across short pauses.
+ * A speech clock counts voiced time (raw decisions, not the hangover),
+ * billing pauses shorter than `speech_hold_ms` when speech resumes.
+ * Durations round up to whole 16 ms frames.
+ *
+ * Defaults (transcribe_vad_gate_params_init) are a dictation capture path:
+ * threshold 0.5, exit 0.35 (threshold - 0.15, at least 0.01), onset 60 ms,
+ * pre-roll 450 ms, hangover 450 ms (a streaming decoder wants ~1650),
+ * speech hold 500 ms. Not thread-safe; one gate per audio source.
+ */
+struct transcribe_vad_gate;
+
+struct transcribe_vad_gate_params {
+    uint64_t struct_size;
+    float    threshold;      /* enter speech at or above, 0.05 .. 0.95 */
+    float    exit_threshold; /* leave below; < 0 = threshold - 0.15, at least 0.01 */
+    uint32_t onset_ms;
+    uint32_t preroll_ms;
+    uint32_t hangover_ms;
+    uint32_t speech_hold_ms;
+};
+
+/*
+ * Result of one feed/finish call. `audio` / `n_audio` is the audio retained
+ * by this call (pre-roll, speech and hangover, in order, original samples),
+ * valid until the next call on the gate. The flags describe the call: the
+ * state after its last frame, and whether speech started / ended inside it.
+ */
+struct transcribe_vad_gate_update {
+    uint64_t      struct_size;
+    int32_t       n_frames;       /* frames scored by this call */
+    bool          speech;         /* smoothed state (onset/hangover applied) */
+    bool          voiced;         /* raw gate decision of the last frame */
+    bool          speech_started; /* an onset fired during this call */
+    bool          speech_ended;   /* a hangover ran out during this call */
+    bool          clock_speaking; /* speech clock state */
+    float         last_score;     /* Earshot score of the last frame */
+    float         level_dbfs;     /* RMS level of the last frame */
+    uint64_t      speech_ms;      /* speech clock total since init/reset */
+    const float * audio;
+    int64_t       n_audio;
+};
+
+/* End-of-recording diagnostics: frames buffered but never released. */
+struct transcribe_vad_gate_tail {
+    uint64_t struct_size;
+    int32_t  withheld_frames;        /* trailing frames never released */
+    int32_t  withheld_voiced_frames; /* of those, how many were voiced */
+    bool     speech;
+    int32_t  onset_counter;
+    int32_t  hangover_counter;
+};
+
+TRANSCRIBE_API void transcribe_vad_gate_params_init(struct transcribe_vad_gate_params * params);
+TRANSCRIBE_API void transcribe_vad_gate_update_init(struct transcribe_vad_gate_update * update);
+TRANSCRIBE_API void transcribe_vad_gate_tail_init(struct transcribe_vad_gate_tail * tail);
+
+/* NULL params = defaults. INVALID_ARG on an out-of-range threshold. */
+TRANSCRIBE_API transcribe_status transcribe_vad_gate_init(const struct transcribe_vad_gate_params * params,
+                                                          struct transcribe_vad_gate **             out_gate);
+TRANSCRIBE_API void              transcribe_vad_gate_free(struct transcribe_vad_gate * gate);
+/* Start a new recording: detector, smoother, clock and buffers; keeps params. */
+TRANSCRIBE_API void              transcribe_vad_gate_reset(struct transcribe_vad_gate * gate);
+/* Take effect on the next frame, mid-recording included; state is kept. */
+TRANSCRIBE_API transcribe_status transcribe_vad_gate_set_threshold(struct transcribe_vad_gate * gate, float threshold);
+TRANSCRIBE_API transcribe_status transcribe_vad_gate_set_hangover_ms(struct transcribe_vad_gate * gate,
+                                                                     uint32_t                     hangover_ms);
+/*
+ * Feed samples in [-1, 1] (scored clamped, released as given). A partial
+ * frame is kept for the next call. update may be NULL. INVALID_ARG on a
+ * non-finite sample (nothing is consumed).
+ */
+TRANSCRIBE_API transcribe_status transcribe_vad_gate_feed(struct transcribe_vad_gate *        gate,
+                                                          const float *                       pcm,
+                                                          int64_t                             n_samples,
+                                                          struct transcribe_vad_gate_update * update);
+/* End of input: score a kept partial frame zero-padded (only its real samples
+ * are released). The gate stays usable; reset before the next recording. */
+TRANSCRIBE_API transcribe_status transcribe_vad_gate_finish(struct transcribe_vad_gate *        gate,
+                                                            struct transcribe_vad_gate_update * update);
+TRANSCRIBE_API transcribe_status transcribe_vad_gate_get_tail(const struct transcribe_vad_gate * gate,
+                                                              struct transcribe_vad_gate_tail *  out);
+
+/* ----------------------------------------------------------------------- */
+/* Noise suppression: RNNoise on 10 ms frames of 48 kHz mono audio           */
+/* ----------------------------------------------------------------------- */
+
+/*
+ * Classic RNNoise (xiph/rnnoise) with its bundled model, nothing to load:
+ * the algorithm of nnnoiseless 0.5.2, output within one int16 step of it,
+ * about 1.4x faster on x86-64. Each call takes one 480-sample frame in
+ * [-1, 1] and returns one; the output is one frame behind the input
+ * (overlap-add synthesis), so a stream ends with transcribe_denoise_flush.
+ *
+ * Around the network, per frame (ZER0's capture chain):
+ *   - strength: wet/dry mix of the suppressed and the input frame, the dry
+ *     side delayed one frame to stay aligned (0 = input untouched, late);
+ *   - vad_threshold: RNNoise's own speech probability below which the frame
+ *     is muted, 0 = no gate; the gain slews (half the distance per frame,
+ *     snapping within 1e-3) instead of cutting;
+ *   - vad_grace_ms: audio keeps passing this long (in whole 10 ms frames)
+ *     after the last frame at or above the threshold.
+ * Output is clamped to [-1, 1]. Defaults: strength 1, vad_threshold 0,
+ * vad_grace_ms 200. Not thread-safe; one instance per audio source.
+ */
+#define TRANSCRIBE_DENOISE_SAMPLE_RATE   48000
+#define TRANSCRIBE_DENOISE_FRAME_SAMPLES 480
+#define TRANSCRIBE_DENOISE_MAX_GRACE_MS  5000
+
+struct transcribe_denoise;
+
+struct transcribe_denoise_params {
+    uint64_t struct_size;
+    float    strength;      /* 0 .. 1 */
+    float    vad_threshold; /* 0 .. 1; 0 = gate off */
+    uint32_t vad_grace_ms;  /* 0 .. TRANSCRIBE_DENOISE_MAX_GRACE_MS */
+};
+
+TRANSCRIBE_API void              transcribe_denoise_params_init(struct transcribe_denoise_params * params);
+/* NULL params = defaults. INVALID_ARG on a non-finite or out-of-range field. */
+TRANSCRIBE_API transcribe_status transcribe_denoise_init(const struct transcribe_denoise_params * params,
+                                                         struct transcribe_denoise **             out_denoise);
+TRANSCRIBE_API void              transcribe_denoise_free(struct transcribe_denoise * denoise);
+/* Start a new recording: network state, dry delay and gate; keeps params. */
+TRANSCRIBE_API void              transcribe_denoise_reset(struct transcribe_denoise * denoise);
+/* Takes effect on the next frame, mid-recording included; state is kept. */
+TRANSCRIBE_API transcribe_status transcribe_denoise_set_params(struct transcribe_denoise *              denoise,
+                                                               const struct transcribe_denoise_params * params);
+/*
+ * One frame: in / out are TRANSCRIBE_DENOISE_FRAME_SAMPLES samples and may be
+ * the same buffer. out_speech_prob (may be NULL) gets RNNoise's speech
+ * probability for `in` (0 when its 20 ms analysis window is near silent).
+ * INVALID_ARG on a non-finite sample (nothing is consumed).
+ */
+TRANSCRIBE_API transcribe_status transcribe_denoise_process_frame(struct transcribe_denoise * denoise,
+                                                                  const float *               in,
+                                                                  float *                     out,
+                                                                  float *                     out_speech_prob);
+/* End of input: pushes the last frame out (process_frame with silence). */
+TRANSCRIBE_API transcribe_status transcribe_denoise_flush(struct transcribe_denoise * denoise,
+                                                          float *                     out,
+                                                          float *                     out_speech_prob);
+
+/*
  * Current stream lifecycle state. Returns TRANSCRIBE_STREAM_IDLE if
  * session is NULL.
  */

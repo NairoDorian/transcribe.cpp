@@ -746,10 +746,21 @@ void test_activity_gate_only_skips_silence_with_nothing_buffered() {
     CHECK(g_gate_fed_samples == 1024);
     CHECK(g_gate_buffered == 0);
 
-    // ... after which silence is skipped again.
+    // ... and, once the VAD has also let go of the tone (its 48 ms window and
+    // recurrent state keep scoring the frames after an onset as speech, then
+    // the hangover runs out), silence is skipped again.
+    // Silence reaching the family meanwhile refills its buffer, so also wait
+    // for that to drain: the skip needs both conditions.
+    for (int i = 0; i < 200 && (upd.vad_speaking || g_gate_buffered != 0); ++i) {
+        transcribe_stream_update_init(&upd);
+        CHECK(transcribe_stream_feed(&session, silence, 256, &upd) == TRANSCRIBE_OK);
+    }
+    CHECK(!upd.vad_speaking);
+    const int64_t fed_before = g_gate_fed_samples;
+    CHECK(g_gate_buffered == 0);
     transcribe_stream_update_init(&upd);
     CHECK(transcribe_stream_feed(&session, silence, 256, &upd) == TRANSCRIBE_OK);
-    CHECK(g_gate_fed_samples == 1024);
+    CHECK(g_gate_fed_samples == fed_before);
     CHECK(transcribe_stream_finalize(&session, nullptr) == TRANSCRIBE_OK);
 }
 

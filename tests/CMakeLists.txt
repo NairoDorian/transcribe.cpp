@@ -336,6 +336,40 @@ add_test(NAME transcribe_chunking_unit COMMAND transcribe_chunking_unit)
 # (pure host, no model)
 
 # Language-code matching for the allowlist (header-only, no model).
+# Earshot VAD engine: upstream parity, kernel-set identity, batch vs stream.
+add_executable(transcribe_earshot_engine_unit earshot_engine_unit.cpp)
+target_link_libraries(transcribe_earshot_engine_unit PRIVATE transcribe transcribe-common-example)
+target_include_directories(transcribe_earshot_engine_unit PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_definitions(transcribe_earshot_engine_unit PRIVATE
+    "TRANSCRIBE_EARSHOT_FIXTURES=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/earshot\"")
+transcribe_apply_warnings(transcribe_earshot_engine_unit)
+add_test(NAME transcribe_earshot_engine_unit COMMAND transcribe_earshot_engine_unit)
+
+# Speech gate + batch scoring through the public C API.
+add_executable(transcribe_vad_gate_unit vad_gate_unit.cpp)
+target_link_libraries(transcribe_vad_gate_unit PRIVATE transcribe transcribe-common-example)
+target_compile_definitions(transcribe_vad_gate_unit PRIVATE
+    "TRANSCRIBE_EARSHOT_FIXTURES=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/earshot\"")
+transcribe_apply_warnings(transcribe_vad_gate_unit)
+add_test(NAME transcribe_vad_gate_unit COMMAND transcribe_vad_gate_unit)
+
+# RNNoise port: FFT, invariants, and output vs nnnoiseless 0.5.2.
+add_executable(transcribe_rnnoise_unit rnnoise_unit.cpp)
+target_link_libraries(transcribe_rnnoise_unit PRIVATE transcribe transcribe-common-example)
+target_include_directories(transcribe_rnnoise_unit PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_definitions(transcribe_rnnoise_unit PRIVATE
+    "TRANSCRIBE_EARSHOT_FIXTURES=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/earshot\""
+    "TRANSCRIBE_RNNOISE_FIXTURES=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/rnnoise\"")
+transcribe_apply_warnings(transcribe_rnnoise_unit)
+add_test(NAME transcribe_rnnoise_unit COMMAND transcribe_rnnoise_unit)
+
+# Noise suppression through the public C API (wraps the RNNoise port).
+add_executable(transcribe_denoise_unit denoise_unit.cpp)
+target_link_libraries(transcribe_denoise_unit PRIVATE transcribe)
+target_include_directories(transcribe_denoise_unit PRIVATE ${CMAKE_SOURCE_DIR}/src)
+transcribe_apply_warnings(transcribe_denoise_unit)
+add_test(NAME transcribe_denoise_unit COMMAND transcribe_denoise_unit)
+
 add_executable(transcribe_language_match_unit language_match_unit.cpp)
 target_include_directories(transcribe_language_match_unit PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
 transcribe_apply_warnings(transcribe_language_match_unit)

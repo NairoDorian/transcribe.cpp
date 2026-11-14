@@ -24,6 +24,7 @@
 #include "transcribe-debug.h"
 #include "transcribe-env.h"
 #include "transcribe-graph-opt.h"
+#include "transcribe-lang-alphabet.h"
 #include "transcribe-lang.h"
 #include "transcribe-load-common.h"
 #include "transcribe-loader.h"
@@ -670,7 +671,11 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
             m->lang_tag_opener_ids.push_back(id);
         }
     }
-    if (m->host_decoder.head_kind == HostHeadKind::RNNT && m->lang_tag_ids.size() >= 2) {
+    // Nemotron constrains its locale tags; every multilingual variant
+    // (including the tag-less TDT ones: v3, ultra, redux) also constrains the
+    // alphabet it writes in (transcribe-lang-alphabet.h).
+    if ((m->host_decoder.head_kind == HostHeadKind::RNNT && m->lang_tag_ids.size() >= 2) ||
+        m->caps.supports_language_detect || m->caps.n_languages >= 2) {
         transcribe::set_feature(m.get(), TRANSCRIBE_FEATURE_LANGUAGE_ALLOWLIST, true);
     }
 
@@ -885,13 +890,20 @@ static double parakeet_ms_per_enc_frame(const ParakeetHParams & hp) {
 // words / segments / full_text / result_kind / has_result).
 // Language allowlist -> blocked-token mask (token id -> 1 when the decoder
 // must never emit it). Empty when the request does not restrict detection:
-// an explicit `language`, or no list. Codes resolve against the model's
-// locale tags with transcribe-lang.h matching ("fr" allows <fr-FR> and
-// <fr-CA>). The allowlist is intersected with what the model can detect: a
-// code it cannot is skipped with a WARN (one list can serve every model of
-// a multi-model host), and only an empty intersection is
-// UNSUPPORTED_LANGUAGE. Pieces that open a spelled-out tag are blocked too
-// (see lang_tag_opener_ids).
+// an explicit `language`, or no list. Two layers:
+//   - locale tags (nemotron-3.5): the tags of languages outside the list are
+//     blocked, and so are the pieces that open a spelled-out tag
+//     (lang_tag_opener_ids);
+//   - alphabet (every multilingual variant, transcribe-lang-alphabet.h): a
+//     piece containing a letter no allowed language writes is blocked. This
+//     is the only hard constraint the tag-less TDT models (v3, ultra, redux)
+//     have: it rules out script confusions and foreign diacritics.
+// The list names the languages the speaker uses and may mix, so both layers
+// are unions. Tags are restricted only when the model has a tag for every
+// listed language: forcing the remaining tags onto speech in an untagged
+// language would make things worse, so then only the alphabet applies (WARN).
+// The alphabet always covers the whole list. A list naming no language this
+// model knows is UNSUPPORTED_LANGUAGE.
 static transcribe_status resolve_language_block_mask(const ParakeetModel *         pm,
                                                      const transcribe_run_params * params,
                                                      std::vector<uint8_t> &        mask) {
@@ -903,44 +915,79 @@ static transcribe_status resolve_language_block_mask(const ParakeetModel *      
     if (!transcribe::has_feature(pm, TRANSCRIBE_FEATURE_LANGUAGE_ALLOWLIST)) {
         return TRANSCRIBE_ERR_UNSUPPORTED_LANGUAGE;
     }
-    std::vector<uint8_t> allowed(pm->lang_tag_ids.size(), 0);
-    int                  n_resolved = 0;
+    const bool               has_tags = pm->lang_tag_ids.size() >= 2;
+    std::vector<std::string> advertised;
+    for (int j = 0; pm->caps.languages != nullptr && j < pm->caps.n_languages; ++j) {
+        if (pm->caps.languages[j] != nullptr) {
+            advertised.emplace_back(pm->caps.languages[j]);
+        }
+    }
+    std::vector<uint8_t>     tag_allowed(pm->lang_tag_ids.size(), 0);
+    std::vector<std::string> requested;
+    std::vector<std::string> unknown;      // listed, but not a language this model detects
+    int                      n_known = 0;  // listed languages this model can detect
     for (int32_t i = 0; i < params->n_allowed_languages; ++i) {
         const char * code = params->allowed_languages[i];
         if (code == nullptr || code[0] == '\0') {
             return TRANSCRIBE_ERR_INVALID_ARG;
         }
-        const std::vector<int> hits = transcribe::lang::resolve_all(code, pm->lang_tag_codes);
+        requested.emplace_back(code);
+        const std::vector<int> hits = transcribe::lang::resolve_all(code, has_tags ? pm->lang_tag_codes : advertised);
         if (hits.empty()) {
-            log_msg(TRANSCRIBE_LOG_LEVEL_WARN,
-                    "parakeet: allowed language \"%s\" is not one this model can detect; skipping it", code);
+            log_msg(TRANSCRIBE_LOG_LEVEL_WARN, "parakeet: allowed language \"%s\" is not one this model can detect",
+                    code);
+            unknown.emplace_back(code);
             continue;
         }
-        n_resolved += 1;
-        for (const int k : hits) {
-            allowed[static_cast<size_t>(k)] = 1;
+        n_known += 1;
+        if (has_tags) {
+            for (const int k : hits) {
+                tag_allowed[static_cast<size_t>(k)] = 1;
+            }
         }
     }
-    if (n_resolved == 0) {
+    if (n_known == 0) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet: none of the %d allowed languages is one this model can detect",
                 params->n_allowed_languages);
         return TRANSCRIBE_ERR_UNSUPPORTED_LANGUAGE;
     }
-    int max_id = 0;
-    for (const int id : pm->lang_tag_ids) {
-        max_id = std::max(max_id, id);
+    const bool restrict_tags = has_tags && n_known == params->n_allowed_languages;
+    if (has_tags && !restrict_tags) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_WARN,
+                "parakeet: locale tags left unrestricted (a listed language has none); "
+                "constraining the alphabet only");
     }
-    for (const int id : pm->lang_tag_opener_ids) {
-        max_id = std::max(max_id, id);
-    }
-    mask.assign(static_cast<size_t>(max_id) + 1, 0);
-    for (size_t k = 0; k < pm->lang_tag_ids.size(); ++k) {
-        if (allowed[k] == 0) {
-            mask[static_cast<size_t>(pm->lang_tag_ids[k])] = 1;
+
+    const int n_tok = pm->tok.n_tokens();
+    mask.assign(static_cast<size_t>(std::max(n_tok, 0)), 0);
+    bool any_blocked = false;
+    if (restrict_tags) {
+        any_blocked = true;
+        for (size_t k = 0; k < pm->lang_tag_ids.size(); ++k) {
+            if (tag_allowed[k] == 0) {
+                mask[static_cast<size_t>(pm->lang_tag_ids[k])] = 1;
+            }
+        }
+        for (const int id : pm->lang_tag_opener_ids) {
+            mask[static_cast<size_t>(id)] = 1;
         }
     }
-    for (const int id : pm->lang_tag_opener_ids) {
-        mask[static_cast<size_t>(id)] = 1;
+    bool                                   alphabet_usable = false;
+    const transcribe::lang::AlphabetFilter alphabet =
+        transcribe::lang::build_alphabet_filter(requested, alphabet_usable, unknown);
+    if (alphabet_usable) {
+        for (int id = 0; id < n_tok; ++id) {
+            if (mask[static_cast<size_t>(id)] != 0 || pm->tok.is_strippable_special(id)) {
+                continue;  // specials (tags, <unk>, …) are not text
+            }
+            if (!alphabet.allows(pm->tok.token(id))) {
+                mask[static_cast<size_t>(id)] = 1;
+                any_blocked                   = true;
+            }
+        }
+    }
+    if (!any_blocked) {
+        mask.clear();  // nothing to constrain: the plain argmax path
     }
     return TRANSCRIBE_OK;
 }
@@ -988,14 +1035,16 @@ static transcribe_status decode_and_populate(ParakeetSession *             pc,
         transcribe_status st = TRANSCRIBE_OK;
         switch (pm->host_decoder.head_kind) {
             case HostHeadKind::TDT:
-                st = decode_tdt_greedy(pm->host_decoder, enc, T_enc, d_enc, pc->n_threads, pc->raw_tokens);
+                st = decode_tdt_greedy(pm->host_decoder, enc, T_enc, d_enc, pc->n_threads, pc->raw_tokens,
+                                       &language_block_mask);
                 break;
             case HostHeadKind::RNNT:
                 st = decode_rnnt_greedy(pm->host_decoder, enc, T_enc, d_enc, pc->n_threads, pc->raw_tokens,
                                         &language_block_mask);
                 break;
             case HostHeadKind::CTC:
-                st = decode_ctc_greedy(pm->host_decoder, enc, T_enc, d_enc, pc->n_threads, pc->raw_tokens);
+                st = decode_ctc_greedy(pm->host_decoder, enc, T_enc, d_enc, pc->n_threads, pc->raw_tokens,
+                                       &language_block_mask);
                 break;
         }
         if (st != TRANSCRIBE_OK) {

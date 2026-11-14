@@ -268,7 +268,8 @@ StepBuild build_step_graph(ggml_context *                   ctx,
                            const QwenAsrHParams &           hp,
                            transcribe::causal_lm::KvCache & kv_cache,
                            int                              max_n_kv,
-                           bool                             use_flash) {
+                           bool                             use_flash,
+                           bool                             with_logit_bias) {
     StepBuild sb{};
     sb.max_n_kv = max_n_kv;
 
@@ -334,6 +335,12 @@ StepBuild build_step_graph(ggml_context *                   ctx,
     ggml_tensor * logits = ggml_mul_mat(ctx, weights.dec_embed.token_w, x);
     logits               = ggml_reshape_1d(ctx, logits, vocab);
     ggml_set_name(logits, "step.logits");
+    if (with_logit_bias) {
+        sb.logit_bias_in = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, vocab);
+        ggml_set_name(sb.logit_bias_in, "step.logit_bias");
+        ggml_set_input(sb.logit_bias_in);
+        logits = ggml_add(ctx, logits, sb.logit_bias_in);
+    }
 
     // argmax on-device → 4-byte readback instead of vocab-sized vector.
     // Monotone-invariant: no softmax/log needed.
@@ -357,7 +364,8 @@ VerifyBuild build_verify_graph(ggml_context *                   ctx,
                                transcribe::causal_lm::KvCache & kv_cache,
                                int                              T_verify,
                                int                              max_n_kv,
-                               bool                             use_flash) {
+                               bool                             use_flash,
+                               bool                             with_logit_bias) {
     VerifyBuild vb{};
     vb.T_verify = T_verify;
     vb.max_n_kv = max_n_kv;
@@ -416,6 +424,12 @@ VerifyBuild build_verify_graph(ggml_context *                   ctx,
     x                    = ggml_mul(ctx, ggml_rms_norm(ctx, x, rms_eps), weights.dec_final.norm_w);
     ggml_tensor * logits = ggml_mul_mat(ctx, weights.dec_embed.token_w, x);  // [vocab, T_verify]
     ggml_set_name(logits, "verify.logits");
+    if (with_logit_bias) {
+        vb.logit_bias_in = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, hp.dec_vocab_size);
+        ggml_set_name(vb.logit_bias_in, "verify.logit_bias");
+        ggml_set_input(vb.logit_bias_in);
+        logits = ggml_add(ctx, logits, vb.logit_bias_in);  // broadcast over the T_verify columns
+    }
 
     // Per-position argmax on-device → T_verify-int readback.
     ggml_tensor * amax = ggml_argmax(ctx, logits);

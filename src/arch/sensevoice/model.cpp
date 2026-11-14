@@ -18,6 +18,7 @@
 #include "transcribe-batch-util.h"
 #include "transcribe-debug.h"
 #include "transcribe-kaldi-fbank.h"
+#include "transcribe-lang-alphabet.h"
 #include "transcribe-load-common.h"
 #include "transcribe-loader.h"
 #include "transcribe-log.h"
@@ -224,6 +225,78 @@ int resolve_lid_idx(const SenseVoiceHParams & hp, const char * lang_or_null) {
     return hp.prefix_lang_auto;
 }
 
+// Language allowlist (no explicit language) -> blocked CTC ids. SenseVoice
+// decodes under the <|auto|> query and its CTC head opens with the detected
+// <|lang|> tag: the tags of languages outside the list are blocked, and so is
+// every text token no listed language may write (transcribe-lang-alphabet.h,
+// the union of their alphabets, so a mixed-language utterance survives).
+// Unknown codes are WARN-skipped; a list naming none of the model's
+// languages is UNSUPPORTED_LANGUAGE. Empty mask = unconstrained.
+static transcribe_status sensevoice_language_mask(const SenseVoiceModel *       cm,
+                                                  const transcribe_run_params * params,
+                                                  std::vector<uint8_t> &        mask) {
+    mask.clear();
+    if (params == nullptr || params->n_allowed_languages <= 0 || params->allowed_languages == nullptr) {
+        return TRANSCRIBE_OK;
+    }
+    if (params->language != nullptr && params->language[0] != '\0' && std::strcmp(params->language, "auto") != 0) {
+        return TRANSCRIBE_OK;
+    }
+    static const std::vector<std::string> k_codes = { "zh", "en", "yue", "ja", "ko" };
+    std::vector<uint8_t>                  tag_allowed(k_codes.size(), 0);
+    std::vector<std::string>              requested;
+    std::vector<std::string>              unknown;
+    int                                   n_known = 0;
+    for (int32_t i = 0; i < params->n_allowed_languages; ++i) {
+        const char * code = params->allowed_languages[i];
+        if (code == nullptr || code[0] == '\0') {
+            return TRANSCRIBE_ERR_INVALID_ARG;
+        }
+        requested.emplace_back(code);
+        const std::vector<int> hits = transcribe::lang::resolve_all(code, k_codes);
+        if (hits.empty()) {
+            log_msg(TRANSCRIBE_LOG_LEVEL_WARN, "sensevoice: allowed language \"%s\" is not one this model can detect",
+                    code);
+            unknown.emplace_back(code);
+            continue;
+        }
+        n_known += 1;
+        for (const int k : hits) {
+            tag_allowed[static_cast<size_t>(k)] = 1;
+        }
+    }
+    if (n_known == 0) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "sensevoice: none of the %d allowed languages is one this model can detect",
+                params->n_allowed_languages);
+        return TRANSCRIBE_ERR_UNSUPPORTED_LANGUAGE;
+    }
+    const transcribe::Tokenizer & tok = cm->tok;
+    const int                     n   = std::max(cm->hparams.vocab_size, tok.n_tokens());
+    mask.assign(static_cast<size_t>(n), 0);
+    // Tags only when every listed language has one (see the parakeet note:
+    // forcing the others onto an untagged language makes things worse).
+    for (size_t k = 0; n_known == params->n_allowed_languages && k < k_codes.size(); ++k) {
+        const int id = tok.find("<|" + k_codes[k] + "|>");
+        if (id >= 0 && tag_allowed[k] == 0) {
+            mask[static_cast<size_t>(id)] = 1;
+        }
+    }
+    bool                                   usable   = false;
+    const transcribe::lang::AlphabetFilter alphabet =
+        transcribe::lang::build_alphabet_filter(requested, usable, unknown);
+    if (usable) {
+        for (int id = 0; id < tok.n_tokens(); ++id) {
+            if (mask[static_cast<size_t>(id)] != 0 || tok.is_control(id)) {
+                continue;
+            }
+            if (!alphabet.allows(tok.decode(&id, 1))) {
+                mask[static_cast<size_t>(id)] = 1;
+            }
+        }
+    }
+    return TRANSCRIBE_OK;
+}
+
 void apply_thread_policy(SenseVoiceSession * cc) {
     transcribe::configure_sched_n_threads(cc->sched, cc->n_threads);
 }
@@ -243,7 +316,8 @@ static transcribe_status decode_and_populate(SenseVoiceSession *           cc,
                                              int                           T_full,
                                              int                           vocab,
                                              const char *                  lang,
-                                             int                           n_samples) {
+                                             int                           n_samples,
+                                             const std::vector<uint8_t> &  blocked) {
     const auto &  hp          = cm->hparams;
     const int64_t t_dec_start = ggml_time_us();
 
@@ -256,10 +330,25 @@ static transcribe_status decode_and_populate(SenseVoiceSession *           cc,
         const float * row     = log_probs + static_cast<size_t>(t) * vocab;
         int           best_id = 0;
         float         best    = row[0];
-        for (int v = 1; v < vocab; ++v) {
-            if (row[v] > best) {
-                best    = row[v];
-                best_id = v;
+        if (blocked.empty()) {
+            for (int v = 1; v < vocab; ++v) {
+                if (row[v] > best) {
+                    best    = row[v];
+                    best_id = v;
+                }
+            }
+        } else {
+            // Language allowlist (sensevoice_language_mask); blank (0) is
+            // never blocked, so the row always has an answer.
+            const int n_mask = static_cast<int>(blocked.size());
+            for (int v = 1; v < vocab; ++v) {
+                if (v < n_mask && blocked[static_cast<size_t>(v)] != 0) {
+                    continue;
+                }
+                if (row[v] > best) {
+                    best    = row[v];
+                    best_id = v;
+                }
             }
         }
         if (best_id != prev_id) {
@@ -371,6 +460,10 @@ transcribe_status run(transcribe_session *          session,
     auto * cm = static_cast<SenseVoiceModel *>(cc->model);
     if (cm == nullptr || cm->plan.scheduler_list.empty() || cm->frontend == nullptr) {
         return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+    std::vector<uint8_t> language_mask;
+    if (const transcribe_status lst = sensevoice_language_mask(cm, params, language_mask); lst != TRANSCRIBE_OK) {
+        return lst;
     }
 
     if (cc->poll_abort()) {
@@ -597,7 +690,7 @@ transcribe_status run(transcribe_session *          session,
 
     // ---------- Greedy CTC decode + public result --------------------
     const transcribe_status st_decode =
-        decode_and_populate(cc, cm, params, cc->logits_buf.data(), T_full, vocab, lang, n_samples);
+        decode_and_populate(cc, cm, params, cc->logits_buf.data(), T_full, vocab, lang, n_samples, language_mask);
     cleanup_gpu();
     return st_decode;
 }
@@ -628,8 +721,12 @@ static transcribe_status run_batch_encode(
     const int *                             n_samples,
     int64_t                                 total_mel_us,
     const transcribe_run_params *           params) {
-    const auto & hp = cm->hparams;
-    const int    n  = static_cast<int>(feats.size());
+    const auto &         hp = cm->hparams;
+    const int            n  = static_cast<int>(feats.size());
+    std::vector<uint8_t> language_mask;
+    if (const transcribe_status lst = sensevoice_language_mask(cm, params, language_mask); lst != TRANSCRIBE_OK) {
+        return lst;
+    }
 
     bool var_len = false;
     for (int b = 0; b < n; ++b) {
@@ -800,7 +897,7 @@ static transcribe_status run_batch_encode(
                 transcribe::debug::dump_host_f32(nm.c_str(), lp, static_cast<long long>(real_T_full[b]) * vocab, shape,
                                                  2, "ctc.log_probs");
             }
-            return decode_and_populate(cc, cm, params, lp, real_T_full[b], vocab, lang, n_samples[b]);
+            return decode_and_populate(cc, cm, params, lp, real_T_full[b], vocab, lang, n_samples[b], language_mask);
         });
 }
 

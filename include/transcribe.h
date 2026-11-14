@@ -1260,24 +1260,36 @@ TRANSCRIBE_API void transcribe_session_params_init(struct transcribe_session_par
  *              except raw_text. An error when unsupported, and under
  *              INSTRUCT, batch or streaming.
  *
- * n_allowed_languages / allowed_languages: optional language allowlist for
- *              automatic detection (LANGUAGE_ALLOWLIST). The model may only
- *              detect one of these languages; an empty list (0 / NULL)
- *              leaves detection unrestricted. Ignored when `language` is
- *              set. Codes are matched loosely: case, '_' vs '-', a bare
- *              primary subtag ("fr" allows fr-FR and fr-CA) and the common
- *              aliases (he/iw, id/in, jv/jw, nb/no, tl/fil). The list is
- *              intersected with what the model can detect: codes it cannot
- *              are skipped with a WARN, so one list can serve every model a
- *              host runs; a list with none it can detect is
+ * n_allowed_languages / allowed_languages: optional language allowlist
+ *              (LANGUAGE_ALLOWLIST): the languages the speaker uses, who
+ *              may switch between them at any point, mid-sentence
+ *              included. Nothing is locked to one of them: the model is
+ *              limited to their union, through whatever it decides
+ *              language with:
+ *                - its language label (Nemotron's locale tags, Whisper's
+ *                  per-window language token, the "language X" envelope of
+ *                  Qwen3-ASR and R2T2, SenseVoice's LID tag), restricted to
+ *                  the list when the model can name every listed language
+ *                  (otherwise the labels stay free, with a WARN);
+ *                - the alphabet it writes: no token carrying a letter none
+ *                  of the listed languages writes (another script, a
+ *                  foreign diacritic, a Cyrillic letter of a neighbouring
+ *                  language), on every family with the feature, including
+ *                  those without a label (Parakeet TDT, Granite).
+ *              An empty list (0 / NULL) changes nothing. Ignored when
+ *              `language` is set. Codes are matched loosely: case, '_' vs
+ *              '-', a bare primary subtag ("fr" allows fr-FR and fr-CA) and
+ *              the common aliases (he/iw, id/in, jv/jw, nb/no, tl/fil).
+ *              Codes the model cannot detect are WARNed and still widen
+ *              the alphabet, so one list can serve every model a host
+ *              runs; a list with none it can detect is
  *              TRANSCRIBE_ERR_UNSUPPORTED_LANGUAGE. A negative count, a NULL
  *              list with a positive count, or a NULL/empty element is
  *              TRANSCRIBE_ERR_INVALID_ARG; a non-empty list on a model
- *              without the feature is TRANSCRIBE_ERR_UNSUPPORTED_LANGUAGE.
- *              The list constrains the language decision; speech in a
- *              language outside it is still transcribed as heard. Borrowed
- *              for the call; transcribe_stream_begin copies it for the
- *              stream, which applies it at every decode step.
+ *              without the feature is TRANSCRIBE_ERR_UNSUPPORTED_LANGUAGE
+ *              (probe transcribe_model_supports first). Borrowed for the
+ *              call; transcribe_stream_begin copies it for the stream,
+ *              which applies it at every decode step.
  */
 struct transcribe_run_params {
     uint64_t struct_size;

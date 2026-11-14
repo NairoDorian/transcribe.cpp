@@ -124,6 +124,14 @@ struct GraniteSession final : public transcribe_session {
     int                            kv_batch_cap   = 0;
     int                            kv_batch_n_ctx = 0;
 
+    // Language allowlist (transcribe_run_params::allowed_languages): additive
+    // logit bias, 0 for every token one of the listed languages may write and
+    // -inf for the rest (transcribe-lang-alphabet.h, the union of their
+    // alphabets, so a speaker may switch between them mid-sentence). Empty =
+    // no constraint. Rebuilt only when the list changes (`lang_bias_key`).
+    std::vector<float> lang_bias;
+    std::string        lang_bias_key;
+
     GraniteSession() = default;
     ~GraniteSession() override;
 };

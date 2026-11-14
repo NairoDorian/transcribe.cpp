@@ -637,7 +637,8 @@ StepBuild build_step_graph(ggml_context *                   ctx,
                            const GraniteHParams &           hp,
                            transcribe::causal_lm::KvCache & kv_cache,
                            int                              max_n_kv,
-                           bool                             use_flash) {
+                           bool                             use_flash,
+                           bool                             with_logit_bias) {
     StepBuild sb{};
     sb.max_n_kv = max_n_kv;
 
@@ -703,6 +704,12 @@ StepBuild build_step_graph(ggml_context *                   ctx,
     logits               = ggml_reshape_1d(ctx, logits, vocab);
     logits               = ggml_scale(ctx, logits, inv_log);
     ggml_set_name(logits, "step.logits");
+    if (with_logit_bias) {
+        sb.logit_bias_in = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, vocab);
+        ggml_set_name(sb.logit_bias_in, "step.logit_bias");
+        ggml_set_input(sb.logit_bias_in);
+        logits = ggml_add(ctx, logits, sb.logit_bias_in);
+    }
 
     ggml_tensor * amax = ggml_argmax(ctx, logits);
     ggml_set_name(amax, "step.argmax");

@@ -33,6 +33,10 @@ void apply_family_invariants(transcribe_model & model) {
     // notes/prompting-ab-results.md).
     transcribe::set_feature(&model, TRANSCRIBE_FEATURE_VOCABULARY, true);
     transcribe::set_feature(&model, TRANSCRIBE_FEATURE_CONTEXT_PROMPT, true);
+    // Language allowlist: the "language X" envelope is limited to the list and
+    // the decoder to the union of the listed languages' alphabets (offline and
+    // R2T2 streaming; see LanguageConstraint).
+    transcribe::set_feature(&model, TRANSCRIBE_FEATURE_LANGUAGE_ALLOWLIST, true);
 }
 
 }  // namespace transcribe::qwen3_asr

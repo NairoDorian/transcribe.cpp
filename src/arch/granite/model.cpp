@@ -16,6 +16,7 @@
 #include "transcribe-env.h"
 #include "transcribe-flash-policy.h"
 #include "transcribe-graph-opt.h"
+#include "transcribe-lang-alphabet.h"
 #include "transcribe-load-common.h"
 #include "transcribe-loader.h"
 #include "transcribe-log.h"
@@ -287,6 +288,11 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
 
     if (const transcribe_status st = read_languages_kv(loader.gguf(), *m); st != TRANSCRIBE_OK) {
         return st;
+    }
+    // Language allowlist: the decoder is limited to the listed languages'
+    // alphabets (prepare_language_bias); meaningful on multilingual variants.
+    if (m->caps.n_languages >= 2) {
+        transcribe::set_feature(m.get(), TRANSCRIBE_FEATURE_LANGUAGE_ALLOWLIST, true);
     }
 
     // Tokenizer (byte-level BPE; loader handles the "gpt2" model tag).
@@ -868,6 +874,85 @@ void finalize_granite_result(GraniteModel *                cm,
     out.segments.push_back(std::move(seg));
 }
 
+// Language allowlist -> cc->lang_bias (see GraniteSession). Granite's language
+// is implicit in its transcript, so the list constrains the alphabet the
+// decoder writes in; it is validated against caps.languages (unknown codes are
+// WARN-skipped, none known is UNSUPPORTED_LANGUAGE). Inactive with an explicit
+// language, no list, or a translate task (the output is then the target
+// language, not the speaker's).
+static transcribe_status prepare_language_bias(GraniteSession *              cc,
+                                               const GraniteModel *          cm,
+                                               const transcribe_run_params * params) {
+    if (params == nullptr || (params->language != nullptr && params->language[0] != '\0') ||
+        params->n_allowed_languages <= 0 || params->allowed_languages == nullptr ||
+        params->task == TRANSCRIBE_TASK_TRANSLATE) {
+        cc->lang_bias.clear();
+        cc->lang_bias_key.clear();
+        return TRANSCRIBE_OK;
+    }
+    std::string key;
+    for (int32_t i = 0; i < params->n_allowed_languages; ++i) {
+        const char * code = params->allowed_languages[i];
+        if (code == nullptr || code[0] == '\0') {
+            return TRANSCRIBE_ERR_INVALID_ARG;
+        }
+        key += transcribe::lang::normalize(code);
+        key += ',';
+    }
+    if (!cc->lang_bias_key.empty() && cc->lang_bias_key == key) {
+        return TRANSCRIBE_OK;
+    }
+    std::vector<std::string> advertised;
+    for (int j = 0; cm->caps.languages != nullptr && j < cm->caps.n_languages; ++j) {
+        if (cm->caps.languages[j] != nullptr) {
+            advertised.emplace_back(cm->caps.languages[j]);
+        }
+    }
+    std::vector<std::string> requested;
+    std::vector<std::string> unknown;
+    int                      n_known = 0;
+    for (int32_t i = 0; i < params->n_allowed_languages; ++i) {
+        const char * code = params->allowed_languages[i];
+        requested.emplace_back(code);
+        if (transcribe::lang::resolve_all(code, advertised).empty()) {
+            log_msg(TRANSCRIBE_LOG_LEVEL_WARN, "granite: allowed language \"%s\" is not one this model transcribes",
+                    code);
+            unknown.emplace_back(code);
+            continue;
+        }
+        n_known += 1;
+    }
+    if (n_known == 0) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite: none of the %d allowed languages is one this model transcribes",
+                params->n_allowed_languages);
+        return TRANSCRIBE_ERR_UNSUPPORTED_LANGUAGE;
+    }
+    cc->lang_bias.clear();
+    bool                                   usable   = false;
+    // The whole list, known to this model or not: it is what the speaker may
+    // say, and the alphabet only ever widens with it.
+    const transcribe::lang::AlphabetFilter alphabet =
+        transcribe::lang::build_alphabet_filter(requested, usable, unknown);
+    const int                              vocab    = cm->hparams.dec_vocab_size;
+    if (usable && vocab > 0) {
+        cc->lang_bias.assign(static_cast<size_t>(vocab), 0.0f);
+        const int n_tok    = std::min(cm->tok.n_tokens(), vocab);
+        int       n_banned = 0;
+        for (int id = 0; id < n_tok; ++id) {
+            if (cm->tok.is_control(id)) {
+                continue;
+            }
+            if (!alphabet.allows(cm->tok.decode(&id, 1))) {
+                cc->lang_bias[static_cast<size_t>(id)] = -INFINITY;
+                n_banned += 1;
+            }
+        }
+        log_msg(TRANSCRIBE_LOG_LEVEL_DEBUG, "granite: language allowlist bans %d of %d tokens", n_banned, n_tok);
+    }
+    cc->lang_bias_key = key;
+    return TRANSCRIBE_OK;
+}
+
 transcribe_status run(transcribe_session *          ctx_base,
                       const float *                 pcm,
                       int                           n_samples,
@@ -879,6 +964,9 @@ transcribe_status run(transcribe_session *          ctx_base,
     auto * cm = static_cast<GraniteModel *>(cc->model);
 
     transcribe::debug::init();
+    if (const transcribe_status lst = prepare_language_bias(cc, cm, params); lst != TRANSCRIBE_OK) {
+        return lst;
+    }
 
     if (!cm->mel.has_value()) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite run: model has no MelFrontend");
@@ -1313,6 +1401,12 @@ transcribe_status run(transcribe_session *          ctx_base,
         return best;
     };
 
+    const bool use_logit_bias = cc->lang_bias.size() == last_logits.size();
+    if (use_logit_bias) {
+        for (size_t i = 0; i < last_logits.size(); ++i) {
+            last_logits[i] += cc->lang_bias[i];
+        }
+    }
     int32_t next_id = argmax_logits(last_logits);
 
     // Greedy step loop.
@@ -1335,7 +1429,8 @@ transcribe_status run(transcribe_session *          ctx_base,
             return TRANSCRIBE_ERR_OOM;
         }
     }
-    StepBuild step = build_step_graph(step_ctx, cm->weights, cm->hparams, cc->kv, max_n_kv, cc->decoder_use_flash);
+    StepBuild step =
+        build_step_graph(step_ctx, cm->weights, cm->hparams, cc->kv, max_n_kv, cc->decoder_use_flash, use_logit_bias);
     if (step.graph == nullptr) {
         ggml_free(step_ctx);
         cleanup_gpu();
@@ -1386,6 +1481,12 @@ transcribe_status run(transcribe_session *          ctx_base,
         ggml_backend_tensor_set(step.position_in, &pos, 0, sizeof(int32_t));
         ggml_backend_tensor_set(step.kv_idx_in, &kv_idx, 0, sizeof(int64_t));
         ggml_backend_tensor_set(step.mask_in, step_mask.data(), 0, step_mask.size() * sizeof(uint16_t));
+        if (use_logit_bias) {
+            // Re-uploaded every step like the mask: the allocator reuses an
+            // input's memory once its last reader has run, so a value set once
+            // before the loop is clobbered by the first step's intermediates.
+            ggml_backend_tensor_set(step.logit_bias_in, cc->lang_bias.data(), 0, cc->lang_bias.size() * sizeof(float));
+        }
 
         if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, step.graph); gs != GGML_STATUS_SUCCESS) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite run: step compute failed (%d)", static_cast<int>(gs));
@@ -1645,7 +1746,11 @@ transcribe_status run_batch(transcribe_session *          session,
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
 
-    if (!cc->decoder_use_flash || transcribe::debug::enabled() || n == 1) {
+    // A language allowlist biases each row's own step graph, which the batched
+    // step graph does not carry.
+    const bool allowlist = params != nullptr && (params->language == nullptr || params->language[0] == '\0') &&
+                           params->n_allowed_languages > 0;
+    if (!cc->decoder_use_flash || transcribe::debug::enabled() || n == 1 || allowlist) {
         return run_batch_serial(cc, pcm, n_samples, n, params);
     }
 

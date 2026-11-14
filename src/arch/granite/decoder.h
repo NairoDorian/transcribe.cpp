@@ -94,12 +94,15 @@ PrefillBuild build_prefill_graph(ggml_context *                   ctx,
 // Step graph (one token).
 
 struct StepBuild {
-    ggml_tensor * input_id_in = nullptr;  // [1] i32
-    ggml_tensor * position_in = nullptr;  // [1] i32, value = n_past
-    ggml_tensor * kv_idx_in   = nullptr;  // [1] i64, KV write position
-    ggml_tensor * mask_in     = nullptr;  // [max_n_kv, 1] f16
-    ggml_tensor * out         = nullptr;  // [1] i32 — argmax token id
-    ggml_cgraph * graph       = nullptr;
+    ggml_tensor * input_id_in   = nullptr;  // [1] i32
+    ggml_tensor * position_in   = nullptr;  // [1] i32, value = n_past
+    ggml_tensor * kv_idx_in     = nullptr;  // [1] i64, KV write position
+    ggml_tensor * mask_in       = nullptr;  // [max_n_kv, 1] f16
+    // [vocab] f32 added to the logits before the argmax; only built with
+    // with_logit_bias (the language allowlist's alphabet, 0 or -inf per id).
+    ggml_tensor * logit_bias_in = nullptr;
+    ggml_tensor * out           = nullptr;  // [1] i32 — argmax token id
+    ggml_cgraph * graph         = nullptr;
 
     int max_n_kv = 0;
 };
@@ -111,7 +114,8 @@ StepBuild build_step_graph(ggml_context *                   ctx,
                            const GraniteHParams &           hp,
                            transcribe::causal_lm::KvCache & kv_cache,
                            int                              max_n_kv,
-                           bool                             use_flash);
+                           bool                             use_flash,
+                           bool                             with_logit_bias = false);
 
 // Batched prefill / step (offline transcribe_run_batch).
 // Same recipe as the causal_lm families but with Granite block math (no Q/K

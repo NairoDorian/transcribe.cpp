@@ -171,6 +171,7 @@ set(TRANSCRIBE_SRCS
     transcribe-chunking.cpp
     transcribe-earshot.cpp
     transcribe-earshot-engine.cpp
+    transcribe-vad-gate.cpp
 )
 
 # Per-family source definitions

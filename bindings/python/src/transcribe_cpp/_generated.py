@@ -13,7 +13,7 @@ import ctypes as _c
 # Stable digest of the ABI surface below (structs, enums, macros, layout,
 # prototypes). A native provider package echoes this back so the API
 # package can reject an ABI-mismatched provider before dlopen.
-PUBLIC_HEADER_HASH = "0fa0d2838f92cca0"
+PUBLIC_HEADER_HASH = "e5426dbe4a029358"
 
 # === enum constants ===
 TRANSCRIBE_OK = 0
@@ -178,6 +178,12 @@ class transcribe_stream_update(_c.Structure):
     pass
 class transcribe_stream_text(_c.Structure):
     pass
+class transcribe_vad_gate_params(_c.Structure):
+    pass
+class transcribe_vad_gate_update(_c.Structure):
+    pass
+class transcribe_vad_gate_tail(_c.Structure):
+    pass
 class transcribe_timings(_c.Structure):
     pass
 class transcribe_segment(_c.Structure):
@@ -242,6 +248,9 @@ transcribe_session_limits._fields_ = [("struct_size", _c.c_uint64), ("effective_
 transcribe_stream_params._fields_ = [("struct_size", _c.c_uint64), ("family", _c.POINTER(transcribe_ext)), ("commit_policy", _c.c_int), ("stable_prefix_agreement_n", _c.c_uint32), ("enable_vad", _c.c_bool), ("vad_threshold", _c.c_float), ("vad_prefill_ms", _c.c_uint32), ("vad_hangover_ms", _c.c_uint32)]
 transcribe_stream_update._fields_ = [("struct_size", _c.c_uint64), ("result_changed", _c.c_bool), ("is_final", _c.c_bool), ("revision", _c.c_int32), ("input_received_ms", _c.c_int64), ("audio_committed_ms", _c.c_int64), ("buffered_ms", _c.c_int64), ("committed_changed", _c.c_bool), ("tentative_changed", _c.c_bool), ("vad_speaking", _c.c_bool), ("vad_speech_ms", _c.c_uint64), ("vad_last_score", _c.c_float), ("audio_level_dbfs", _c.c_float)]
 transcribe_stream_text._fields_ = [("struct_size", _c.c_uint64), ("full_text", _c.c_char_p), ("full_text_bytes", _c.c_uint64), ("committed_text", _c.c_char_p), ("committed_text_bytes", _c.c_uint64), ("tentative_text", _c.c_char_p), ("tentative_text_bytes", _c.c_uint64), ("raw_tentative_start_bytes", _c.c_uint64)]
+transcribe_vad_gate_params._fields_ = [("struct_size", _c.c_uint64), ("threshold", _c.c_float), ("exit_threshold", _c.c_float), ("onset_ms", _c.c_uint32), ("preroll_ms", _c.c_uint32), ("hangover_ms", _c.c_uint32), ("speech_hold_ms", _c.c_uint32)]
+transcribe_vad_gate_update._fields_ = [("struct_size", _c.c_uint64), ("n_frames", _c.c_int32), ("speech", _c.c_bool), ("voiced", _c.c_bool), ("speech_started", _c.c_bool), ("speech_ended", _c.c_bool), ("clock_speaking", _c.c_bool), ("last_score", _c.c_float), ("level_dbfs", _c.c_float), ("speech_ms", _c.c_uint64), ("audio", _c.POINTER(_c.c_float)), ("n_audio", _c.c_int64)]
+transcribe_vad_gate_tail._fields_ = [("struct_size", _c.c_uint64), ("withheld_frames", _c.c_int32), ("withheld_voiced_frames", _c.c_int32), ("speech", _c.c_bool), ("onset_counter", _c.c_int32), ("hangover_counter", _c.c_int32)]
 transcribe_timings._fields_ = [("struct_size", _c.c_uint64), ("load_ms", _c.c_float), ("mel_ms", _c.c_float), ("encode_ms", _c.c_float), ("decode_ms", _c.c_float)]
 transcribe_segment._fields_ = [("struct_size", _c.c_uint64), ("t0_ms", _c.c_int64), ("t1_ms", _c.c_int64), ("first_word", _c.c_int), ("n_words", _c.c_int), ("first_token", _c.c_int), ("n_tokens", _c.c_int), ("text", _c.c_char_p), ("speaker_id", _c.c_int32)]
 transcribe_word._fields_ = [("struct_size", _c.c_uint64), ("t0_ms", _c.c_int64), ("t1_ms", _c.c_int64), ("seg_index", _c.c_int), ("first_token", _c.c_int), ("n_tokens", _c.c_int), ("text", _c.c_char_p)]
@@ -316,6 +325,9 @@ STRUCT_LAYOUT = {
     'transcribe_stream_params': {'size': 40, 'align': 8, 'offsets': {'struct_size': 0, 'family': 8, 'commit_policy': 16, 'stable_prefix_agreement_n': 20, 'enable_vad': 24, 'vad_threshold': 28, 'vad_prefill_ms': 32, 'vad_hangover_ms': 36}},
     'transcribe_stream_update': {'size': 64, 'align': 8, 'offsets': {'struct_size': 0, 'result_changed': 8, 'is_final': 9, 'revision': 12, 'input_received_ms': 16, 'audio_committed_ms': 24, 'buffered_ms': 32, 'committed_changed': 40, 'tentative_changed': 41, 'vad_speaking': 42, 'vad_speech_ms': 48, 'vad_last_score': 56, 'audio_level_dbfs': 60}},
     'transcribe_stream_text': {'size': 64, 'align': 8, 'offsets': {'struct_size': 0, 'full_text': 8, 'full_text_bytes': 16, 'committed_text': 24, 'committed_text_bytes': 32, 'tentative_text': 40, 'tentative_text_bytes': 48, 'raw_tentative_start_bytes': 56}},
+    'transcribe_vad_gate_params': {'size': 32, 'align': 8, 'offsets': {'struct_size': 0, 'threshold': 8, 'exit_threshold': 12, 'onset_ms': 16, 'preroll_ms': 20, 'hangover_ms': 24, 'speech_hold_ms': 28}},
+    'transcribe_vad_gate_update': {'size': 56, 'align': 8, 'offsets': {'struct_size': 0, 'n_frames': 8, 'speech': 12, 'voiced': 13, 'speech_started': 14, 'speech_ended': 15, 'clock_speaking': 16, 'last_score': 20, 'level_dbfs': 24, 'speech_ms': 32, 'audio': 40, 'n_audio': 48}},
+    'transcribe_vad_gate_tail': {'size': 32, 'align': 8, 'offsets': {'struct_size': 0, 'withheld_frames': 8, 'withheld_voiced_frames': 12, 'speech': 16, 'onset_counter': 20, 'hangover_counter': 24}},
     'transcribe_timings': {'size': 24, 'align': 8, 'offsets': {'struct_size': 0, 'load_ms': 8, 'mel_ms': 12, 'encode_ms': 16, 'decode_ms': 20}},
     'transcribe_segment': {'size': 56, 'align': 8, 'offsets': {'struct_size': 0, 't0_ms': 8, 't1_ms': 16, 'first_word': 24, 'n_words': 28, 'first_token': 32, 'n_tokens': 36, 'text': 40, 'speaker_id': 48}},
     'transcribe_word': {'size': 48, 'align': 8, 'offsets': {'struct_size': 0, 't0_ms': 8, 't1_ms': 16, 'seg_index': 24, 'first_token': 28, 'n_tokens': 32, 'text': 40}},
@@ -603,6 +615,28 @@ def configure(lib):
     lib.transcribe_tokenize.argtypes = [_c.c_void_p, _c.c_char_p, _c.POINTER(_c.c_int32), _c.c_size_t]
     lib.transcribe_vad_free.restype = None
     lib.transcribe_vad_free.argtypes = [_c.c_void_p]
+    lib.transcribe_vad_gate_feed.restype = _c.c_int
+    lib.transcribe_vad_gate_feed.argtypes = [_c.c_void_p, _c.POINTER(_c.c_float), _c.c_int64, _c.POINTER(transcribe_vad_gate_update)]
+    lib.transcribe_vad_gate_finish.restype = _c.c_int
+    lib.transcribe_vad_gate_finish.argtypes = [_c.c_void_p, _c.POINTER(transcribe_vad_gate_update)]
+    lib.transcribe_vad_gate_free.restype = None
+    lib.transcribe_vad_gate_free.argtypes = [_c.c_void_p]
+    lib.transcribe_vad_gate_get_tail.restype = _c.c_int
+    lib.transcribe_vad_gate_get_tail.argtypes = [_c.c_void_p, _c.POINTER(transcribe_vad_gate_tail)]
+    lib.transcribe_vad_gate_init.restype = _c.c_int
+    lib.transcribe_vad_gate_init.argtypes = [_c.POINTER(transcribe_vad_gate_params), _c.POINTER(_c.c_void_p)]
+    lib.transcribe_vad_gate_params_init.restype = None
+    lib.transcribe_vad_gate_params_init.argtypes = [_c.POINTER(transcribe_vad_gate_params)]
+    lib.transcribe_vad_gate_reset.restype = None
+    lib.transcribe_vad_gate_reset.argtypes = [_c.c_void_p]
+    lib.transcribe_vad_gate_set_hangover_ms.restype = _c.c_int
+    lib.transcribe_vad_gate_set_hangover_ms.argtypes = [_c.c_void_p, _c.c_uint32]
+    lib.transcribe_vad_gate_set_threshold.restype = _c.c_int
+    lib.transcribe_vad_gate_set_threshold.argtypes = [_c.c_void_p, _c.c_float]
+    lib.transcribe_vad_gate_tail_init.restype = None
+    lib.transcribe_vad_gate_tail_init.argtypes = [_c.POINTER(transcribe_vad_gate_tail)]
+    lib.transcribe_vad_gate_update_init.restype = None
+    lib.transcribe_vad_gate_update_init.argtypes = [_c.POINTER(transcribe_vad_gate_update)]
     lib.transcribe_vad_get_info.restype = _c.c_int
     lib.transcribe_vad_get_info.argtypes = [_c.c_void_p, _c.POINTER(transcribe_vad_info)]
     lib.transcribe_vad_get_result.restype = _c.c_int
@@ -629,6 +663,8 @@ def configure(lib):
     lib.transcribe_vad_result_init.argtypes = [_c.POINTER(transcribe_vad_result)]
     lib.transcribe_vad_run.restype = _c.c_int
     lib.transcribe_vad_run.argtypes = [_c.c_void_p, _c.POINTER(_c.c_float), _c.c_int, _c.POINTER(transcribe_vad_params)]
+    lib.transcribe_vad_score_frames.restype = _c.c_int
+    lib.transcribe_vad_score_frames.argtypes = [_c.POINTER(_c.c_float), _c.c_int64, _c.c_int32, _c.POINTER(_c.c_float)]
     lib.transcribe_vad_segment_init.restype = None
     lib.transcribe_vad_segment_init.argtypes = [_c.POINTER(transcribe_vad_segment)]
     lib.transcribe_vad_session_free.restype = None

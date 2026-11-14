@@ -345,6 +345,14 @@ target_compile_definitions(transcribe_earshot_engine_unit PRIVATE
 transcribe_apply_warnings(transcribe_earshot_engine_unit)
 add_test(NAME transcribe_earshot_engine_unit COMMAND transcribe_earshot_engine_unit)
 
+# Speech gate + batch scoring through the public C API.
+add_executable(transcribe_vad_gate_unit vad_gate_unit.cpp)
+target_link_libraries(transcribe_vad_gate_unit PRIVATE transcribe transcribe-common-example)
+target_compile_definitions(transcribe_vad_gate_unit PRIVATE
+    "TRANSCRIBE_EARSHOT_FIXTURES=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/earshot\"")
+transcribe_apply_warnings(transcribe_vad_gate_unit)
+add_test(NAME transcribe_vad_gate_unit COMMAND transcribe_vad_gate_unit)
+
 add_executable(transcribe_language_match_unit language_match_unit.cpp)
 target_include_directories(transcribe_language_match_unit PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
 transcribe_apply_warnings(transcribe_language_match_unit)

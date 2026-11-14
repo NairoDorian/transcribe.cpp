@@ -84,7 +84,10 @@ pub use backend::{
 };
 pub use cancel::CancelToken;
 pub use diarize::{DiarizeInfo, DiarizeOptions, DiarizeSession, DiarizeSessionOptions};
-pub use earshot::VoiceActivityDetector;
+pub use earshot::{
+    score_frames, VadGate, VadGateParams, VadGateTail, VadGateUpdate, VoiceActivityDetector,
+    EARSHOT_FRAME_SAMPLES,
+};
 pub use error::{Error, ErrorKind, ErrorReport, Result};
 pub use family::{
     DiarizeExtension, MoonshineStreamingOptions, ParakeetBufferedStreamOptions,

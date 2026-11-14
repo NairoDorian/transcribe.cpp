@@ -98,7 +98,7 @@ arch-dl = ["shared"]
 
 [build-dependencies]
 cmake = "0.1.58"
-serde_json = "1.0.151"
+serde_json = "1.0.154"
 
 # The sys crate's manifest is THIS file (repo root) so the tarball can carry
 # the whole C++ tree; its Rust sources are the only non-package subtree under

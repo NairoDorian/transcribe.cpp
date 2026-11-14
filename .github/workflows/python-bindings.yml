@@ -71,7 +71,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@v10.3.3
       - name: Install clang (libclang resource-dir headers)
         # Idempotent for the persistent self-hosted box: install once, no-op
         # after (and no sudo needed when clang is already present).
@@ -99,7 +99,7 @@ jobs:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@v10.3.3
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build ccache
       - name: CPU ISA signature (segregates ccache across the heterogeneous fleet)

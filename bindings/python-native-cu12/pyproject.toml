@@ -26,7 +26,7 @@
 # runs in the same flow.
 
 [build-system]
-requires = ["scikit-build-core>=1.1.1"]
+requires = ["scikit-build-core>=1.1.2"]
 build-backend = "scikit_build_core.build"
 
 [project]
@@ -57,7 +57,7 @@ classifiers = [
 # prepare hook loads these into the process before any backend module loads.
 dependencies = [
   "nvidia-cuda-runtime-cu12>=12.9.79",
-  "nvidia-cublas-cu12>=12.9.2.10",
+  "nvidia-cublas-cu12>=12.9.3.13",
 ]
 
 # The fork, not upstream — see the same block in the repo-root pyproject.toml.

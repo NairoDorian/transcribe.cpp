@@ -18,7 +18,9 @@ Usual peer path: `C:/Users/Z/Downloads/PROJECTS/Handy_V2`. Use `git worktree lis
 when a feature lives elsewhere. Check both branches/dirty states and the app's
 Cargo pin/native build identity. Preserve unrelated work. When moving ownership
 or changing a shared contract, update both integration notes and test both sides.
-The current VAD/RNNoise roadmap is
+The overall roadmap is
+[`docs/plans/2026-11-fork-master-plan.md`](docs/plans/2026-11-fork-master-plan.md);
+the VAD/RNNoise engineering contract is
 [`docs/plans/2026-10-three-tier-super-vad-and-firered-architecture-plan.md`](docs/plans/2026-10-three-tier-super-vad-and-firered-architecture-plan.md).
 
 ## Python
@@ -33,12 +35,13 @@ The current VAD/RNNoise roadmap is
 uv run --project scripts/envs/<family> scripts/<script>.py ...
 ```
 
-- **Backlog (deferred, not started):** every env under `scripts/envs/` should
-  eventually get its dependencies bumped to latest — and where the env uses
-  PyTorch, to the nightly CUDA index matching the local toolkit (the parakeet
-  port env is the reference for this: `https://download.pytorch.org/whl/nightly/cu134`
-  for a CUDA 13.4 host). Do this as a dedicated refresh pass later; never mix
-  fleet-wide dep bumps into a behavior-change commit.
+- **Env refresh:** keep every env under `scripts/envs/` on its latest
+  dependencies with `uv lock --upgrade` in each env directory — and where the
+  env uses PyTorch, on the nightly CUDA index matching the local toolkit (the
+  parakeet port env is the reference: `https://download.pytorch.org/whl/nightly/cu134`
+  for a CUDA 13.4 host). Last done 2026-11-14 (all 23 relocked, floors
+  unchanged). Do it as its own commit; never mix fleet-wide dep bumps into a
+  behavior-change commit.
 
 ## Build
 

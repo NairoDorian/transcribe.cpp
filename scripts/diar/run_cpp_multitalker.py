@@ -10,7 +10,7 @@ TRANSCRIBE_MULTITALKER_MODE and forwarded verbatim from --mode.
 
 Usage:
     uv run scripts/diar/run_cpp_multitalker.py \
-      --model models/multitalker-parakeet-streaming-0.6b-v1/bundle/multitalker-parakeet-streaming-0.6b-v1-F32.gguf \
+      --model models/multitalker-parakeet-streaming-0.6b-v1/multitalker-parakeet-streaming-0.6b-v1-F32.gguf \
       --manifest samples/diar/ami-ihm-test.manifest.jsonl \
       --mode kernel \
       --out-dir reports/cpwer/cpp-kernel \

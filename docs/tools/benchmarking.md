@@ -94,6 +94,29 @@ per-cell delta table. Use `--name pre-refactor` / `--name post-refactor`
 for stable named baselines that overwrite on re-run, then compare the
 named pair.
 
+## Publication profiles and size caps
+
+`uv run scripts/bench/run.py --profile` runs the exact matrix the catalog
+requires, as declared in `catalog/_benchmark_profiles.json`. The profile owns
+quants, samples, iteration counts, and the machine targets.
+
+A target may declare `max_model_gib`. That makes the target a *weak reference
+machine*: it is only required to run variants whose reference publication
+footprint fits, and a larger model is published on the strong reference alone.
+The footprint is the published Q8_0 size in GiB (a variant with no Q8_0 falls
+back to its largest published quant), so the comparison is in binary units and
+includes the runtime margin implicitly through the chosen cap.
+
+The cap is requirement policy, not a measurement filter: an out-of-scope cell
+is neither demanded by `scripts/catalog/check.py`, nor run by
+`scripts/bench/run.py --profile`, nor ingested by
+`scripts/catalog/ingest_perf.py`. Because an unexpected row fails the gate as
+`speed_extra`, lowering a cap later also means deleting any rows already
+collected for the newly excluded models, not just re-running.
+
+Current policy: `m4` (a base Apple M4) and `ryzen-4750u` are capped at 5 GiB.
+`m4-max` has no cap and publishes every model.
+
 ## Quant coverage
 
 The default `--quants f16,q8_0,q4_k_m` covers the canonical tiers.

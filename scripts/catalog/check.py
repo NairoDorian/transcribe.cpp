@@ -5,7 +5,8 @@
 # ///
 """Validate the durable catalog JSON records.
 
-Checks the JSON schema, cross-row integrity the schema cannot express (a
+Checks the JSON schema, that each `family` is an architecture the engine
+registers, cross-row integrity the schema cannot express (a
 benchmark row referencing a quant the variant does not publish), that every
 record is paired with the card spec and doc the schema says it owns.
 
@@ -20,6 +21,7 @@ import argparse
 import collections
 import json
 import pathlib
+import re
 import sys
 
 from jsonschema import Draft202012Validator
@@ -40,6 +42,30 @@ def schema_pass(records: dict, schema: dict) -> int:
             for e in errs[:4]:
                 print(f"        {'/'.join(map(str, e.path)) or '<root>'}: {e.message[:110]}")
     print(f"schema     {len(records) - bad}/{len(records)} valid")
+    return bad
+
+
+ARCH_NAME_RE = re.compile(r'/\*\s*\.name\s*=\s*\*/\s*"([^"]+)"')
+
+
+def engine_arches() -> set[str]:
+    """The `.name` each src/arch registers: the GGUF general.architecture."""
+    return {name for path in (REPO / "src" / "arch").glob("*/*.cpp")
+            for name in ARCH_NAME_RE.findall(path.read_text())}
+
+
+def family_pass(records: dict) -> int:
+    """`family` is the GGUF's general.architecture, so the engine must
+    register it. Catches records written with a src/arch directory name
+    (granite5_ctc) instead of the architecture string (granite_speech5_ctc)."""
+    arches, bad = engine_arches(), 0
+    for name, rec in records.items():
+        if rec["family"] not in arches:
+            bad += 1
+            print(f"  FAIL {name}: family {rec['family']!r} is not a registered "
+                  f"architecture name in src/arch")
+    print(f"family     {len(records) - bad}/{len(records)} match a registered "
+          f"architecture ({len(arches)} known)")
     return bad
 
 
@@ -296,8 +322,8 @@ def main() -> int:
         return 2
     enforce_publication = args.publication_profile is not None
     selected_profile = args.publication_profile or None
-    bad = (schema_pass(records, schema) + integrity_pass(records)
-           + pairing_pass(records, bool(selected)) + provenance_pass(records)
+    bad = (schema_pass(records, schema) + family_pass(records)
+           + integrity_pass(records) + pairing_pass(records, bool(selected)) + provenance_pass(records)
            + publication_pass(records, selected_profile, enforce_publication))
     return 1 if bad else 0
 

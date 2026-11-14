@@ -6,6 +6,7 @@
 
 #include "ggml-backend.h"
 #include "ggml.h"
+#include "transcribe-backend.h"
 #include "transcribe-env.h"
 #include "transcribe-log.h"
 
@@ -115,13 +116,26 @@ inline graph_optimization_report optimize_inference_graph(ggml_cgraph * graph) {
     return optimize_inference_graph(graph, env::flag("TRANSCRIBE_GRAPH_OPTIMIZER"));
 }
 
-inline bool alloc_inference_graph(ggml_backend_sched_t sched, ggml_cgraph * graph) {
+// optimize_inference_graph (opt-in) + alloc_sched_graph, which allocates and
+// logs the scheduler's scratch high-water mark at DEBUG level. `tag`/`line`
+// name the call site; `extent` (>= 0) is an optional graph-length field.
+inline bool alloc_inference_graph(ggml_backend_sched_t sched,
+                                  ggml_cgraph *        graph,
+                                  const char *         tag    = "graph",
+                                  int                  line   = 0,
+                                  long long            extent = -1) {
     const auto report = optimize_inference_graph(graph);
     if (report.after != report.before) {
         log_msg(TRANSCRIBE_LOG_LEVEL_INFO, "graph optimizer: nodes=%d->%d copies=%d repeats=%d", report.before,
                 report.after, report.copies, report.repeats);
     }
-    return ggml_backend_sched_alloc_graph(sched, graph);
+    return alloc_sched_graph(sched, graph, tag, line, extent);
 }
+
+#define TRANSCRIBE_ALLOC_INFERENCE_GRAPH(sched, graph, tag) \
+    (::transcribe::alloc_inference_graph((sched), (graph), (tag), __LINE__))
+
+#define TRANSCRIBE_ALLOC_INFERENCE_GRAPH_EXTENT(sched, graph, tag, extent) \
+    (::transcribe::alloc_inference_graph((sched), (graph), (tag), __LINE__, (extent)))
 
 }  // namespace transcribe

@@ -13,6 +13,7 @@
 #include "ggml-backend.h"
 #include "ggml.h"
 #include "transcribe-backend.h"
+#include "transcribe-load-common.h"
 #include "transcribe-model.h"
 #include "transcribe-session.h"
 #include "transcribe-tokenizer.h"
@@ -109,8 +110,8 @@ struct MoonshineStreamingModel final : public transcribe_model {
     MoonshineStreamingWeights weights;
     ggml_context *            ctx_meta = nullptr;
 
-    transcribe::BackendPlan plan;
-    ggml_backend_buffer_t   backend_buffer = nullptr;
+    transcribe::BackendPlan                plan;
+    transcribe::load_common::WeightStorage weight_storage;
 
     MoonshineStreamingModel() = default;
     ~MoonshineStreamingModel() override;
@@ -119,7 +120,11 @@ struct MoonshineStreamingModel final : public transcribe_model {
 };
 
 struct MoonshineStreamingSession final : public transcribe_session {
-    int enc_T = 0;  // T_enc
+    // Host-side mirror of the post-adapter encoder hidden. The adapter
+    // pos_emb add (and proj when present) is applied once per session;
+    // this host buffer feeds the cross_kv precompute graph.
+    std::vector<float> adapter_host;
+    int                enc_T = 0;  // T_enc
 
     MoonshineStreamingKvCache kv_cache;
 
@@ -129,6 +134,8 @@ struct MoonshineStreamingSession final : public transcribe_session {
     // ---- incremental streaming state ----
     //
     // Each feed extends host-side committed buffers in lockstep:
+    //   stream_adapter_committed  - post-adapter encoder hidden
+    //                               [dec_d_model, T_emitted].
     //   stream_cross_k/v_committed - per decoder layer, [dec_d_model,
     //                               T_emitted]; uploaded into the persistent
     //                               kv_cache on each partial decode (per-feed,
@@ -151,6 +158,7 @@ struct MoonshineStreamingSession final : public transcribe_session {
     // per-utterance audio + encoder scratch.
     std::vector<float>               stream_pcm_buffer;
     int64_t                          stream_pcm_start_sample = 0;
+    std::vector<float>               stream_adapter_committed;
     std::vector<std::vector<float>>  stream_cross_k_committed;
     std::vector<std::vector<float>>  stream_cross_v_committed;
     int32_t                          stream_T_emitted      = 0;
@@ -158,6 +166,10 @@ struct MoonshineStreamingSession final : public transcribe_session {
     // stream_feed / stream_finalize skip a redundant decode when no
     // new encoder frames have been committed since the previous one.
     int32_t                          stream_last_decoded_T = 0;
+    // Set once stream_T_emitted reaches the adapter's position table
+    // (model.cpp adapter_max_frames): further audio is dropped and the
+    // stream reports transcribe_was_truncated(). Reset at stream_begin.
+    bool                             stream_input_capped   = false;
     // Recent partial-decode token id sequences, used to compute the
     // longest common prefix that's safe to mark committed across feeds.
     // Reset at stream_begin; updated after every successful partial decode.

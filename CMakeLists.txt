@@ -580,6 +580,18 @@ if(MSVC)
     endif()
 endif()
 
+# Windows: MSVC STL 17.10 made std::mutex's constructor constexpr, and binaries
+# built that way fault in _Mtx_lock when the loaded msvcp140.dll is older than
+# 14.40 (e.g. the 2021 14.29 redist), crashing on the first ggml_init (#210).
+# The STL's documented escape hatch restores the _Mtx_init_in_situ constructor
+# that old and new runtimes both handle. Global, not per-target: std::mutex is
+# constructed in ggml-base, ggml-cpu, ggml-vulkan, ggml-cuda and src/. Applies
+# to clang/clang-cl too, since they build against the same MSVC STL headers.
+# Same fix as whisper.cpp (there scoped to ggml-base only).
+if(WIN32)
+    add_compile_definitions(_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR)
+endif()
+
 # Windows MAX_PATH: relocate ExternalProjects (vulkan-shaders-gen) to a flat
 # <build>/e/src/ layout; inherited by add_subdirectory, so the vendored ggml
 # tree stays untouched. Anchored at CMAKE_CURRENT_BINARY_DIR so an embedding

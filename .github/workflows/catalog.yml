@@ -38,7 +38,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@v10.3.3
       - name: Canonical formatting
         run: uv run scripts/catalog/format.py --check
       - name: Schema, integrity and pairing
@@ -52,6 +52,8 @@ jobs:
           done
       - name: Published tables match the catalog
         run: uv run scripts/catalog/render.py --check
+      - name: Publication profile policy
+        run: uv run --with pytest pytest -q scripts/catalog/test_profiles.py
       - name: Rebuild portable database
         run: |
           uv run --with pytest pytest -q scripts/catalog/test_db_mapping.py

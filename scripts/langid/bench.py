@@ -63,6 +63,9 @@ def main(argv: list[str] | None = None) -> int:
     cells = [cell for cell in profiles.apply_exceptions(
                  record, "speed", profiles.expected_speed(record, profile))
              if cell["machine"] == target["machine"]]
+    if not cells:
+        reason = profiles.admission_reason(record, target) or "no publication cells"
+        p.error(f"{args.variant} is out of scope on {target['machine']}: {reason}")
     quants = {cell["quant"] for cell in cells}
     ggufs = [REPO_ROOT / "models" / args.variant / item["filename"]
              for item in record["downloads"] if item["quant"] in quants]

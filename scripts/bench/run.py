@@ -910,6 +910,18 @@ def main() -> int:
         cells = [cell for cell in cells
                  if (cell.variant.lower(), cell.quant.lower()) in allowed]
     by_variant = group_by_variant(cells)
+    if args.profile is not None:
+        # A weak target's size cap excludes whole variants. Say so up front
+        # rather than silently matching no cells; if nothing is left, the
+        # "no cells to run" error below exits non-zero.
+        for variant in list(by_variant):
+            key = catalog_key(args._catalog_records, variant)
+            reason = key and benchmark_profiles.admission_reason(
+                args._catalog_records[key], target)
+            if reason:
+                print(f"skip: {variant} is out of scope on {target['machine']}: "
+                      f"{reason}", file=sys.stderr)
+                del by_variant[variant]
 
     if args.dry_run:
         print(f"machine: {machine['slug']} ({machine['cpu_model']})")

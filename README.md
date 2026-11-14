@@ -23,7 +23,7 @@ C/C++ speech-to-text inference library. Runs diverse STT model families via [GGU
 | Multitalker Parakeet Streaming 0.6B v1 | `multitalker-parakeet-streaming-0.6b-v1` | diarize, streaming, token timestamps | [docs/models/multitalker-parakeet-streaming-0.6b-v1.md](docs/models/multitalker-parakeet-streaming-0.6b-v1.md) |
 | Nemotron 3.5 ASR Streaming 0.6B | `nemotron-3.5-asr-streaming-0.6b` | streaming, token timestamps | [docs/models/nemotron-3.5-asr-streaming-0.6b.md](docs/models/nemotron-3.5-asr-streaming-0.6b.md) |
 | Nemotron Speech Streaming EN 0.6B | `nemotron-speech-streaming-en-0.6b` | streaming, token timestamps | [docs/models/nemotron-speech-streaming-en-0.6b.md](docs/models/nemotron-speech-streaming-en-0.6b.md) |
-| Parakeet | `parakeet-ctc-0.6b`, `parakeet-ctc-1.1b`, `parakeet-primeline`, `parakeet-redux-0.6b` (native ternary), `parakeet-rnnt-0.6b`, `parakeet-rnnt-1.1b`, `parakeet-tdt-0.6b-v2`, `parakeet-tdt-0.6b-v3`, `parakeet-tdt-1.1b`, `parakeet-tdt_ctc-1.1b`, `parakeet-tdt_ctc-110m`, `parakeet-ultra`, `parakeet-ultra-0.6b`, `parakeet-unified-en-0.6b`, `orukeet` | streaming, token timestamps | [docs/models/parakeet.md](docs/models/parakeet.md) |
+| Parakeet | `parakeet-ctc-0.6b`, `parakeet-ctc-1.1b`, `parakeet-primeline`, `parakeet-redux-0.6b` (native ternary), `parakeet-rnnt-0.6b`, `parakeet-rnnt-1.1b`, `parakeet-tdt-0.6b-v2`, `parakeet-tdt-0.6b-v3`, `parakeet-tdt-1.1b`, `parakeet-tdt_ctc-1.1b`, `parakeet-tdt_ctc-110m`, `parakeet-ultra`, `parakeet-ultra-0.6b`, `parakeet-unified-en-0.6b`, `orukeet`, `phonon-2` | streaming, token timestamps | [docs/models/parakeet.md](docs/models/parakeet.md) |
 | Qwen3-ASR | `qwen3-asr-0.6b`, `qwen3-asr-1.7b` | - | [docs/models/qwen3-asr.md](docs/models/qwen3-asr.md) |
 | SenseVoice Small | `sensevoice-small` | - | [docs/models/sensevoice-small.md](docs/models/sensevoice-small.md) |
 | Voxtral (2507) | `voxtral-mini-3b-2507`, `voxtral-small-24b-2507` | translate | [docs/models/voxtral.md](docs/models/voxtral.md) |
@@ -108,7 +108,7 @@ Metal is enabled automatically on Apple Silicon. For Vulkan (Linux/Windows):
 sudo apt install build-essential cmake libvulkan-dev glslc libopenblas-dev
 
 # Fedora
-sudo dnf install vulkan-headers openblas-devel glslc spirv-headers-devel
+sudo dnf install vulkan-headers openblas-devel glslc spirv-headers-devel vulkan-loader-devel
 
 cmake -B build -DTRANSCRIBE_VULKAN=ON
 cmake --build build
@@ -196,6 +196,23 @@ Input must be 16 kHz mono WAV. Use `ffmpeg` or `sox` to convert other formats:
 ```bash
 ffmpeg -i input.mp3 -ar 16000 -ac 1 output.wav
 ```
+
+On the CPU and on Metal (Apple silicon), model weights are memory-mapped from
+the GGUF file rather than copied into process memory: they live in the page
+cache, which the OS can reclaim and share between processes, and loading is
+faster. Don't truncate or rewrite a model file in place while a program has it
+loaded; write a new file and rename it over the old one. `--no-mmap`
+(`transcribe_model_load_params::no_mmap`, or `TRANSCRIBE_NO_MMAP=1`) copies the
+weights instead.
+
+Models whose FFN gate and up weights are stored back to back (every packed
+variant: granite, canary-qwen, qwen3-asr, voxtral, voxtral-realtime, moss,
+funasr-nano) are fused at load time by pointing one tensor at those bytes
+instead of packing a second copy, so the fusion usually costs no extra weight
+memory. It falls back to the copying path when the device layout does not allow
+that (tensor storage padded or the mapping split, e.g. a file larger than the
+device's max buffer size). `TRANSCRIBE_NO_GATE_UP_ALIAS=1` forces the copying
+path.
 
 ## Bindings
 

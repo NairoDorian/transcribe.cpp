@@ -40,7 +40,7 @@ larger.
 ## Requirements
 
 `TQ1_G128` is a ggml type added by transcribe.cpp (downstream patch
-`patches/ggml/0003-tq1_g128-ternary.patch`). You need a transcribe.cpp build that
+`patches/ggml/0102-tq1_g128-ternary.patch`). You need a transcribe.cpp build that
 includes it; stock llama.cpp / ggml cannot read these files.
 
 At load time the ternary weights are re-laid-out **losslessly** (same codes, same fp16

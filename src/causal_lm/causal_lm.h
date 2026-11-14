@@ -313,13 +313,24 @@ struct PackedGateUpHandles {
     void free();
 };
 
-// Allocate a packed context + a [hidden, 2·intermediate] tensor per block
-// on `backend`, then copy gate's bytes followed by up's bytes into each.
-// Compatible with row-wise quants (Q4/Q5/Q6/Q8) because concat-along-dim-1
-// is byte-concat for those types. Writes `*entries[i].gate_up_w_out` to the
-// new tensor and marks the buffer GGML_BACKEND_BUFFER_USAGE_WEIGHTS.
-// Returns TRANSCRIBE_ERR_OOM on allocation failure, TRANSCRIBE_ERR_GGUF on a
-// gate/up shape or type mismatch; `out_handles` is left in a state safe to free.
+// Allocate a packed context + a [hidden, 2·intermediate] tensor per block,
+// then give each one the bytes of gate followed by up. Compatible with
+// row-wise quants (Q4/Q5/Q6/Q8) because concat-along-dim-1 is byte-concat for
+// those types.
+//
+// Where the block's gate and up tensors are already adjacent in one backend
+// buffer (the layout the converter writes, and the one both the copying and
+// the mmap load paths preserve), the packed tensor points straight at gate's
+// bytes and nothing is copied or duplicated. `out_handles.buffer` then stays
+// null, and the packed tensors' storage belongs to the weights buffer: they
+// must not outlive it. Otherwise the bytes are copied into a buffer owned by
+// `out_handles`, as before. `TRANSCRIBE_NO_GATE_UP_ALIAS` forces the copy path.
+//
+// Writes `*entries[i].gate_up_w_out` to the new tensor; a buffer created here
+// is marked GGML_BACKEND_BUFFER_USAGE_WEIGHTS. Returns TRANSCRIBE_ERR_OOM on
+// allocation failure, TRANSCRIBE_ERR_GGUF on a gate/up shape or type mismatch,
+// TRANSCRIBE_ERR_BACKEND if a device rejects an aliased tensor;
+// `out_handles` is left in a state safe to free.
 transcribe_status pack_gate_up(ggml_backend_t                   backend,
                                int                              hidden,
                                int                              intermediate,

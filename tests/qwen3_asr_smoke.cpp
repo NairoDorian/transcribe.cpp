@@ -104,9 +104,27 @@ const transcribe::qwen3_asr::QwenAsrModel * qwen_view(const struct transcribe_mo
     return static_cast<const transcribe::qwen3_asr::QwenAsrModel *>(m);
 }
 
+// setenv/unsetenv do not exist on MSVC; same helper shape as weights_mmap_smoke.
+// A null value unsets.
+void set_env(const char * name, const char * value) {
+#if defined(_WIN32)
+    _putenv_s(name, value != nullptr ? value : "");
+#else
+    if (value != nullptr) {
+        setenv(name, value, 1);
+    } else {
+        unsetenv(name);
+    }
+#endif
+}
+
 }  // namespace
 
 int main() {
+    // The gate+up assertions below describe the default configuration; a caller
+    // that exported the fork switch would otherwise fail them spuriously.
+    set_env("TRANSCRIBE_NO_GATE_UP_ALIAS", nullptr);
+
     const std::string fixture = g_fixtures_dir + "/arch_qwen3_asr_minimal.gguf";
 
     if (!file_exists(fixture)) {
@@ -304,6 +322,35 @@ int main() {
         CHECK(b.ffn_gate_up_w != nullptr);
     }
 
+    // ----- gate+up packing: aliased storage, exact bytes -----
+    //
+    // The catalog stores ffn.up straight after ffn.gate, so the packed tensor
+    // should alias those bytes instead of duplicating them (the whole point of
+    // the aliasing path: a copy doubles the FFN gate+up weight memory on every
+    // packed family). Its bytes must still be gate followed by up.
+    std::vector<std::vector<uint8_t>> packed_bytes;
+    {
+        CHECK(qm->packed_gate_up.buffer == nullptr);
+        for (const auto & b : qm->weights.dec_blocks) {
+            if (b.ffn_gate_up_w == nullptr) {
+                continue;
+            }
+            CHECK(b.ffn_gate_up_w->data == b.ffn_gate_w->data);
+            CHECK(b.ffn_gate_up_w->buffer == b.ffn_gate_w->buffer);
+
+            const size_t         want_gate = ggml_nbytes(b.ffn_gate_w);
+            const size_t         want_up   = ggml_nbytes(b.ffn_up_w);
+            std::vector<uint8_t> want(want_gate + want_up);
+            std::vector<uint8_t> got(ggml_nbytes(b.ffn_gate_up_w));
+            ggml_backend_tensor_get(b.ffn_gate_w, want.data(), 0, want_gate);
+            ggml_backend_tensor_get(b.ffn_up_w, want.data() + want_gate, 0, want_up);
+            ggml_backend_tensor_get(b.ffn_gate_up_w, got.data(), 0, got.size());
+            CHECK(want.size() == got.size() && std::memcmp(want.data(), got.data(), got.size()) == 0);
+            packed_bytes.push_back(std::move(got));
+        }
+        CHECK(!packed_bytes.empty());
+    }
+
     // ----- Spot-check tensor shapes against the catalog -----
     if (es.conv0_w != nullptr) {
         CHECK_EQ_INT(es.conv0_w->ne[0], 3);
@@ -363,6 +410,38 @@ int main() {
     }
 
     transcribe_model_free(model);
+
+    // ----- TRANSCRIBE_NO_GATE_UP_ALIAS forces the copying path -----
+    // Same fused bytes either way: the switch must not change results.
+    {
+        set_env("TRANSCRIBE_NO_GATE_UP_ALIAS", "1");
+        transcribe_model_load_params mp_copy;
+        transcribe_model_load_params_init(&mp_copy);
+        mp_copy.backend                    = TRANSCRIBE_BACKEND_CPU;
+        struct transcribe_model * copied_m = nullptr;
+        const transcribe_status   st_copy  = transcribe_model_load_file(fixture.c_str(), &mp_copy, &copied_m);
+        set_env("TRANSCRIBE_NO_GATE_UP_ALIAS", nullptr);
+        CHECK(st_copy == TRANSCRIBE_OK);
+        const auto * qm_copy = qwen_view(copied_m);
+        if (qm_copy != nullptr) {
+            CHECK(qm_copy->packed_gate_up.buffer != nullptr);
+            CHECK(qm_copy->packed_gate_up.ctx != nullptr);
+            size_t i = 0;
+            for (const auto & b : qm_copy->weights.dec_blocks) {
+                if (b.ffn_gate_up_w == nullptr || i >= packed_bytes.size()) {
+                    continue;
+                }
+                std::vector<uint8_t> got(ggml_nbytes(b.ffn_gate_up_w));
+                ggml_backend_tensor_get(b.ffn_gate_up_w, got.data(), 0, got.size());
+                const auto & want = packed_bytes[i];
+                CHECK(want.size() == got.size() && std::memcmp(want.data(), got.data(), got.size()) == 0);
+                ++i;
+            }
+        } else {
+            CHECK(qm_copy != nullptr);
+        }
+        transcribe_model_free(copied_m);
+    }
 
     if (g_failures > 0) {
         std::fprintf(stderr, "qwen3_asr_smoke: %d failures\n", g_failures);

@@ -16,7 +16,7 @@
 # (the binding is ctypes), only the native artifact directory.
 
 [build-system]
-requires = ["scikit-build-core>=1.1.1"]
+requires = ["scikit-build-core>=1.1.2"]
 build-backend = "scikit_build_core.build"
 
 [project]
@@ -203,7 +203,7 @@ cmake.args = [
 [tool.cibuildwheel]
 build = "cp312-*"
 skip = "*-musllinux*"
-test-requires = ["pytest>=9.1.1", "numpy", "huggingface_hub"]
+test-requires = ["pytest>=9.2.0", "numpy", "huggingface_hub"]
 test-command = "python {project}/scripts/ci/wheel_smoke.py {project}"
 
 [tool.cibuildwheel.linux]

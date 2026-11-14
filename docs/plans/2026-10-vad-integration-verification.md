@@ -134,3 +134,23 @@ links/fences, JSON metadata and Git whitespace. No C++/app audio behavior change
 and earlier integration tests were not re-run for this plan/probe-only update.
 New numeric quality criteria are provisional preregistration targets, not
 experimental results. Changes remain on the uncommitted VAD integration branch.
+
+## Landed on main, 2026-11-14
+
+The integration above was recorded on this branch as merge `703841ac` and is
+now on `main` through the upstream sync `26764bf6` (upstream 0.4.2, which
+contains this VAD work as squash commit `c63b18e2`). The reconciliation was
+re-applied by 3-way merging this branch's result against upstream (base
+`c63b18e2`), so the Earshot/Silero split, the plugin ABI 3 bump and the
+conditional registrations are unchanged; later upstream changes (mmap
+weights, VAD fixture smoke under `weights_mmap_smoke`) came on top.
+
+Checks on the merged `main` (Windows, MSVC 14.52, CPU, full model set): full
+build including tests, CTest 66/66 (incl. `silero_vad_smoke`,
+`vad_segments_unit`, `weights_mmap_smoke`), Rust lib/no_model/vad/serde
+28/28, ABI generators + Swift pin, teardown lint, clang-format diff gate.
+Still not exercised, as before: real Silero checkpoint WER, GPU VAD, ZER0
+running against the native VAD.
+
+What to do next lives in
+[the November master plan](2026-11-fork-master-plan.md), section B.

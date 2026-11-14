@@ -12,6 +12,7 @@
 #include "ggml.h"
 #include "gguf.h"
 #include "transcribe-arch.h"
+#include "transcribe-backend.h"
 #include "transcribe-batch-util.h"
 #include "transcribe-debug.h"
 #include "transcribe-decode-budget.h"
@@ -197,10 +198,7 @@ CanaryModel::~CanaryModel() {
         ggml_free(ctx_meta);
         ctx_meta = nullptr;
     }
-    if (backend_buffer != nullptr) {
-        safe_buffer_free(backend_buffer);
-        backend_buffer = nullptr;
-    }
+    weight_storage.reset();
     for (auto it = plan.scheduler_list.rbegin(); it != plan.scheduler_list.rend(); ++it) {
         safe_backend_free(*it);
     }
@@ -501,17 +499,8 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
     m->backend         = ggml_backend_name(m->plan.primary);
     m->primary_backend = m->plan.primary;
 
-    ggml_backend_buffer_t weights_buffer = alloc_ctx_tensors_with_reclaim(m->plan.primary, m->ctx_meta);
-    if (weights_buffer == nullptr) {
-        gguf_free(gguf_data);
-        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "canary: alloc_ctx_tensors_with_reclaim failed");
-        return TRANSCRIBE_ERR_OOM;
-    }
-    m->backend_buffer = weights_buffer;
-    ggml_backend_buffer_set_usage(weights_buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
-
-    if (const transcribe_status st =
-            transcribe::load_common::stream_tensor_data(loader.path(), gguf_data, m->ctx_meta, "canary");
+    if (const transcribe_status st = transcribe::load_common::load_weights(
+            loader.path(), gguf_data, m->ctx_meta, m->plan, params, "canary", m->weight_storage);
         st != TRANSCRIBE_OK) {
         gguf_free(gguf_data);
         return st;
@@ -802,6 +791,14 @@ transcribe_status run(transcribe_session *          session,
         return mst;
     }
     cc->t_mel_us = ggml_time_us() - t_mel_start;
+    // Dump the full frontend output (what NeMo's preprocessor returns)
+    // before the padding frame is dropped.
+    if (transcribe::debug::enabled()) {
+        const long long shape[2] = { mel_n_mels, mel_n_frames };
+        transcribe::debug::dump_host_f32("enc.mel.in", cc->mel_buf.data(), static_cast<long long>(cc->mel_buf.size()),
+                                         shape, 2, "encoder.mel");
+    }
+    mel_n_frames = cm->mel->drop_nemo_padding_frame(cc->mel_buf, mel_n_frames, static_cast<size_t>(n_samples));
 
     // Input-length gate: T_enc must stay within enc_pos_emb_max_len or the
     // runtime pos table aliases past the trained range. T_enc is a
@@ -864,13 +861,12 @@ transcribe_status run(transcribe_session *          session,
         }
     }
     ggml_backend_sched_reset(cc->sched);
-    if (!ggml_backend_sched_alloc_graph(cc->sched, eb.graph)) {
+    if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, eb.graph, "canary")) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "canary run: encoder graph allocation failed — out of memory.");
         return TRANSCRIBE_ERR_OOM;
     }
 
     ggml_backend_tensor_set(eb.mel_in, cc->mel_buf.data(), 0, cc->mel_buf.size() * sizeof(float));
-    transcribe::debug::dump_tensor("enc.mel.in", eb.mel_in, "encoder.mel");
 
     // Sinusoidal relative positional embedding.
     if (eb.pos_emb_in != nullptr) {
@@ -1107,7 +1103,7 @@ transcribe_status run(transcribe_session *          session,
         }
 
         ggml_backend_sched_reset(cc->sched);
-        if (!ggml_backend_sched_alloc_graph(cc->sched, cross_db.graph)) {
+        if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, cross_db.graph, "canary")) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "canary run: cross-KV graph allocation failed — out of memory.");
             return TRANSCRIBE_ERR_OOM;
@@ -1145,7 +1141,7 @@ transcribe_status run(transcribe_session *          session,
         }
 
         ggml_backend_sched_reset(cc->sched);
-        if (!ggml_backend_sched_alloc_graph(cc->sched, db.graph)) {
+        if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, db.graph, "canary")) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "canary run: decoder-prompt graph allocation failed — "
                                 "out of memory.");
@@ -1335,7 +1331,7 @@ transcribe_status run(transcribe_session *          session,
                 return TRANSCRIBE_ERR_GGUF;
             }
             ggml_backend_sched_reset(cc->sched);
-            if (!ggml_backend_sched_alloc_graph(cc->sched, sb.graph)) {
+            if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, sb.graph, "canary")) {
                 transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                     "canary run: step graph allocation failed — out of memory.");
                 commit_result();
@@ -1445,7 +1441,7 @@ transcribe_status run(transcribe_session *          session,
                 }
 
                 ggml_backend_sched_reset(cc->sched);
-                if (!ggml_backend_sched_alloc_graph(cc->sched, db_step.graph)) {
+                if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, db_step.graph, "canary")) {
                     transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                         "canary run: step graph allocation failed — out of memory.");
                     commit_result();
@@ -1569,7 +1565,7 @@ transcribe_status encode_one_to_host(CanarySession *            cc,
         }
     }
     ggml_backend_sched_reset(cc->sched);
-    if (!ggml_backend_sched_alloc_graph(cc->sched, eb.graph)) {
+    if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, eb.graph, "canary")) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "canary encode_one_to_host: encoder graph allocation failed — "
                             "out of memory.");
@@ -1705,7 +1701,7 @@ transcribe_status run_batch(transcribe_session *          session,
         if (cm->mel->compute(pcm[b], static_cast<size_t>(n_samples[b]), mel_bufs[b], nm, nf, /*n_threads=*/1) ==
                 TRANSCRIBE_OK &&
             nf > 0) {
-            mel_nf[b] = nf;
+            mel_nf[b] = cm->mel->drop_nemo_padding_frame(mel_bufs[b], nf, static_cast<size_t>(n_samples[b]));
             valid[b]  = 1;
         }
         return true;
@@ -1822,7 +1818,7 @@ transcribe_status run_batch(transcribe_session *          session,
             return TRANSCRIBE_ERR_GGUF;
         }
         ggml_backend_sched_reset(cc->sched);
-        if (!ggml_backend_sched_alloc_graph(cc->sched, cross.graph)) {
+        if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, cross.graph, "canary")) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "canary run_batch: cross-KV graph allocation failed — "
                                 "out of memory.");
@@ -1877,7 +1873,7 @@ transcribe_status run_batch(transcribe_session *          session,
             return TRANSCRIBE_ERR_GGUF;
         }
         ggml_backend_sched_reset(cc->sched);
-        if (!ggml_backend_sched_alloc_graph(cc->sched, sb.graph)) {
+        if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, sb.graph, "canary")) {
             return TRANSCRIBE_ERR_OOM;
         }
         ggml_backend_tensor_set(sb.cross_mask_in, cmask.data(), 0, cmask.size() * sizeof(ggml_fp16_t));

@@ -152,8 +152,8 @@
  * exactly and refuses to load a native provider that does not match.
  */
 #define TRANSCRIBE_VERSION_MAJOR 0
-#define TRANSCRIBE_VERSION_MINOR 3
-#define TRANSCRIBE_VERSION_PATCH 1
+#define TRANSCRIBE_VERSION_MINOR 4
+#define TRANSCRIBE_VERSION_PATCH 2
 
 #define TRANSCRIBE_VERSION_STRINGIZE_(x) #x
 #define TRANSCRIBE_VERSION_STRINGIZE(x)  TRANSCRIBE_VERSION_STRINGIZE_(x)
@@ -565,16 +565,17 @@ enum transcribe_pnc_mode {
  * transcribe_model_supports(model, TRANSCRIBE_FEATURE_ITN) returns false
  * emit a WARN and proceed with default behavior.
  *
- *   DEFAULT (0): family default. Zero-init gives this value. Most families
- *                follow their upstream default; `sensevoice` is the
- *                exception and resolves DEFAULT to ON, because there the
- *                ITN toggle is also the only source of casing and
- *                punctuation, so ITN-off would hand an unconfigured caller
- *                lowercase unpunctuated text. For sensevoice, DEFAULT is
- *                therefore NOT the setting the published WER tables were
- *                measured at — the harness pins ITN off (docs/tools/wer.md).
- *                `funasr_nano` has the same shape of toggle but keeps the
- *                upstream `itn=False` default.
+ *   DEFAULT (0): family default. Zero-init gives this value.
+ *                `sensevoice` and `fun-asr-mlt-nano-2512` resolve DEFAULT
+ *                to ON, because there the ITN toggle is also the only
+ *                source of casing and punctuation, so ITN-off would hand an
+ *                unconfigured caller lowercase unpunctuated text. For MLT
+ *                this is also upstream's default (`itn=True`); `sensevoice`
+ *                diverges from its upstream `itn=False`, and its published
+ *                WER is still measured with ITN off (docs/tools/wer.md).
+ *                `fun-asr-nano-2512` resolves DEFAULT to OFF: it emits
+ *                cased English without ITN, and with ITN on can emit
+ *                English in all caps.
  *   OFF:         explicit ITN off. Supporting families emit verbatim
  *                spoken-form text. Non-supporting families ignore (WARN).
  *   ON:          explicit ITN on. Supporting families apply ITN.
@@ -1084,11 +1085,36 @@ TRANSCRIBE_API transcribe_device_t transcribe_model_device(const struct transcri
  *
  *          Handles are process-local. Persist device_id (when available), then
  *          enumerate and resolve a fresh handle in each process.
+ *
+ * no_mmap: false (the default) memory-maps the model file and serves the
+ *          weights straight from it wherever the primary device can use host
+ *          memory: the CPU on every platform, and Metal on Apple silicon.
+ *          The weights then live in clean, file-backed pages that the OS can
+ *          reclaim, share between models loaded from the same file, and does
+ *          not count as the process's anonymous memory (what the Android
+ *          low-memory killer and iOS/macOS jetsam charge). Loading is faster
+ *          too; a first run on a cold page cache reads the weights from disk.
+ *          Devices with their own memory (Vulkan, CUDA, ROCm) always get a
+ *          copy, and weights a family converts at load are copied as well.
+ *          true copies every weight into backend memory and closes the file,
+ *          the behavior before memory mapping.
+ *
+ *          While a memory-mapped model is loaded its file must not be
+ *          truncated or rewritten in place: a later access to a changed page
+ *          kills the process (SIGBUS; EXCEPTION_IN_PAGE_ERROR on Windows).
+ *          Update a model file by writing a new file and renaming it over the
+ *          old one. On Windows the file cannot be opened for writing or
+ *          truncated until the model is freed. Use no_mmap for models on
+ *          removable or network storage that may disappear.
+ *
+ *          Setting the TRANSCRIBE_NO_MMAP environment variable (to anything
+ *          but "0") forces no_mmap for every load in the process.
  */
 struct transcribe_model_load_params {
     uint64_t                   struct_size;
     transcribe_backend_request backend;
     transcribe_device_t        device;
+    bool                       no_mmap;
 };
 
 TRANSCRIBE_API void transcribe_model_load_params_init(struct transcribe_model_load_params * params);

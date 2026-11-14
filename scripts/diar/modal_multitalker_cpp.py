@@ -11,7 +11,7 @@ source; bundle GGUF + audio come from the `transcribe-ami-cpp` volume:
 
     modal volume create transcribe-ami-cpp
     modal volume put transcribe-ami-cpp \
-        models/multitalker-parakeet-streaming-0.6b-v1/bundle/multitalker-parakeet-streaming-0.6b-v1-F32.gguf \
+        models/multitalker-parakeet-streaming-0.6b-v1/multitalker-parakeet-streaming-0.6b-v1-F32.gguf \
         /model/bundle-F32.gguf
     modal volume put transcribe-ami-cpp samples/diar/ami-ihm-test /audio
 

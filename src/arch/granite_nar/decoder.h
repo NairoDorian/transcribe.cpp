@@ -30,6 +30,7 @@
 #include "weights.h"
 
 #include <cstdint>
+#include <vector>
 
 struct ggml_context;
 struct ggml_cgraph;
@@ -50,8 +51,11 @@ struct ForwardBuild {
     ggml_tensor * text_ids_in  = nullptr;  // [n_text] i32
     ggml_tensor * positions_in = nullptr;  // [T_total] i32 RoPE positions
 
-    // Output (lm_head sliced over the text portion).
-    ggml_tensor * out = nullptr;  // [vocab, n_text]
+    // Output (lm_head sliced over the text portion). Exactly one of the two
+    // forms is built (see build_forward_graph's full_logits):
+    ggml_tensor *              out = nullptr;  // [vocab, n_text] full logits
+    std::vector<ggml_tensor *> text_ids;       // argmax per text row, in tiles
+                                               //  of kTextTileRows, each [n] i32
 
     DecoderDumps  dumps{};
     ggml_cgraph * graph = nullptr;
@@ -61,13 +65,26 @@ struct ForwardBuild {
     int T_total        = 0;
 };
 
+// Text rows per LM-head tile in the argmax form: bounds the
+// [vocab, rows] f32 logits to ~103 MB (100352 x 256).
+constexpr int kTextTileRows = 256;
+
 // Build the bidirectional editor forward graph. n_text is the length of
 // the post-insertion-slots text sequence (2 * n_hyp + 1).
+//
+// use_flash: attention through flash_attn_ext (GQA-native, no
+// [T_total, T_total, n_heads] scores) instead of mul_mat + soft_max_ext.
+// full_logits: emit the whole [vocab, n_text] `dec.text_logits` (needed for
+// tensor dumps). Otherwise the LM head runs in tiles of kTextTileRows with
+// the argmax in-graph and only ids reach the host; the transcript is the
+// same because argmax is invariant to the positive logits_scaling.
 ForwardBuild build_forward_graph(ggml_context *            ctx,
                                  const GraniteNarWeights & weights,
                                  const GraniteNarHParams & hp,
                                  int                       n_audio_tokens,
-                                 int                       n_text);
+                                 int                       n_text,
+                                 bool                      use_flash,
+                                 bool                      full_logits);
 
 // Host-side helper: insert eos_id between every adjacent pair (and at
 // the head/tail) of `hyp_ids`. Length grows from n to 2n + 1.
@@ -81,5 +98,8 @@ void argmax_collapse_drop_eos(const std::vector<float> & text_logits,
                               int                        n_text,
                               int32_t                    eos_id,
                               std::vector<int32_t> &     out_ids);
+
+// The collapse half of argmax_collapse_drop_eos, over per-row argmax ids.
+void collapse_drop_eos(const std::vector<int32_t> & row_ids, int32_t eos_id, std::vector<int32_t> & out_ids);
 
 }  // namespace transcribe::granite_nar

@@ -77,7 +77,7 @@ jobs:
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.2.0  # for the python gate scripts
+      - uses: astral-sh/setup-uv@v10.3.3  # for the python gate scripts
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -163,7 +163,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - uses: astral-sh/setup-uv@v10.2.0  # fetch-canary fetches via uvx
+      - uses: astral-sh/setup-uv@v10.3.3  # fetch-canary fetches via uvx
       - name: Enable ccache compiler launcher (non-Windows)
         # CMake reads these at first configure, so build.rs's cmake-crate build
         # picks up ccache with no -D plumbing. NOT set on Windows: ccache isn't

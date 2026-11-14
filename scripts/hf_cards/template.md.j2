@@ -101,6 +101,10 @@ numbers, numerical validation, and reproduction steps.
 
 Inherited from the base model: **{{ license_display }}**. See the
 [upstream model card]({{ upstream_url }}) for full terms.
+{%- if license_notes is defined %}
+
+{{ license_notes | trim }}
+{%- endif %}
 {% if upstream_is_hf %}
 ---
 

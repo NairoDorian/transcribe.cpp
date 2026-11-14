@@ -80,7 +80,7 @@ jobs:
           use-github-cache: false
           use-local-cache: false
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@v10.3.3
       - uses: ./.github/actions/fetch-canary
         with:
           hf-token: ${{ secrets.HF_TOKEN }}
@@ -111,7 +111,7 @@ jobs:
           smoke-venv/Scripts/python scripts/ci/wheel_smoke.py .
       # Named OUTSIDE the dist-* pattern, like cuda-dist-linux-x86_64: the
       # co-import job merges dist-* and must never pick up a cu12 provider.
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: cuda-dist-windows-x86_64
           path: wheelhouse-cu12/*.whl
@@ -125,7 +125,7 @@ jobs:
         run: |
           python scripts/ci/extract_native_bundle.py --wheel-dir wheelhouse-cu12 `
             --tuple windows-x86_64-cuda --out bundles
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: native-windows-x86_64-cuda
           path: bundles/*.tar.gz

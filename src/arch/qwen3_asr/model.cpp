@@ -11,6 +11,7 @@
 #include "r2t2-package.h"
 #include "r2t2-stream.h"
 #include "transcribe-arch.h"
+#include "transcribe-backend.h"
 #include "transcribe-batch-util.h"
 #include "transcribe-debug.h"
 #include "transcribe-decode-budget.h"
@@ -57,10 +58,7 @@ QwenAsrModel::~QwenAsrModel() {
         ggml_free(ctx_meta);
         ctx_meta = nullptr;
     }
-    if (backend_buffer != nullptr) {
-        safe_buffer_free(backend_buffer);
-        backend_buffer = nullptr;
-    }
+    weight_storage.reset();
     packed_gate_up.free();
     packed_qkv.free();
     for (auto it = plan.scheduler_list.rbegin(); it != plan.scheduler_list.rend(); ++it) {
@@ -300,17 +298,8 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
     m->backend         = ggml_backend_name(m->plan.primary);
     m->primary_backend = m->plan.primary;
 
-    ggml_backend_buffer_t weights_buffer = alloc_ctx_tensors_with_reclaim(m->plan.primary, m->ctx_meta);
-    if (weights_buffer == nullptr) {
-        gguf_free(gguf_data);
-        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr: alloc_ctx_tensors_with_reclaim failed");
-        return TRANSCRIBE_ERR_OOM;
-    }
-    m->backend_buffer = weights_buffer;
-    ggml_backend_buffer_set_usage(weights_buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
-
-    if (const transcribe_status st =
-            transcribe::load_common::stream_tensor_data(loader.path(), gguf_data, m->ctx_meta, "qwen3_asr");
+    if (const transcribe_status st = transcribe::load_common::load_weights(
+            loader.path(), gguf_data, m->ctx_meta, m->plan, params, "qwen3_asr", m->weight_storage);
         st != TRANSCRIBE_OK) {
         gguf_free(gguf_data);
         return st;
@@ -771,6 +760,22 @@ transcribe_status run_decode_pass(transcribe_session *          session,
         return TRANSCRIBE_ERR_GGUF;
     }
 
+    // Input-length gate, before encoding: audio + the prompt without system
+    // context + generation must fit the decoder context window. The system
+    // context is fitted to what is left (encode_system_context), so this is
+    // the same bound as the prompt gate below, checked before an over-length
+    // clip pays for the encoder.
+    const int ceiling = qwen3_context_ceiling(cc->n_ctx, cm->hparams);
+    if (const int T_min = prompt_tokens_without_system(timing.T_enc, suffix_ids); T_min + k_gen_reserve > ceiling) {
+        transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
+                            "qwen3_asr run: input too long — %d audio + %d prompt tokens "
+                            "leave no room for output within the %d-token context (need %d). "
+                            "Shorten the audio (see transcribe_capabilities.max_audio_ms) or "
+                            "split it into segments.",
+                            timing.T_enc, T_min - timing.T_enc, ceiling, T_min + k_gen_reserve);
+        return TRANSCRIBE_ERR_INPUT_TOO_LONG;
+    }
+
     // ------------------------------------------------------------------
     // Encoder prefix reuse (R2T2 streaming — see EncoderPrefixCache).
     //
@@ -917,7 +922,7 @@ transcribe_status run_decode_pass(transcribe_session *          session,
             }
         }
         ggml_backend_sched_reset(cc->sched);
-        if (!alloc_inference_graph(cc->sched, eb.graph)) {
+        if (!TRANSCRIBE_ALLOC_INFERENCE_GRAPH(cc->sched, eb.graph, "qwen3_asr")) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "qwen3_asr run: encoder graph allocation failed — out of memory.");
             return TRANSCRIBE_ERR_OOM;
@@ -1060,7 +1065,6 @@ transcribe_status run_decode_pass(transcribe_session *          session,
     // Prompt construction.
     std::vector<int32_t> prompt_ids;
     std::vector<int64_t> audio_positions;
-    const int            ceiling = qwen3_context_ceiling(cc->n_ctx, cm->hparams);
     std::vector<int32_t> system_ids;
     if (const transcribe_status st = encode_system_context(
             cm->tok, params, ceiling - k_gen_reserve - prompt_tokens_without_system(T_enc, suffix_ids), system_ids);
@@ -1252,7 +1256,7 @@ transcribe_status run_decode_pass(transcribe_session *          session,
 
     // Allocate + compute prefill on the same scheduler.
     ggml_backend_sched_reset(cc->sched);
-    if (!alloc_inference_graph(cc->sched, pb.graph)) {
+    if (!TRANSCRIBE_ALLOC_INFERENCE_GRAPH(cc->sched, pb.graph, "qwen3_asr")) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "qwen3_asr run: prefill graph allocation failed (T_prompt=%d) — "
                             "out of memory. Lower transcribe_session_params.n_ctx or shorten "
@@ -1471,7 +1475,7 @@ transcribe_status run_decode_pass(transcribe_session *          session,
         }
     }
     ggml_backend_sched_reset(cc->sched);
-    if (!alloc_inference_graph(cc->sched, k_drafts == 0 ? sb.graph : vb.graph)) {
+    if (!TRANSCRIBE_ALLOC_INFERENCE_GRAPH(cc->sched, k_drafts == 0 ? sb.graph : vb.graph, "qwen3_asr")) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "qwen3_asr step: decode graph allocation failed — out of memory. "
                             "Lower transcribe_session_params.n_ctx or shorten the audio.");
@@ -1970,13 +1974,17 @@ transcribe_status reset_compute_ctx(QwenAsrSession * cc, int mb) {
 
 // Batched encoder: mel (parallel) + one encoder graph over all B utterances
 // on the batch axis. Fills enc_hosts[b] = [d_enc, T_enc[b]], T_enc[b], valid[b].
-// Real-row outputs are bit-identical to encode_one per utterance.
+// Real-row outputs are bit-identical to encode_one per utterance. A row with
+// more than T_enc_cap audio tokens is rejected (fail_status INPUT_TOO_LONG)
+// before it can size the batch.
 transcribe_status encode_all_batched(QwenAsrSession *                  cc,
                                      QwenAsrModel *                    cm,
                                      const float * const *             pcm,
                                      const int *                       n_samples,
                                      int                               n,
+                                     int                               T_enc_cap,
                                      std::vector<char> &               valid,
+                                     std::vector<transcribe_status> &  fail_status,
                                      std::vector<std::vector<float>> & enc_hosts,
                                      std::vector<int> &                T_enc_out,
                                      int64_t &                         mel_us,
@@ -2019,6 +2027,18 @@ transcribe_status encode_all_batched(QwenAsrSession *                  cc,
             valid[b] = 0;
             continue;
         }
+        // Same input-length gate as run(), before the row pads every other
+        // row's encoder input to its length.
+        if (timings[b].T_enc > T_enc_cap) {
+            transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
+                                "qwen3_asr run_batch: utterance %d input too long — %d audio tokens, "
+                                "at most %d fit the context with the prompt and output. See "
+                                "transcribe_capabilities.max_audio_ms.",
+                                b, timings[b].T_enc, T_enc_cap);
+            valid[b]       = 0;
+            fail_status[b] = TRANSCRIBE_ERR_INPUT_TOO_LONG;
+            continue;
+        }
         n_chunks_max = std::max(n_chunks_max, timings[b].n_chunks);
         T_enc_out[b] = timings[b].T_enc;
         any          = true;
@@ -2045,7 +2065,7 @@ transcribe_status encode_all_batched(QwenAsrSession *                  cc,
         }
     }
     ggml_backend_sched_reset(cc->sched);
-    if (!alloc_inference_graph(cc->sched, eb.graph)) {
+    if (!TRANSCRIBE_ALLOC_INFERENCE_GRAPH(cc->sched, eb.graph, "qwen3_asr")) {
         return TRANSCRIBE_ERR_OOM;
     }
 
@@ -2160,7 +2180,7 @@ transcribe_status prefill_all_batched(QwenAsrSession *                          
     }
 
     ggml_backend_sched_reset(cc->sched);
-    if (!alloc_inference_graph(cc->sched, pb.graph)) {
+    if (!TRANSCRIBE_ALLOC_INFERENCE_GRAPH(cc->sched, pb.graph, "qwen3_asr")) {
         return TRANSCRIBE_ERR_OOM;
     }
 
@@ -2370,13 +2390,18 @@ transcribe_status run_batch(transcribe_session *          session,
     std::vector<char>                 valid(n, 0);  // utterance produced a usable prefill
     int64_t                           mel_us = 0, enc_us = 0;
 
+    // Per-utterance terminal status for rejected rows. Defaults to INVALID_ARG;
+    // over-length rows are upgraded to INPUT_TOO_LONG.
+    std::vector<transcribe_status> fail_status(n, TRANSCRIBE_ERR_INVALID_ARG);
+
     // Encode every utterance first so we can size the batched cache to the
     // real max prompt length before allocating it.
     std::vector<std::vector<float>> enc_hosts(n);
     std::vector<int>                T_enc(n, 0);
-    const int64_t                   t_encpass0 = ggml_time_us();
-    if (const transcribe_status st =
-            encode_all_batched(cc, cm, pcm, n_samples, n, valid, enc_hosts, T_enc, mel_us, enc_us);
+    const int     T_enc_cap  = ceiling - k_gen_reserve - prompt_tokens_without_system(0, lang_prefix_ptr);
+    const int64_t t_encpass0 = ggml_time_us();
+    if (const transcribe_status st = encode_all_batched(cc, cm, pcm, n_samples, n, T_enc_cap, valid, fail_status,
+                                                        enc_hosts, T_enc, mel_us, enc_us);
         st != TRANSCRIBE_OK) {
         return st;
     }
@@ -2387,9 +2412,6 @@ transcribe_status run_batch(transcribe_session *          session,
     int                               max_T_prompt = 0;
     int                               max_T_enc    = 0;
     int                               prefix_len   = 0;
-    // Per-utterance terminal status for rejected rows. Defaults to INVALID_ARG;
-    // over-length rows below are upgraded to INPUT_TOO_LONG.
-    std::vector<transcribe_status>    fail_status(n, TRANSCRIBE_ERR_INVALID_ARG);
     std::vector<std::vector<int32_t>> prompt_ids(n);
     for (int b = 0; b < n; ++b) {
         if (!valid[b]) {
@@ -2489,7 +2511,7 @@ transcribe_status run_batch(transcribe_session *          session,
         return TRANSCRIBE_ERR_GGUF;
     }
     ggml_backend_sched_reset(cc->sched);
-    if (!alloc_inference_graph(cc->sched, sb.graph)) {
+    if (!TRANSCRIBE_ALLOC_INFERENCE_GRAPH(cc->sched, sb.graph, "qwen3_asr")) {
         return TRANSCRIBE_ERR_OOM;
     }
 

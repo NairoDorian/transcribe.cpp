@@ -191,7 +191,7 @@ difference.
 ## Native ternary weights (TQ1_G128)
 
 `GGML_TYPE_TQ1_G128` (ggml id 96, downstream patch
-`patches/ggml/0003-tq1_g128-ternary.patch`) stores weights trained as
+`patches/ggml/0102-tq1_g128-ternary.patch`) stores weights trained as
 ternary {−1, 0, +1} with one fp16 scale per 128 weights — 1.75 bits/weight,
 lossless for checkpoints in that format (first user: parakeet-redux; see
 `docs/models/parakeet-redux-0.6b.quantization.md` for the block layout).

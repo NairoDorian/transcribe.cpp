@@ -69,6 +69,8 @@ void print_usage(const char * argv0) {
                  "                        (default: auto)\n"
                  "  --device N            exact device index from --list-devices, including 0\n"
                  "                        (default: automatic device selection)\n"
+                 "  --no-mmap             copy the weights into memory instead of memory-mapping\n"
+                 "                        the model file (TRANSCRIBE_NO_MMAP=1 does the same)\n"
                  "  --timestamps TYPE     timestamps: auto, none, segment, word, token (default: auto)\n"
                  "  --batch FILE          batch mode: FILE has one wav path per line\n"
                  "  --batch-jsonl         output one JSON line per file (for batch)\n"
@@ -79,9 +81,9 @@ void print_usage(const char * argv0) {
                  "  --condition-on-prev-tokens (whisper) carry prev-chunk tokens across chunks\n"
                  "  --prompt-condition T  (whisper) prompt placement: first|all (default: first)\n"
                  "  --itn                 (sensevoice/funasr-nano) enable inverse text\n"
-                 "                        normalization (sensevoice: on unless --no-itn)\n"
-                 "  --no-itn              (sensevoice/funasr-nano) emit the upstream\n"
-                 "                        spoken-form text instead\n"
+                 "                        normalization (default: on, except fun-asr-nano)\n"
+                 "  --no-itn              (sensevoice/funasr-nano) emit spoken-form text\n"
+                 "                        instead\n"
                  "  --pnc                 (canary) emit punctuation and capitalization (default)\n"
                  "  --no-pnc              (canary) emit lowercase de-punctuated text\n"
                  "  --diarize             (moss/granite-plus) speaker attribution: segments carry\n"
@@ -341,6 +343,8 @@ bool parse_args(int argc, char ** argv, cli_args & out) {
                 std::fprintf(stderr, "error: --backend must be auto, cpu, cpu_accel, metal, vulkan, cuda, or rocm\n");
                 return false;
             }
+        } else if (a == "--no-mmap") {
+            out.no_mmap = true;
         } else if (a == "--device") {
             const char * v = take_value(a.c_str());
             if (!v) {
@@ -639,6 +643,7 @@ int run_file(const cli_args & args, std::ofstream * output) {
     transcribe_model_load_params_init(&mp);
     mp.backend = args.backend;
     mp.device  = args.device_index >= 0 ? transcribe_device_get(args.device_index) : nullptr;
+    mp.no_mmap = args.no_mmap;
     if (args.device_index >= 0 && mp.device == nullptr) {
         std::fprintf(stderr, "error: --device index %d is not available\n", args.device_index);
         return EXIT_FAILURE;

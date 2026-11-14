@@ -1,6 +1,6 @@
 {
   "name": "transcribe-cpp",
-  "version": "0.3.1",
+  "version": "0.4.2",
   "description": "TypeScript/Node.js bindings for transcribe.cpp — a C/C++ speech-to-text library built on ggml",
   "type": "module",
   "exports": {
@@ -35,20 +35,20 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "koffi": "^3.3.2"
+    "koffi": "^3.3.8"
   },
   "optionalDependencies": {
-    "@transcribe-cpp/darwin-arm64-metal": "0.3.1",
-    "@transcribe-cpp/darwin-x64-cpu": "0.3.1",
-    "@transcribe-cpp/linux-x64-cpu-vulkan": "0.3.1",
-    "@transcribe-cpp/linux-arm64-cpu-vulkan": "0.3.1",
-    "@transcribe-cpp/win32-x64-cpu-vulkan": "0.3.1"
+    "@transcribe-cpp/darwin-arm64-metal": "0.4.2",
+    "@transcribe-cpp/darwin-x64-cpu": "0.4.2",
+    "@transcribe-cpp/linux-x64-cpu-vulkan": "0.4.2",
+    "@transcribe-cpp/linux-arm64-cpu-vulkan": "0.4.2",
+    "@transcribe-cpp/win32-x64-cpu-vulkan": "0.4.2"
   },
   "devDependencies": {
-    "@types/node": "^26.6.4",
-    "typescript": "7.1.0-dev.20261006.1"
+    "@types/node": "^26.6.6",
+    "typescript": "7.1.0-dev.20261113.1"
   },
   "allowScripts": {
-    "koffi@3.3.2": true
+    "koffi@3.3.8": true
   }
 }

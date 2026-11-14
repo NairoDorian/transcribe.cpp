@@ -34,11 +34,15 @@ Dtype policy mirrors the shipped matrices: the ASR half may be any shipped
 quant; the diarizer half should be F32/F16/Q8_0 only (sortformer k-quants
 are withdrawn). Pick the diarizer file explicitly per bundle tier.
 
+The published bundle takes the plain `<repo>-<QUANT>.gguf` name, which is also
+convert-parakeet.py's default output name, so stage the ASR-only conversion
+under a different path (the output must not overwrite an input).
+
 Usage (any env with gguf, e.g. the moonshine or sortformer env):
     uv run --project scripts/envs/moonshine scripts/compose-multitalker-bundle.py \
-      models/multitalker-parakeet-streaming-0.6b-v1/multitalker-parakeet-streaming-0.6b-v1-F32.gguf \
+      tmp/multitalker-asr/multitalker-parakeet-streaming-0.6b-v1-F32.gguf \
       models/diar_streaming_sortformer_4spk-v2.1/diar_streaming_sortformer_4spk-v2.1-F32.gguf \
-      -o models/multitalker-parakeet-streaming-0.6b-v1/bundle/multitalker-parakeet-streaming-0.6b-v1-F32.gguf
+      -o models/multitalker-parakeet-streaming-0.6b-v1/multitalker-parakeet-streaming-0.6b-v1-F32.gguf
 """
 
 from __future__ import annotations
@@ -142,6 +146,11 @@ def main() -> int:
             return 1
 
     out_path = Path(args.out)
+    # The readers memory-map their inputs; opening the output for write would
+    # truncate an aliased input mid-read.
+    if out_path.resolve() in {Path(args.asr_gguf).resolve(), Path(args.diar_gguf).resolve()}:
+        print(f"error: output {out_path} would overwrite an input GGUF", file=sys.stderr)
+        return 1
     out_path.parent.mkdir(parents=True, exist_ok=True)
     writer = gguf_writer(str(out_path), "parakeet")
 

@@ -11,6 +11,7 @@
 #include "ggml.h"
 #include "gguf.h"
 #include "transcribe-arch.h"
+#include "transcribe-backend.h"
 #include "transcribe-batch-util.h"
 #include "transcribe-debug.h"
 #include "transcribe-env.h"
@@ -57,10 +58,7 @@ WhisperModel::~WhisperModel() {
         ggml_free(ctx_meta);
         ctx_meta = nullptr;
     }
-    if (backend_buffer != nullptr) {
-        safe_buffer_free(backend_buffer);
-        backend_buffer = nullptr;
-    }
+    weight_storage.reset();
     for (auto it = plan.scheduler_list.rbegin(); it != plan.scheduler_list.rend(); ++it) {
         safe_backend_free(*it);
     }
@@ -479,17 +477,8 @@ transcribe_status whisper_load(Loader &                             loader,
     m->backend         = ggml_backend_name(m->plan.primary);
     m->primary_backend = m->plan.primary;
 
-    ggml_backend_buffer_t weights_buffer = alloc_ctx_tensors_with_reclaim(m->plan.primary, m->ctx_meta);
-    if (weights_buffer == nullptr) {
-        gguf_free(gguf_data);
-        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "whisper: alloc_ctx_tensors_with_reclaim failed");
-        return TRANSCRIBE_ERR_OOM;
-    }
-    m->backend_buffer = weights_buffer;
-    ggml_backend_buffer_set_usage(weights_buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
-
-    if (const transcribe_status st =
-            transcribe::load_common::stream_tensor_data(loader.path(), gguf_data, m->ctx_meta, "whisper");
+    if (const transcribe_status st = transcribe::load_common::load_weights(
+            loader.path(), gguf_data, m->ctx_meta, m->plan, params, "whisper", m->weight_storage);
         st != TRANSCRIBE_OK) {
         gguf_free(gguf_data);
         return st;
@@ -645,7 +634,7 @@ transcribe_status run_whisper_encoder_on_window(WhisperSession * cc,
         transcribe::configure_sched_n_threads(cc->sched, cc->n_threads);
     }
     ggml_backend_sched_reset(cc->sched);
-    if (!ggml_backend_sched_alloc_graph(cc->sched, eb.graph)) {
+    if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, eb.graph, "whisper")) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                 "whisper run: ggml_backend_sched_alloc_graph failed "
                 "(encoder)");
@@ -981,7 +970,7 @@ transcribe_status whisper_prefix_ids(const WhisperModel & cm, const char * prefi
 
 // Generic prompting (transcribe_run_params::vocabulary / prompt) rendered into
 // the <|startofprev|> slot, as text-only ids (the caller prepends the marker).
-// Text is `Glossary: {terms}` (", "-joined), then " " + prompt, tokenized in
+// Text is the terms ", "-joined, then " " + prompt, tokenized in
 // HF get_prompt_ids form (" " + text.strip()). The slot holds at most
 // `budget` tokens; Whisper natively keeps the LAST tokens, which would drop
 // the highest-priority terms, so overflow is resolved here instead: context
@@ -1000,7 +989,7 @@ transcribe_status whisper_generic_prompt_ids(const WhisperModel &          cm,
     }
     transcribe::prompting::FittedPrompt fit;
     if (const transcribe_status st = transcribe::prompting::fit_terms_and_context(
-            cm.tok, transcribe::prompting::terms(params), { " Glossary: ", ", ", "" }, ctx, budget, "whisper run", fit);
+            cm.tok, transcribe::prompting::terms(params), { " ", ", ", "" }, ctx, budget, "whisper run", fit);
         st != TRANSCRIBE_OK) {
         return st;
     }
@@ -1811,7 +1800,7 @@ transcribe_status whisper_run(transcribe_session *          session,
                 return TRANSCRIBE_ERR_GGUF;
             }
             ggml_backend_sched_reset(cc->sched);
-            if (!ggml_backend_sched_alloc_graph(cc->sched, det_db.graph)) {
+            if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, det_db.graph, "whisper")) {
                 cleanup_gpu();
                 return TRANSCRIBE_ERR_OOM;
             }
@@ -2060,7 +2049,7 @@ transcribe_status whisper_run(transcribe_session *          session,
 
             const int64_t t_cross_alloc_start = ggml_time_us();
             ggml_backend_sched_reset(cc->sched);
-            if (!ggml_backend_sched_alloc_graph(cc->sched, cross_db.graph)) {
+            if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, cross_db.graph, "whisper")) {
                 log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "whisper run: alloc_graph failed (cross_kv)");
                 cleanup_gpu();
                 return TRANSCRIBE_ERR_OOM;
@@ -2125,7 +2114,7 @@ transcribe_status whisper_run(transcribe_session *          session,
 
                 const int64_t t_prompt_alloc_start = ggml_time_us();
                 ggml_backend_sched_reset(cc->sched);
-                if (!ggml_backend_sched_alloc_graph(cc->sched, db.graph)) {
+                if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, db.graph, "whisper")) {
                     log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "whisper run: alloc_graph failed (prompt)");
                     cleanup_gpu();
                     return TRANSCRIBE_ERR_OOM;
@@ -2317,7 +2306,7 @@ transcribe_status whisper_run(transcribe_session *          session,
                     return TRANSCRIBE_ERR_GGUF;
                 }
                 ggml_backend_sched_reset(cc->sched);
-                if (!ggml_backend_sched_alloc_graph(cc->sched, sb.graph)) {
+                if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, sb.graph, "whisper")) {
                     log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "whisper run: sched_alloc_graph failed (step)");
                     cleanup_gpu();
                     return TRANSCRIBE_ERR_OOM;
@@ -2414,7 +2403,7 @@ transcribe_status whisper_run(transcribe_session *          session,
 
                     const int64_t t_step_alloc_start = ggml_time_us();
                     ggml_backend_sched_reset(cc->sched);
-                    if (!ggml_backend_sched_alloc_graph(cc->sched, step_db.graph)) {
+                    if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, step_db.graph, "whisper")) {
                         cleanup_gpu();
                         return TRANSCRIBE_ERR_OOM;
                     }
@@ -2988,7 +2977,7 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
                 return TRANSCRIBE_ERR_GGUF;
             }
             ggml_backend_sched_reset(cc->sched);
-            if (!ggml_backend_sched_alloc_graph(cc->sched, det.graph)) {
+            if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, det.graph, "whisper")) {
                 cleanup_gpu();
                 return TRANSCRIBE_ERR_OOM;
             }
@@ -3137,7 +3126,7 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
             return TRANSCRIBE_ERR_GGUF;
         }
         ggml_backend_sched_reset(cc->sched);
-        if (!ggml_backend_sched_alloc_graph(cc->sched, cross.graph)) {
+        if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, cross.graph, "whisper")) {
             cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
@@ -3187,7 +3176,7 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
             return TRANSCRIBE_ERR_GGUF;
         }
         ggml_backend_sched_reset(cc->sched);
-        if (!ggml_backend_sched_alloc_graph(cc->sched, sb.graph)) {
+        if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, sb.graph, "whisper")) {
             return TRANSCRIBE_ERR_OOM;
         }
         ggml_backend_tensor_set(sb.cross_mask_in, cmask.data(), 0, cmask.size() * sizeof(ggml_fp16_t));

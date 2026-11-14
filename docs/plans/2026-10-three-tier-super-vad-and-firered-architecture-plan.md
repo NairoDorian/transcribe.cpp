@@ -4,6 +4,15 @@ Revision 9, 2026-10-16. Status: implementation plan; the three-tier pipeline,
 RNNoise migration and VoxLock integration have not been implemented. This
 revision supersedes the previous eight revisions and their illustrative APIs.
 
+> **Update 2026-11-14.** This plan's engineering contract still stands, but
+> the tier-1 model choice is revised by the
+> [November master plan](2026-11-fork-master-plan.md) §B.0: on the same TEN
+> VAD test set audio.cpp measured frame F1 Silero 0.935, Earshot 0.926,
+> FireRed 0.917, with Earshot ~14× faster than FireRed. FireRed Stream-VAD is
+> therefore an evaluated option (master plan §B.5), not the default; Earshot
+> fidelity and per-ISA kernels (§B.1–B.3) come first. Both Silero and Earshot
+> are now on `main`.
+
 Read [the paired-project contract](../zer0-engine-integration.md) before working
 on either repository. ZER0 is the reference consumer for this fork; engine
 changes must be checked against its actual Rust call sites and capture behavior.

@@ -42,7 +42,7 @@ history.
    are repacked losslessly into `TQ1_G128` and dense tensors keep their upstream dtype
    (`keep_source_dtypes`), output `parakeet-redux-0.6b-TQ1_F16.gguf`.
 3. **Native ternary type** `GGML_TYPE_TQ1_G128` (id 96) — downstream ggml patch
-   `patches/ggml/0003-tq1_g128-ternary.patch` (verified to apply to a pristine export
+   `patches/ggml/0102-tq1_g128-ternary.patch` (verified to apply to a pristine export
    of the vendored tree): type traits, reference quant/dequant, lossless packer, CPU
    kernels (generic, AVX2, NEON), CUDA (dequant → cuBLAS, native mmvq), Vulkan
    (mat-vec, tiled mat-mul + coopmat2, dequant, get_rows), `test-backend-ops`
@@ -132,7 +132,7 @@ Ready to paste into `src-tauri/src/catalog/catalog.json` (`models` array). Revis
 hashes are the published Hub state. ZER0's own ranking fields (`speed_score`,
 `accuracy_score`, `recommended`, `recommended_rank`) are left for ZER0 to set.
 **Redux requires a transcribe library built from a fork commit that includes
-`patches/ggml/0003-tq1_g128-ternary.patch`**; older builds reject its GGUFs
+`patches/ggml/0102-tq1_g128-ternary.patch`**; older builds reject its GGUFs
 (unknown tensor type 96). Ultra loads in any current build.
 
 ```json

@@ -19,6 +19,7 @@
 #include "ggml-backend.h"
 #include "ggml.h"
 #include "silero_vad.h"
+#include "transcribe-backend.h"
 #include "transcribe-batch-util.h"
 #include "transcribe-debug.h"
 #include "transcribe-log.h"
@@ -105,7 +106,7 @@ transcribe_status build_graph(Session & s, const Model & m, int n) {
         }
     }
     ggml_backend_sched_reset(s.sched);
-    if (!ggml_backend_sched_alloc_graph(s.sched, g.graph)) {
+    if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(s.sched, g.graph, "silero_vad")) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "%s: graph allocation failed (%d frames)", kTag, n);
         return TRANSCRIBE_ERR_OOM;
     }

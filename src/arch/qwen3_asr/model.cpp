@@ -18,6 +18,7 @@
 #include "transcribe-env.h"
 #include "transcribe-flash-policy.h"
 #include "transcribe-graph-opt.h"
+#include "transcribe-lang-alphabet.h"
 #include "transcribe-load-common.h"
 #include "transcribe-loader.h"
 #include "transcribe-log.h"
@@ -641,6 +642,127 @@ transcribe_status encode_language_prefix(const transcribe::Tokenizer & tok,
     return TRANSCRIBE_OK;
 }
 
+transcribe_status prepare_language_constraint(const transcribe::Tokenizer & tok,
+                                              int                           vocab,
+                                              const transcribe_run_params * params,
+                                              LanguageConstraint &          lc) {
+    if (params == nullptr || (params->language != nullptr && params->language[0] != '\0') ||
+        params->n_allowed_languages <= 0 || params->allowed_languages == nullptr) {
+        lc = LanguageConstraint{};
+        return TRANSCRIBE_OK;
+    }
+    std::string key;
+    for (int32_t i = 0; i < params->n_allowed_languages; ++i) {
+        const char * code = params->allowed_languages[i];
+        if (code == nullptr || code[0] == '\0') {
+            return TRANSCRIBE_ERR_INVALID_ARG;
+        }
+        key += transcribe::lang::normalize(code);
+        key += ',';
+    }
+    if (!lc.key.empty() && lc.key == key) {
+        return TRANSCRIBE_OK;  // same list as the previous run: reuse
+    }
+    if (!tok.has_encoder()) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr: tokenizer missing encoder; cannot constrain languages");
+        return TRANSCRIBE_ERR_GGUF;
+    }
+
+    LanguageConstraint out;
+    out.key = key;
+    std::vector<int32_t> probe_ids;
+    if (const transcribe_status st = tok.encode(k_language_probe_text, probe_ids); st != TRANSCRIBE_OK) {
+        return st;
+    }
+    if (probe_ids.empty()) {
+        return TRANSCRIBE_ERR_GGUF;
+    }
+
+    std::vector<std::string> model_codes;
+    for (const auto & e : k_qwen3_asr_language_names) {
+        model_codes.emplace_back(e.bcp47);
+    }
+    std::vector<std::string> requested;
+    std::vector<std::string> unknown;      // listed, but no name in this model's table
+    int                      n_known = 0;  // listed languages this model can name
+    for (int32_t i = 0; i < params->n_allowed_languages; ++i) {
+        const char * code = params->allowed_languages[i];
+        requested.emplace_back(code);
+        const std::vector<int> hits = transcribe::lang::resolve_all(code, model_codes);
+        if (hits.empty()) {
+            log_msg(TRANSCRIBE_LOG_LEVEL_WARN, "qwen3_asr: allowed language \"%s\" is not one this model can detect",
+                    code);
+            unknown.emplace_back(code);
+            continue;
+        }
+        n_known += 1;
+        for (const int k : hits) {
+            std::string text = k_language_probe_text;
+            text += ' ';
+            text += k_qwen3_asr_language_names[k].pub_name;
+            std::vector<int32_t> ids;
+            if (const transcribe_status st = tok.encode(text, ids); st != TRANSCRIBE_OK) {
+                return st;
+            }
+            // The pretokenizer splits " Name" from "language", so the name's
+            // tokens follow the probe's unchanged.
+            if (ids.size() <= probe_ids.size() || !std::equal(probe_ids.begin(), probe_ids.end(), ids.begin())) {
+                log_msg(TRANSCRIBE_LOG_LEVEL_WARN, "qwen3_asr: \"%s\" does not tokenize after the probe; skipping it",
+                        text.c_str());
+                continue;
+            }
+            out.first_allowed.push_back(ids[probe_ids.size()]);
+        }
+    }
+    if (n_known == 0) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr: none of the %d allowed languages is one this model can detect",
+                params->n_allowed_languages);
+        return TRANSCRIBE_ERR_UNSUPPORTED_LANGUAGE;
+    }
+    if (n_known == params->n_allowed_languages && !out.first_allowed.empty()) {
+        // "language None" is the model's own answer for speech that is not one
+        // language: R2T2 opens a Chinese-then-English clip with it and then
+        // transcribes both halves, where forcing "language English" makes it
+        // translate the Chinese. A speaker who mixes the listed languages needs
+        // that answer kept.
+        std::vector<int32_t> none_ids;
+        if (tok.encode(std::string(k_language_probe_text) + " None", none_ids) == TRANSCRIBE_OK &&
+            none_ids.size() > probe_ids.size() && std::equal(probe_ids.begin(), probe_ids.end(), none_ids.begin())) {
+            out.first_allowed.push_back(none_ids[probe_ids.size()]);
+        }
+        std::sort(out.first_allowed.begin(), out.first_allowed.end());
+        out.first_allowed.erase(std::unique(out.first_allowed.begin(), out.first_allowed.end()),
+                                out.first_allowed.end());
+        out.probe_ids = std::move(probe_ids);
+    } else {
+        log_msg(TRANSCRIBE_LOG_LEVEL_WARN,
+                "qwen3_asr: language envelope left free (a listed language has no name "
+                "here); constraining the alphabet only");
+        out.first_allowed.clear();
+    }
+
+    bool                                   alphabet_usable = false;
+    const transcribe::lang::AlphabetFilter alphabet =
+        transcribe::lang::build_alphabet_filter(requested, alphabet_usable, unknown);
+    if (alphabet_usable && vocab > 0) {
+        out.bias.assign(static_cast<size_t>(vocab), 0.0f);
+        const int n_tok    = std::min(tok.n_tokens(), vocab);
+        int       n_banned = 0;
+        for (int id = 0; id < n_tok; ++id) {
+            if (tok.is_control(id)) {
+                continue;
+            }
+            if (!alphabet.allows(tok.decode(&id, 1))) {
+                out.bias[static_cast<size_t>(id)] = -INFINITY;
+                n_banned += 1;
+            }
+        }
+        log_msg(TRANSCRIBE_LOG_LEVEL_DEBUG, "qwen3_asr: language allowlist bans %d of %d tokens", n_banned, n_tok);
+    }
+    lc = std::move(out);
+    return TRANSCRIBE_OK;
+}
+
 namespace {  // reopen anon for the rest of the file's helpers.
 
 // mel framing + the encoder cache's mel bookkeeping live in mel_pack.h so the
@@ -686,7 +808,9 @@ transcribe_status run_decode_pass(transcribe_session *          session,
                                   const std::vector<int32_t> *  draft_seed,
                                   EncoderPrefixCache *          enc_cache,
                                   transcribe::MelStreamState *  mel_stream,
-                                  bool                          kv_reuse) {
+                                  bool                          kv_reuse,
+                                  const LanguageConstraint *    lang,
+                                  bool                          lang_probe) {
     if (session == nullptr || pcm == nullptr || n_samples <= 0 || out == nullptr) {
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
@@ -1336,8 +1460,30 @@ transcribe_status run_decode_pass(transcribe_session *          session,
         return best;
     };
 
+    // Language allowlist: the alphabet bias applies to every generated token
+    // (here on the host, on the device graph below); a probe pass also limits
+    // this first token to the allowed languages' names.
+    const bool use_logit_bias =
+        lang != nullptr && !lang->bias.empty() && lang->bias.size() == static_cast<size_t>(vocab);
+    if (use_logit_bias) {
+        for (size_t i = 0; i < logits.size(); ++i) {
+            logits[i] += lang->bias[i];
+        }
+    }
     std::vector<int32_t> generated_ids;
-    int32_t              next_tok = argmax(logits);
+    int32_t              next_tok = 0;
+    if (lang != nullptr && lang_probe && !lang->first_allowed.empty()) {
+        float best_v = -INFINITY;
+        next_tok     = lang->first_allowed.front();
+        for (const int32_t id : lang->first_allowed) {
+            if (id >= 0 && id < vocab && logits[static_cast<size_t>(id)] > best_v) {
+                best_v   = logits[static_cast<size_t>(id)];
+                next_tok = id;
+            }
+        }
+    } else {
+        next_tok = argmax(logits);
+    }
     generated_ids.push_back(next_tok);
     t_prefill_logits_us = ggml_time_us() - t_prefill_logits_start;
 
@@ -1461,14 +1607,14 @@ transcribe_status run_decode_pass(transcribe_session *          session,
     VerifyBuild vb{};
     if (k_drafts == 0) {
         sb = build_step_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache, max_n_kv,
-                              /*use_flash=*/cc->decoder_use_flash);
+                              /*use_flash=*/cc->decoder_use_flash, use_logit_bias);
         if (sb.graph == nullptr || sb.out == nullptr) {
             cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
         }
     } else {
         vb = build_verify_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache, /*T_verify=*/k_drafts + 1,
-                                max_n_kv, /*use_flash=*/cc->decoder_use_flash);
+                                max_n_kv, /*use_flash=*/cc->decoder_use_flash, use_logit_bias);
         if (vb.graph == nullptr || vb.out == nullptr) {
             cleanup_gpu();
             return TRANSCRIBE_ERR_GGUF;
@@ -1517,6 +1663,12 @@ transcribe_status run_decode_pass(transcribe_session *          session,
             }
             ggml_backend_tensor_set(sb.mask_in, step_mask.data(), 0,
                                     static_cast<size_t>(max_n_kv) * sizeof(ggml_fp16_t));
+            if (use_logit_bias) {
+                // Re-uploaded every step like the mask: the allocator reuses an
+                // input's memory once its last reader has run, so a value set once
+                // before the loop is clobbered by the first step's intermediates.
+                ggml_backend_tensor_set(sb.logit_bias_in, lang->bias.data(), 0, lang->bias.size() * sizeof(float));
+            }
 
             const int64_t t_set1 = ggml_time_us();
             t_step_set_us += t_set1 - t_set0;
@@ -1675,6 +1827,9 @@ transcribe_status run_decode_pass(transcribe_session *          session,
                                     static_cast<size_t>(T_verify) * sizeof(int32_t));
             ggml_backend_tensor_set(vb.kv_idx_in, kv_idxs.data(), 0, static_cast<size_t>(T_verify) * sizeof(int64_t));
             ggml_backend_tensor_set(vb.mask_in, verify_mask.data(), 0, verify_mask.size() * sizeof(ggml_fp16_t));
+            if (use_logit_bias) {  // per step, as in the step loop above
+                ggml_backend_tensor_set(vb.logit_bias_in, lang->bias.data(), 0, lang->bias.size() * sizeof(float));
+            }
 
             const int64_t t_set1 = ggml_time_us();
             t_step_set_us += t_set1 - t_set0;
@@ -1857,6 +2012,18 @@ transcribe_status run(transcribe_session *          session,
         }
         lang_prefix_ptr = &lang_prefix_ids;
     }
+    // Language allowlist (no explicit language): seed the envelope probe and
+    // constrain the pass; see LanguageConstraint.
+    if (const transcribe_status st =
+            prepare_language_constraint(cm->tok, cm->hparams.dec_vocab_size, params, cc->lang_constraint);
+        st != TRANSCRIBE_OK) {
+        return st;
+    }
+    const bool lang_active = cc->lang_constraint.active();
+    const bool lang_probe  = cc->lang_constraint.probe();
+    if (lang_probe) {
+        lang_prefix_ptr = &cc->lang_constraint.probe_ids;
+    }
 
     // Free GPU buffers (scheduler galloc + KV cache) after the run to prevent
     // memory accumulation across repeated calls. The session persists across
@@ -1881,9 +2048,17 @@ transcribe_status run(transcribe_session *          session,
 
     DecodePassResult        pass;
     const transcribe_status st =
-        run_decode_pass(session, pcm, n_samples, params, lang_prefix_ptr, /*max_new_tokens=*/0, &pass);
+        run_decode_pass(session, pcm, n_samples, params, lang_prefix_ptr, /*max_new_tokens=*/0, &pass,
+                        /*draft_seed=*/nullptr, /*enc_cache=*/nullptr, /*mel_stream=*/nullptr, /*kv_reuse=*/false,
+                        lang_active ? &cc->lang_constraint : nullptr, lang_probe);
     if (st != TRANSCRIBE_OK) {
         return st;
+    }
+    if (lang_probe) {
+        // The probe was prompt, not generation: give the parser below the
+        // whole "language X<asr_text>" envelope back.
+        pass.raw_text.insert(0, k_language_probe_text);
+        lang_prefix_ptr = nullptr;  // the language below is the model's pick
     }
 
     cc->raw_text      = pass.raw_text;  // pre-envelope text, via transcribe_raw_text
@@ -2353,7 +2528,11 @@ transcribe_status run_batch(transcribe_session *          session,
 
     // Batched decode requires the flash-attention step path and dump-free
     // operation. Fall back to the serial loop otherwise (same results).
-    if (!cc->decoder_use_flash || transcribe::debug::enabled() || n == 1) {
+    // A language allowlist constrains each row's own decode (probe + logit
+    // bias), which the batched step graph does not carry.
+    const bool allowlist = params != nullptr && (params->language == nullptr || params->language[0] == '\0') &&
+                           params->n_allowed_languages > 0;
+    if (!cc->decoder_use_flash || transcribe::debug::enabled() || n == 1 || allowlist) {
         return run_batch_serial(cc, pcm, n_samples, n, params);
     }
 

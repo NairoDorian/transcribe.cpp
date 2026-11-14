@@ -218,12 +218,13 @@ struct TdtToken {
 //
 // Returns TRANSCRIBE_OK on success; cannot fail except via invalid args
 // (validated by the family driver before this is called).
-transcribe_status decode_tdt_greedy(const HostDecoderWeights & w,
-                                    const float *              enc_out,
-                                    int                        T_enc,
-                                    int                        d_enc,
-                                    int                        n_threads,
-                                    std::vector<TdtToken> &    out_tokens);
+transcribe_status decode_tdt_greedy(const HostDecoderWeights &   w,
+                                    const float *                enc_out,
+                                    int                          T_enc,
+                                    int                          d_enc,
+                                    int                          n_threads,
+                                    std::vector<TdtToken> &      out_tokens,
+                                    const std::vector<uint8_t> * blocked_tokens = nullptr);
 
 // Run RNNT greedy decode end-to-end. Same predictor + joint code as TDT,
 // but the joint emits `vocab+1` logits (no duration extras) and the step
@@ -280,11 +281,12 @@ transcribe_status decode_rnnt_greedy_streaming(const HostDecoderWeights &      w
 // (standard CTC greedy, cf. NeMo GreedyCTCInfer). step_at_emit is the
 // post-collapse encoder-frame index; duration_frames = 1. Same TdtToken
 // result type as the transducer paths.
-transcribe_status decode_ctc_greedy(const HostDecoderWeights & w,
-                                    const float *              enc_out,
-                                    int                        T_enc,
-                                    int                        d_enc,
-                                    int                        n_threads,
-                                    std::vector<TdtToken> &    out_tokens);
+transcribe_status decode_ctc_greedy(const HostDecoderWeights &   w,
+                                    const float *                enc_out,
+                                    int                          T_enc,
+                                    int                          d_enc,
+                                    int                          n_threads,
+                                    std::vector<TdtToken> &      out_tokens,
+                                    const std::vector<uint8_t> * blocked_tokens = nullptr);
 
 }  // namespace transcribe::parakeet

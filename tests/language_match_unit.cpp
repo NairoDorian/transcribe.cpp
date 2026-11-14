@@ -1,10 +1,13 @@
 // Unit tests for transcribe-lang.h: how a caller's language code names a
-// model's codes (the language allowlist and, later, hint resolution).
+// model's codes (the language allowlist and, later, hint resolution), and for
+// transcribe-lang-alphabet.h: which token texts a list of languages may write.
+#include "transcribe-lang-alphabet.h"
 #include "transcribe-lang.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -69,12 +72,107 @@ void test_bare_codes_and_aliases() {
     CHECK((r("en-gb", mixed) == std::vector<int>{ 2 }));
 }
 
+using transcribe::lang::AlphabetFilter;
+using transcribe::lang::build_alphabet_filter;
+
+AlphabetFilter alpha(const Codes & codes, bool & usable) {
+    return build_alphabet_filter(codes, usable);
+}
+
+// The union of the listed languages' alphabets: a fr+en speaker may write
+// either language's letters anywhere, never Cyrillic or a Spanish ñ.
+void test_alphabet_union() {
+    bool                 usable = false;
+    const AlphabetFilter fr_en  = alpha({ "fr", "en" }, usable);
+    CHECK(usable);
+    CHECK(fr_en.allows("hello world"));
+    CHECK(
+        fr_en.allows("\xE2\x96\x81"
+                     "bonjour"));                       // SentencePiece word marker is neutral
+    CHECK(fr_en.allows("d\xC3\xA9j\xC3\xA0"));          // "déjà"
+    CHECK(fr_en.allows("\xC5\x93uvre"));                // "œuvre"
+    CHECK(fr_en.allows("2024, 50% \xE2\x80\x94 ok?"));  // digits, punctuation, em dash
+    CHECK(!fr_en.allows("\xD0\xBF\xD1\x80\xD0\xB8"));   // "при" (Cyrillic)
+    CHECK(!fr_en.allows("a\xC3\xB1o"));                 // "año"
+    CHECK(
+        !fr_en.allows("stra\xC3\x9F"
+                      "e"));               // "straße"
+    CHECK(!fr_en.allows("\xE4\xB8\xAD"));  // "中"
+
+    const AlphabetFilter ru_en = alpha({ "ru", "en-US" }, usable);
+    CHECK(usable);
+    CHECK(ru_en.allows("\xD0\xBF\xD1\x80\xD0\xB8"));
+    CHECK(ru_en.allows("hello"));
+    CHECK(!ru_en.allows("\xCE\xB1"));  // Greek alpha
+
+    const AlphabetFilter zh_en = alpha({ "zh", "en" }, usable);
+    CHECK(zh_en.allows("\xE4\xB8\xAD\xE6\x96\x87"));  // "中文"
+    CHECK(zh_en.allows("\xEF\xBC\x8C"));              // full-width comma
+    CHECK(!zh_en.allows("\xE3\x81\x82"));             // hiragana "あ"
+    CHECK(!zh_en.allows("\xEA\xB0\x80"));             // hangul "가"
+}
+
+// Byte-level BPE splits a character across tokens: a cut sequence is judged
+// by the script its lead bytes fix, and a cut Latin letter passes (the next
+// token decides which letter it is).
+void test_alphabet_partial_utf8() {
+    bool                 usable = false;
+    const AlphabetFilter fr_en  = alpha({ "fr", "en" }, usable);
+    CHECK(!fr_en.allows("\xD0"));      // Cyrillic lead byte
+    CHECK(!fr_en.allows("\xE4\xB8"));  // Han, two of three bytes
+    CHECK(fr_en.allows("\xC3"));       // some Latin-1 letter
+    CHECK(fr_en.allows("\xA9"));       // a stray continuation byte
+}
+
+// Cyrillic neighbours: Ukrainian and Russian share most letters but not all.
+void test_alphabet_cyrillic_letters() {
+    bool                 usable = false;
+    const AlphabetFilter uk_en  = alpha({ "uk", "en" }, usable);
+    CHECK(usable);
+    CHECK(uk_en.allows("\xD1\x97\xD0\xB6\xD0\xB0\xD0\xBA"));  // "їжак"
+    CHECK(!uk_en.allows("\xD0\xB2\xD1\x8B"));                 // "вы" (ы is Russian)
+    CHECK(!uk_en.allows("\xD1\x91\xD0\xB6"));                 // "ёж"
+    CHECK(uk_en.allows("\xD0"));                              // a cut Cyrillic letter passes
+    const AlphabetFilter ru = alpha({ "ru" }, usable);
+    CHECK(ru.allows("\xD0\xB2\xD1\x8B"));
+    CHECK(!ru.allows("\xD1\x97"));                               // "ї"
+    const AlphabetFilter ru_uk = alpha({ "ru", "uk" }, usable);  // the union writes both
+    CHECK(ru_uk.allows("\xD0\xB2\xD1\x8B") && ru_uk.allows("\xD1\x97"));
+    const AlphabetFilter kk = alpha({ "kk" }, usable);           // no letter list: any Cyrillic
+    CHECK(kk.allows("\xD2\x9B"));                                // "қ"
+
+    // A language the model cannot name constrains only its script.
+    const AlphabetFilter uk_coarse = build_alphabet_filter({ "uk", "en" }, usable, { "uk" });
+    CHECK(usable);
+    CHECK(uk_coarse.allows("\xD0\xB2\xD1\x8B"));  // "вы" passes: Cyrillic is open
+    CHECK(!uk_coarse.allows("a\xC3\xB1o"));       // "año": en's Latin letters still bind
+    CHECK(!uk_coarse.allows("\xCE\xB1"));         // Greek still blocked
+    const AlphabetFilter ca_coarse = build_alphabet_filter({ "ca", "fr" }, usable, { "ca" });
+    CHECK(ca_coarse.allows("a\xC3\xB1o"));        // an unknown Latin language opens Latin letters
+    CHECK(!ca_coarse.allows("\xD0\xB2"));         // but not another script
+}
+
+// Fail open: a language with no alphabet entry would have its letters banned.
+void test_alphabet_unknown_language() {
+    bool usable = true;
+    std::ignore = alpha({ "fr", "xx" }, usable);
+    CHECK(!usable);
+    std::ignore = alpha({}, usable);
+    CHECK(!usable);
+    std::ignore = alpha({ "pt-BR" }, usable);  // regions write like the language
+    CHECK(usable);
+}
+
 }  // namespace
 
 int main() {
     test_normalize();
     test_regional_tags();
     test_bare_codes_and_aliases();
+    test_alphabet_union();
+    test_alphabet_partial_utf8();
+    test_alphabet_cyrillic_letters();
+    test_alphabet_unknown_language();
     if (g_failures == 0) {
         std::printf("language_match_unit: OK\n");
     }

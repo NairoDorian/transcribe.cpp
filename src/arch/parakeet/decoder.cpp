@@ -49,6 +49,8 @@
 
 namespace transcribe::parakeet {
 
+int argmax_range_masked(const float * data, int n, const std::vector<uint8_t> * blocked);
+
 // ---------------------------------------------------------------------------
 // Host weight extraction
 // ---------------------------------------------------------------------------
@@ -1260,12 +1262,13 @@ int argmax_range_masked(const float * data, int n, const std::vector<uint8_t> * 
 // Greedy decode driver
 // ---------------------------------------------------------------------------
 
-transcribe_status decode_tdt_greedy(const HostDecoderWeights & w,
-                                    const float *              enc_out,
-                                    int                        T_enc,
-                                    int                        d_enc,
-                                    int                        n_threads,
-                                    std::vector<TdtToken> &    out_tokens) {
+transcribe_status decode_tdt_greedy(const HostDecoderWeights &   w,
+                                    const float *                enc_out,
+                                    int                          T_enc,
+                                    int                          d_enc,
+                                    int                          n_threads,
+                                    std::vector<TdtToken> &      out_tokens,
+                                    const std::vector<uint8_t> * blocked_tokens) {
     if (enc_out == nullptr || T_enc <= 0 || d_enc <= 0) {
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
@@ -1428,7 +1431,7 @@ transcribe_status decode_tdt_greedy(const HostDecoderWeights & w,
         const float * token_logits    = frame_logits;
         const float * duration_logits = frame_logits + n_token_cls;
 
-        const int pred_token = argmax_range(token_logits, n_token_cls);
+        const int pred_token = argmax_range_masked(token_logits, n_token_cls, blocked_tokens);
         const int decision   = argmax_range(duration_logits, n_dur);
         const int duration   = w.tdt_durations[static_cast<size_t>(decision)];
 
@@ -1963,12 +1966,13 @@ transcribe_status decode_rnnt_greedy_streaming(const HostDecoderWeights &      w
 // Per-frame: logits[t] = W @ enc[t] + b -> log_softmax -> argmax.
 // Collapse: drop adjacent duplicates ("aaab" -> "ab"), then drop blanks
 // (standard CTC greedy, cf. NeMo GreedyCTCInfer).
-transcribe_status decode_ctc_greedy(const HostDecoderWeights & w,
-                                    const float *              enc_out,
-                                    int                        T_enc,
-                                    int                        d_enc,
-                                    int                        n_threads,
-                                    std::vector<TdtToken> &    out_tokens) {
+transcribe_status decode_ctc_greedy(const HostDecoderWeights &   w,
+                                    const float *                enc_out,
+                                    int                          T_enc,
+                                    int                          d_enc,
+                                    int                          n_threads,
+                                    std::vector<TdtToken> &      out_tokens,
+                                    const std::vector<uint8_t> * blocked_tokens) {
     if (enc_out == nullptr || T_enc <= 0 || d_enc <= 0) {
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
@@ -2059,7 +2063,7 @@ transcribe_status decode_ctc_greedy(const HostDecoderWeights & w,
     int prev_label = -1;
     for (int t = 0; t < T_enc; ++t) {
         const float * row   = logits_all.data() + static_cast<size_t>(t) * static_cast<size_t>(n_classes);
-        const int     label = argmax_range(row, n_classes);
+        const int     label = argmax_range_masked(row, n_classes, blocked_tokens);
         if (label == prev_label) {
             continue;  // run-length collapse
         }

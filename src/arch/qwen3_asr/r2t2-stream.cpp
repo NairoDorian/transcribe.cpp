@@ -282,7 +282,16 @@ transcribe_status decode_tick(QwenAsrSession * cc, QwenAsrModel * cm, bool final
     // then the stable prefix as text. Both are token-level appendages after
     // the assistant header, which is exactly the slot run_decode_pass exposes
     // as `suffix_ids`.
-    std::vector<int32_t> suffix_ids = st.prompt_seed_ids;
+    std::vector<int32_t>       suffix_ids = st.prompt_seed_ids;
+    // Language allowlist: until a tick has produced the envelope (the prefix
+    // is empty in auto-detect until then), seed the "language" probe so the
+    // envelope can only name an allowed language. Every tick decodes under the
+    // list's alphabet bias.
+    const LanguageConstraint * lang       = cc->lang_constraint.active() ? &cc->lang_constraint : nullptr;
+    const bool                 probe = lang != nullptr && lang->probe() && prefix.empty() && st.force_language.empty();
+    if (probe) {
+        suffix_ids = lang->probe_ids;
+    }
     if (!prefix.empty()) {
         std::vector<int32_t> prefix_ids;
         if (const transcribe_status st_enc = encode_with_tag(cm->tok, prefix, prefix_ids); st_enc != TRANSCRIBE_OK) {
@@ -296,7 +305,7 @@ transcribe_status decode_tick(QwenAsrSession * cc, QwenAsrModel * cm, bool final
         cc, st.audio_accum.data(), static_cast<int>(st.audio_accum.size()),
         /*params=*/nullptr, suffix_ids.empty() ? nullptr : &suffix_ids, k_max_new_tokens, &pass,
         draft_enabled() && !st.draft_tail.empty() ? &st.draft_tail : nullptr, &st.enc_cache, &st.mel_stream,
-        /*kv_reuse=*/true);
+        /*kv_reuse=*/true, lang, probe);
     if (decode_status != TRANSCRIBE_OK) {
         return decode_status;
     }
@@ -307,8 +316,9 @@ transcribe_status decode_tick(QwenAsrSession * cc, QwenAsrModel * cm, bool final
     // (`tail[i]` versus `gen[i+1]`) rather than only inferable from timings.
     const bool trace = transcribe::env::flag("TRANSCRIBE_R2T2_TRACE");
 
-    std::string generated = r2t2::normalize_punct_by_context(pass.raw_text);
-    generated             = r2t2::sanitize_utf8_lossy(generated);
+    std::string generated =
+        r2t2::normalize_punct_by_context(probe ? std::string(k_language_probe_text) + pass.raw_text : pass.raw_text);
+    generated = r2t2::sanitize_utf8_lossy(generated);
     // Drop replacement characters outright, mirroring the reference's
     // .replace('�', ''): a glyph the model hallucinated from a partial
     // token must not enter raw_decoded_, because raw_decoded_ is re-encoded
@@ -739,6 +749,11 @@ transcribe_status r2t2_stream_begin(transcribe_session *             ctx,
             enc != TRANSCRIBE_OK) {
             return enc;
         }
+    }
+    if (const transcribe_status lc =
+            prepare_language_constraint(cm->tok, cm->hparams.dec_vocab_size, run_params, cc->lang_constraint);
+        lc != TRANSCRIBE_OK) {
+        return lc;
     }
 
     // A stream is a fresh session-level result. The dispatcher has already

@@ -59,10 +59,14 @@ pub struct RunOptions {
     /// an error elsewhere, and in batch and streaming runs). `text` holds only
     /// the continuation; `raw_text` leads with the prefix.
     pub prefix: Option<String>,
-    /// Languages automatic detection may choose from
-    /// (`Feature::LanguageAllowlist`). Empty = unrestricted; ignored when
-    /// `language` is set. Codes match loosely (`"fr"` allows fr-FR and fr-CA,
-    /// `"en_us"` names en-US). A streaming run applies it to every step.
+    /// The languages the speaker uses and may switch between, even
+    /// mid-sentence (`Feature::LanguageAllowlist`). The model is limited to
+    /// their union, never locked to one: its language label (when it can
+    /// name every listed language) and the alphabet it writes. Empty =
+    /// unrestricted; ignored when `language` is set. Codes match loosely
+    /// (`"fr"` allows fr-FR and fr-CA, `"en_us"` names en-US); codes a model
+    /// cannot detect are skipped for its label but still widen the alphabet.
+    /// A streaming run applies it to every step.
     pub allowed_languages: Vec<String>,
 }
 

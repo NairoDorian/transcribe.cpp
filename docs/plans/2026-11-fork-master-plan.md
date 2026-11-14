@@ -254,8 +254,75 @@ Measured (CPU, Nemotron 3.5 Q8_0, offline and 160 ms streaming):
   and the text is still transcribed as heard — the list constrains the
   language decision, it never translates.
 
-Still open in A: `allowed_mass` reporting, SenseVoice, LangID-gated auto
-(A.3), Qwen3/R2T2 constrained prefix, the ZER0 "languages I speak" setting.
+### A.6 Second slice — "the languages I speak", every primary family (2026-11-14)
+
+The list now means **the languages the speaker uses and may switch between,
+mid-sentence included** — not "detect one of these and lock onto it". Every
+constraint is a union over the list; nothing forces one language.
+
+Semantics (supersedes difference 1 of A.5):
+- **Labels** (Nemotron tags, Whisper's window token, the Qwen3/R2T2
+  `language X` envelope, SenseVoice's LID tag) are restricted to the list only
+  when the model can name *every* listed language. A list with a language the
+  model cannot name leaves its labels free (WARN): forcing `language English`
+  onto speech in a language Qwen3 has no name for (Ukrainian) is worse than
+  auto.
+- **Alphabet** (`src/transcribe-lang-alphabet.h`): no token carrying a letter
+  none of the listed languages writes — another script, a foreign Latin
+  diacritic, or a Cyrillic letter of a neighbouring language (per-language
+  Cyrillic sets: `uk` excludes ы э ъ ё, `ru` excludes і ї є ґ). Built from the
+  whole list; a listed language the model cannot name contributes only its
+  script (banning ы on R2T2, which writes Ukrainian through Russian, turned a
+  half-right sentence wholly Russian). Fail-open when a code has no table
+  entry. This is the only hook the label-less families have.
+- A list naming no language the model knows stays `UNSUPPORTED_LANGUAGE`; a
+  model without the feature rejects a non-empty list (hosts probe
+  `Feature::LanguageAllowlist`).
+
+Per family:
+
+| Family | Label | Alphabet | Where |
+|---|---|---|---|
+| Nemotron 3.5 (RNN-T) | locale tags + `<` opener | yes, offline + streaming | `parakeet/model.cpp` `resolve_language_block_mask` |
+| Parakeet TDT v3 / ultra / redux, CTC | — | yes | same mask, `decode_tdt_greedy` / `decode_ctc_greedy` |
+| Qwen3-ASR 1.7B, R2T2 (offline + streaming) | envelope probe: seed `language`, first token limited to the listed names **plus `None`** | device logit bias in the step / verify graphs, host on the first token | `qwen3_asr` `LanguageConstraint` |
+| Granite 4.1 2B | — | device logit bias (step graph), host on the first token; off for translate | `granite/model.cpp` `prepare_language_bias` |
+| Whisper | window language token | suppressed with `suppress_tokens` | `whisper_alphabet_banned` |
+| SenseVoice | LID tag (`<\|lang\|>`) | masked CTC argmax | `sensevoice_language_mask` |
+
+Two traps found by testing, both fixed here:
+1. **`language None` is the mixed-speech answer.** R2T2 opens a
+   Chinese-then-English clip with `language None<asr_text>` and transcribes
+   both halves; an envelope limited to `{Chinese, English}` picked English and
+   *translated* the Chinese. `None` stays allowed.
+2. **Graph inputs must be uploaded every step.** The allocator reuses an
+   input's memory once its last reader has run, so a logit bias set once
+   before the step loop was garbage from step 2 (Qwen3/R2T2 output collapsed
+   into byte soup). The same bug sat in **Whisper's static decode on main**:
+   its cross-attention mask was "uploaded once and reused", and every CPU
+   Whisper transcript was noise (GPU happened to keep it;
+   `TRANSCRIBE_DISABLE_STATIC_DECODE=1` hid it). Both now upload per step.
+
+Measured (CPU, this branch vs `main`):
+- **no list**: 35/35 transcripts byte-identical (nemotron, parakeet v3 / redux /
+  ultra, granite, qwen3, r2t2 × jfk, german, fleurs-fr, fleurs-es, dots);
+- **code-switch clips** (FLEURS / jfk spliced with 300 ms gaps: fr→en, en→fr,
+  de→en, ru→en, fr→es→en, zh→en; `--allow` = the clip's languages): every
+  family keeps every switch it makes in auto mode, offline and 320 ms
+  streaming (Nemotron, R2T2). Gains: **Qwen3 en→fr recovers the French half
+  auto mode drops**. Unchanged limits: TDT Parakeet drops some second-language
+  segments (v3 en→fr, zh→en), Granite has no Russian / Chinese, Qwen3 opens
+  zh→en with `language English` and translates the Chinese in both modes;
+- **Ukrainian** (uk-short, uk-long, `uk,en`): Nemotron and the TDT models are
+  identical to auto (already correct Ukrainian); R2T2 identical to auto after
+  the script-only rule;
+- **SenseVoice Small** (official GGUF): identical text on en / zh / yue / ja /
+  zh→en; `--allow yue` on Mandarin reports `yue`, text unchanged.
+
+Still open in A: `allowed_mass` reporting, LangID-gated auto (A.3), Canary /
+Cohere (no detection: need a source language — A.3's detect-then-force, or a
+"first listed language" default plus the alphabet), Voxtral, Granite NAR, the
+ZER0 "languages I speak" setting (F.2).
 
 ---
 
@@ -508,8 +575,11 @@ memory pressure better; measure peak RSS for Nemotron Q8_0 with and without
 ### F.2 Allowlist in the app
 
 Expose A.0 as a "languages I speak" setting and pass it to all Multi-STT
-models (Nemotron natively; Canary through A.3). This replaces the single
-language hint that caused the empty-column trap.
+models that report `Feature::LanguageAllowlist` (Nemotron, Granite, Qwen3,
+R2T2, the Parakeets; Canary through A.3 — until then keep its explicit
+language). This replaces the single language hint that caused the
+empty-column trap; the list is never a lock, so a speaker mixing the listed
+languages keeps every switch.
 
 ### F.3 One VAD owner
 
@@ -564,7 +634,7 @@ Once B.1–B.2 are bit-identical to the crate, move gating into the engine
 | | Contents | Exit gate |
 |---|---|---|
 | **M0** (done) | upstream 0.4.2 merge, ggml 1.0, deps | ctest, Rust, A/B transcripts |
-| **M1** (core done, §A.5) | A.0, A.1, Nemotron + Whisper allowlist, Rust, CLI; ZER0 setting pending | byte-identical with empty list ✓; FLEURS allowlist gate ✓ |
+| **M1** (core done, §A.5–A.6) | A.0, A.1, allowlist on Nemotron, Parakeet TDT (v3/ultra/redux), Qwen3, R2T2, Granite, Whisper, SenseVoice; Rust, CLI; ZER0 setting pending | byte-identical with empty list ✓; FLEURS allowlist gate ✓; code-switch clips ✓ |
 | **M2** | B.1–B.3 Earshot fidelity, role API, per-ISA kernels | Rust-reference parity, kernel hash |
 | **M3** | C.1–C.3 CUDA residency + determinism test | split counts down, Multi-STT bytes stable |
 | **M4** | A for Whisper, SenseVoice, LangID-gated auto, Qwen3/R2T2 | per-family gates |

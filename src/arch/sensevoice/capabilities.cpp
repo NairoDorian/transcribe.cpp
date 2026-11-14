@@ -31,6 +31,9 @@ void apply_family_invariants(transcribe_model & model) {
     // routes here. No PNC runtime toggle.
     transcribe::set_feature(&model, TRANSCRIBE_FEATURE_CANCELLATION, true);
     transcribe::set_feature(&model, TRANSCRIBE_FEATURE_ITN, true);
+    // Language allowlist: the detected <|lang|> tag and the CTC output are
+    // limited to the listed languages (sensevoice_language_mask in model.cpp).
+    transcribe::set_feature(&model, TRANSCRIBE_FEATURE_LANGUAGE_ALLOWLIST, true);
 }
 
 }  // namespace transcribe::sensevoice

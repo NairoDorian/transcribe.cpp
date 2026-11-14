@@ -16,6 +16,7 @@
 #include "transcribe-debug.h"
 #include "transcribe-env.h"
 #include "transcribe-flash-policy.h"
+#include "transcribe-lang-alphabet.h"
 #include "transcribe-lang.h"
 #include "transcribe-load-common.h"
 #include "transcribe-loader.h"
@@ -940,10 +941,11 @@ namespace {
 
 // Language allowlist for the detection pass: allowed[i] != 0 when
 // cm.lang_codes[i] / cm.lang_token_ids[i] may be detected. Empty when the
-// request does not restrict detection (explicit `language`, or no list).
-// Codes this model cannot detect are skipped with a WARN (transcribe-lang.h
-// matching); only an allowlist with none it can detect is
-// UNSUPPORTED_LANGUAGE.
+// request does not restrict detection (explicit `language`, or no list), and
+// also when a listed language is one this model cannot detect (WARN): forcing
+// the others onto that speech would make things worse; the alphabet
+// (whisper_alphabet_banned) still applies. A list naming no language this
+// model knows is UNSUPPORTED_LANGUAGE.
 transcribe_status whisper_allowed_languages(const WhisperModel &          cm,
                                             const transcribe_run_params * params,
                                             std::vector<uint8_t> &        allowed) {
@@ -964,8 +966,8 @@ transcribe_status whisper_allowed_languages(const WhisperModel &          cm,
         }
         const std::vector<int> hits = transcribe::lang::resolve_all(code, cm.lang_codes);
         if (hits.empty()) {
-            log_msg(TRANSCRIBE_LOG_LEVEL_WARN,
-                    "whisper: allowed language \"%s\" is not one this model can detect; skipping it", code);
+            log_msg(TRANSCRIBE_LOG_LEVEL_WARN, "whisper: allowed language \"%s\" is not one this model can detect",
+                    code);
             continue;
         }
         n_resolved += 1;
@@ -978,7 +980,53 @@ transcribe_status whisper_allowed_languages(const WhisperModel &          cm,
                 params->n_allowed_languages);
         return TRANSCRIBE_ERR_UNSUPPORTED_LANGUAGE;
     }
+    if (n_resolved < params->n_allowed_languages) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_WARN,
+                "whisper: language detection left free (a listed language is not one this "
+                "model detects); constraining the alphabet only");
+        allowed.clear();
+    }
     return TRANSCRIBE_OK;
+}
+
+// Language allowlist, second half: the text tokens no listed language may
+// write (transcribe-lang-alphabet.h; the union of the listed languages'
+// alphabets, so a window may still mix them). Suppressed every step like
+// hparams.suppress_tokens. Empty without a list, with an explicit language,
+// on a translate task (the output is English, not the speaker's language), or
+// when a listed language has no alphabet entry (fail open). Call after
+// whisper_allowed_languages validated the list.
+std::vector<int32_t> whisper_alphabet_banned(const WhisperModel & cm, const transcribe_run_params * params) {
+    std::vector<int32_t> banned;
+    if (params == nullptr || params->language != nullptr || params->n_allowed_languages <= 0 ||
+        params->allowed_languages == nullptr || params->task == TRANSCRIBE_TASK_TRANSLATE) {
+        return banned;
+    }
+    std::vector<std::string> codes;
+    std::vector<std::string> unknown;  // not one this model detects: script only
+    for (int32_t i = 0; i < params->n_allowed_languages; ++i) {
+        codes.emplace_back(params->allowed_languages[i]);
+        if (transcribe::lang::resolve_all(codes.back(), cm.lang_codes).empty()) {
+            unknown.push_back(codes.back());
+        }
+    }
+    bool                                   usable   = false;
+    const transcribe::lang::AlphabetFilter alphabet = transcribe::lang::build_alphabet_filter(codes, usable, unknown);
+    if (!usable) {
+        return banned;
+    }
+    // Text tokens precede <|startoftranscript|>; the specials after it are
+    // never text.
+    const int n_text =
+        std::min(cm.tok.n_tokens(), cm.hparams.sot_token_id >= 0 ? cm.hparams.sot_token_id : cm.tok.n_tokens());
+    for (int id = 0; id < n_text; ++id) {
+        if (!alphabet.allows(cm.tok.decode(&id, 1))) {
+            banned.push_back(id);
+        }
+    }
+    log_msg(TRANSCRIBE_LOG_LEVEL_DEBUG, "whisper: language allowlist bans %zu of %d text tokens", banned.size(),
+            n_text);
+    return banned;
 }
 
 bool whisper_has_generic_prompt(const transcribe_run_params * params) {
@@ -1345,6 +1393,7 @@ transcribe_status whisper_run(transcribe_session *          session,
     if (const transcribe_status st = whisper_allowed_languages(*cm, params, allowed_langs); st != TRANSCRIBE_OK) {
         return st;
     }
+    const std::vector<int32_t> alphabet_banned = whisper_alphabet_banned(*cm, params);
 
     if (cc->poll_abort()) {
         return TRANSCRIBE_ERR_ABORTED;
@@ -1524,6 +1573,11 @@ transcribe_status whisper_run(transcribe_session *          session,
     auto suppress_in_place = [&](std::vector<float> & logits) {
         for (int32_t id : cm->hparams.suppress_tokens) {
             if (id >= 0 && id < vocab_size) {
+                logits[static_cast<size_t>(id)] = -INFINITY;
+            }
+        }
+        for (int32_t id : alphabet_banned) {
+            if (id < vocab_size) {
                 logits[static_cast<size_t>(id)] = -INFINITY;
             }
         }
@@ -2373,16 +2427,19 @@ transcribe_status whisper_run(transcribe_session *          session,
                     step_mask[p] = mask_zero;
                 }
 
-                // Cross mask is invariant across steps within a chunk —
-                // upload once and reuse.
+                // Cross mask: the same values every step of a chunk, but
+                // uploaded every step with the other inputs (below). The
+                // allocator reuses an input's memory once its last reader has
+                // run, so a mask set once before the loop is garbage from the
+                // second step on: on CPU that turned every transcript into
+                // noise (GPU happened to keep it; TRANSCRIBE_DISABLE_STATIC_DECODE
+                // hid it).
                 if (sb.cross_mask_in != nullptr) {
                     const int n_kv_cross = static_cast<int>(sb.cross_mask_in->ne[0]);
                     step_cross_mask.assign(static_cast<size_t>(n_kv_cross), 0.0f);
                     for (int k = T_enc_local; k < n_kv_cross; ++k) {
                         step_cross_mask[static_cast<size_t>(k)] = -1e9f;
                     }
-                    ggml_backend_tensor_set(sb.cross_mask_in, step_cross_mask.data(), 0,
-                                            step_cross_mask.size() * sizeof(float));
                 }
             }
 
@@ -2420,6 +2477,10 @@ transcribe_status whisper_run(transcribe_session *          session,
                     step_mask[n_past] = mask_zero;
                     ggml_backend_tensor_set(sb.mask_in, step_mask.data(), 0,
                                             static_cast<size_t>(max_n_kv) * sizeof(ggml_fp16_t));
+                    if (sb.cross_mask_in != nullptr) {
+                        ggml_backend_tensor_set(sb.cross_mask_in, step_cross_mask.data(), 0,
+                                                step_cross_mask.size() * sizeof(float));
+                    }
                     cc->perf.step_alloc.add(ggml_time_us() - t_step_alloc_start);
 
                     const int64_t t_step_compute_start = ggml_time_us();
@@ -2743,6 +2804,7 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
     if (const transcribe_status st = whisper_allowed_languages(*cm, params, allowed_langs); st != TRANSCRIBE_OK) {
         return st;
     }
+    const std::vector<int32_t> alphabet_banned = whisper_alphabet_banned(*cm, params);
 
     // Resolve the whisper run-ext (NULL → shipping defaults).
     if (const transcribe_status st =
@@ -3240,8 +3302,7 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
         if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, sb.graph, "whisper")) {
             return TRANSCRIBE_ERR_OOM;
         }
-        ggml_backend_tensor_set(sb.cross_mask_in, cmask.data(), 0, cmask.size() * sizeof(ggml_fp16_t));
-        return TRANSCRIBE_OK;
+        return TRANSCRIBE_OK;  // cross mask: uploaded every step by run_step
     };
     if (const transcribe_status st = rebuild_step(kv_window); st != TRANSCRIBE_OK) {
         cleanup_gpu();
@@ -3263,6 +3324,8 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
         ggml_backend_tensor_set(sb.pos_ids_in, pos_buf.data(), 0, B * sizeof(int32_t));
         ggml_backend_tensor_set(sb.kv_idx_in, kvidx_buf.data(), 0, B * sizeof(int64_t));
         ggml_backend_tensor_set(sb.self_mask_in, smask.data(), 0, smask.size() * sizeof(ggml_fp16_t));
+        // Every step, not once per graph: see the single-run step loop.
+        ggml_backend_tensor_set(sb.cross_mask_in, cmask.data(), 0, cmask.size() * sizeof(ggml_fp16_t));
         if (ggml_backend_sched_graph_compute(cc->sched, sb.graph) != GGML_STATUS_SUCCESS) {
             return TRANSCRIBE_ERR_BACKEND;
         }
@@ -3300,6 +3363,11 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
     auto               suppress_row = [&](std::vector<float> & lg, bool begin) {
         for (int32_t id : hp.suppress_tokens) {
             if (id >= 0 && id < vocab_size) {
+                lg[static_cast<size_t>(id)] = -INFINITY;
+            }
+        }
+        for (int32_t id : alphabet_banned) {
+            if (id < vocab_size) {
                 lg[static_cast<size_t>(id)] = -INFINITY;
             }
         }

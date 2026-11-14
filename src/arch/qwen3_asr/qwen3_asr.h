@@ -66,6 +66,48 @@ transcribe_status encode_language_prefix(const transcribe::Tokenizer & tok,
 // silently start disagreeing about which language was detected.
 const char * bcp47_for_publisher_name(const std::string & name);
 
+// Language allowlist (transcribe_run_params::allowed_languages, no explicit
+// `language`). The list names the languages the speaker uses, and a
+// transcript may switch between them mid-sentence, so nothing here forces one
+// language. Two constraints, both unions over the list:
+//   - the envelope: auto-detect opens the answer with "language X<asr_text>".
+//     A pass is seeded with BPE("language") (`probe_ids`) and the first token
+//     it generates, the start of " X", is limited to the allowed languages'
+//     names (`first_allowed`), plus "None", the model's own answer for mixed
+//     speech, after which it transcribes every language it hears. The name
+//     is the model's hint for the dominant language, never a lock: the text
+//     after <asr_text> stays free. Only when
+//     the model can name every listed language (otherwise "language English"
+//     could be forced onto speech in a language it cannot name);
+//   - the alphabet (transcribe-lang-alphabet.h): `bias` holds 0 for every token
+//     an allowed language may write and -inf for the rest, added to the logits
+//     of every step (host for the first token, the step / verify graphs'
+//     logit_bias_in after it). Empty when any listed language has no alphabet
+//     entry (fail open).
+// Built once per session per list (`key`): the vocab scan costs a few tens of
+// milliseconds.
+struct LanguageConstraint {
+    std::string          key;
+    std::vector<int32_t> probe_ids;
+    std::vector<int32_t> first_allowed;  // sorted, unique
+    std::vector<float>   bias;           // [dec_vocab_size] or empty
+
+    bool probe() const { return !first_allowed.empty(); }
+
+    bool active() const { return probe() || !bias.empty(); }
+};
+
+// The probe's text: what the envelope reads before the language name.
+inline constexpr const char * k_language_probe_text = "language";
+
+// Fill `lc` for `params`. Inactive (cleared) when `params` sets a language or
+// no list. Unknown codes are skipped with a WARN; a list with no language this
+// model detects is UNSUPPORTED_LANGUAGE; an empty code is INVALID_ARG.
+transcribe_status prepare_language_constraint(const transcribe::Tokenizer & tok,
+                                              int                           vocab,
+                                              const transcribe_run_params * params,
+                                              LanguageConstraint &          lc);
+
 // ---------------------------------------------------------------------------
 // Shared decode pass (offline run + R2T2 streaming)
 // ---------------------------------------------------------------------------
@@ -220,7 +262,9 @@ transcribe_status run_decode_pass(transcribe_session *          session,
                                   const std::vector<int32_t> *  draft_seed = nullptr,
                                   EncoderPrefixCache *          enc_cache  = nullptr,
                                   transcribe::MelStreamState *  mel_stream = nullptr,
-                                  bool                          kv_reuse   = false);
+                                  bool                          kv_reuse   = false,
+                                  const LanguageConstraint *    lang       = nullptr,
+                                  bool                          lang_probe = false);
 
 // ---------------------------------------------------------------------------
 // Model / Context
@@ -395,6 +439,10 @@ struct QwenAsrSession final : public transcribe_session {
     // unused by every other variant of this family (they reject the stream
     // extension and advertise supports_streaming = false).
     R2T2StreamState r2t2;
+
+    // Language allowlist constraint of the current run / stream; rebuilt (or
+    // cleared) by every run() and stream_begin, reused while the list repeats.
+    LanguageConstraint lang_constraint;
 
     QwenAsrSession() = default;
     ~QwenAsrSession() override;

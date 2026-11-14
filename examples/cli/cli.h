@@ -1,7 +1,7 @@
 // cli.h - shared declarations for the transcribe-cli example.
 //
 // main.cpp parses arguments, owns process setup (log sink, output file), and
-// routes each model to its role's driver (asr.cpp, diarize.cpp, langid.cpp). Shared
+// routes each model to its role's driver (asr.cpp, diarize.cpp, langid.cpp, vad.cpp). Shared
 // helpers live in namespace transcribe_cli next to the WAV loader in
 // examples/common.
 
@@ -43,7 +43,8 @@ struct cli_args {
     int                        n_ctx        = 0;  // 0 = model's true max; >0 lowers the cap
     transcribe_kv_type         kv_type      = TRANSCRIBE_KV_TYPE_AUTO;
     transcribe_backend_request backend      = TRANSCRIBE_BACKEND_AUTO;
-    int                        device_index = -1;  // --device N: -1 = auto, >=0 = exact registry device
+    int                        device_index = -1;     // --device N: -1 = auto, >=0 = exact registry device
+    bool                       no_mmap      = false;  // --no-mmap: copy weights instead of mapping the file
     transcribe_timestamp_kind  timestamps   = TRANSCRIBE_TIMESTAMPS_AUTO;
 
     // Generic prompting (transcribe_run_params::vocabulary / prompt / prefix).
@@ -62,8 +63,8 @@ struct cli_args {
 
     // SenseVoice / FunASR-Nano family knobs. The `--itn` flag is shared:
     // it routes to whichever family the loaded model belongs to. Ignored
-    // by non-ITN-aware families. Unset leaves the library default in place,
-    // which differs per family (sensevoice: on; funasr-nano: off), so the
+    // by non-ITN-aware families. Unset leaves the library default in place
+    // (on for sensevoice and fun-asr-mlt-nano, off for fun-asr-nano), so the
     // initializer here is only read once --itn / --no-itn has been seen.
     bool use_itn           = false;  // --itn / --no-itn
     bool itn_set           = false;
@@ -78,11 +79,11 @@ struct cli_args {
     bool diarize     = true;
     bool diarize_set = false;
 
-    // Streaming demo: when > 0, the single-file path feeds the WAV
+    // Streaming demo: when > 0, the single-file ASR path feeds the WAV
     // through transcribe_stream_begin/feed/finalize in fixed-size
     // ms-aligned chunks instead of one transcribe_run call. Requires
-    // the loaded model to advertise supports_streaming. Set by
-    // --stream-chunk-ms N.
+    // the loaded model to advertise supports_streaming; the DIARIZE,
+    // LANGID and VAD drivers refuse it. Set by --stream-chunk-ms N.
     int stream_chunk_ms      = 0;
     // Streaming demo: how much audio one transcribe_stream_feed call carries.
     // 0 = one chunk per feed (the default), which is the back-to-back case: the
@@ -125,6 +126,10 @@ struct cli_args {
     // candidates (0 = all). The library always ranks every allowed label.
     std::vector<std::string> langid_allow;
     int                      langid_top = 0;
+
+    // VAD role. --vad-threshold overrides transcribe_vad_params::threshold
+    // (< 0 = the library default).
+    double vad_threshold = -1.0;
 };
 
 // Bind prompting pointers to storage that stays alive through the run.
@@ -159,5 +164,12 @@ int run_langid_file(const cli_args &           args,
                     transcribe_model *         model,
                     const std::vector<float> & pcm,
                     std::ofstream *            output);
+
+// With -o, writes the speech segment lines.
+int run_vad_file(const cli_args &           args,
+                 transcribe_model *         model,
+                 const std::vector<float> & pcm,
+                 double                     duration_s,
+                 std::ofstream *            output);
 
 }  // namespace transcribe_cli

@@ -1,4 +1,4 @@
-// Numeric checks for GGML_TYPE_TQ1_G128 (patches/ggml/0003), the group-128
+// Numeric checks for GGML_TYPE_TQ1_G128 (patches/ggml/0102), the group-128
 // ternary type parakeet-redux ships in.
 //
 //  1. Packing is lossless: ggml_tq1_g128_pack_codes() followed by the type's

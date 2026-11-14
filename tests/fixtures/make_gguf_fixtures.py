@@ -323,6 +323,8 @@ def _build_full_gguf(
     magic: bytes,
     kv_blobs: list[bytes],
     tensors: list[Tensor],
+    alignment: int = GGUF_DEFAULT_ALIGNMENT,
+    layout: dict | None = None,
 ) -> bytes:
     """Assemble a complete GGUF file with KV pairs AND tensor data.
 
@@ -337,7 +339,10 @@ def _build_full_gguf(
     Each tensor's data offset within the data blob is aligned to
     GGUF_DEFAULT_ALIGNMENT. ggml_get_alignment defaults to 32 when
     general.alignment is absent (we don't write it), so emitting at the
-    same alignment matches what the loader expects.
+    same alignment matches what the loader expects. A caller that passes a
+    different `alignment` must also put a matching general.alignment KV in
+    kv_blobs. `layout`, when given, receives the file offset of the data
+    section under "data_offset".
     """
     body = bytearray()
     body += magic
@@ -355,18 +360,20 @@ def _build_full_gguf(
     offsets: list[int] = []
     cursor = 0
     for t in tensors:
-        cursor = _ggml_pad(cursor)
+        cursor = _ggml_pad(cursor, alignment)
         offsets.append(cursor)
         cursor += len(t.data)
-    data_blob_size = _ggml_pad(cursor)
+    data_blob_size = _ggml_pad(cursor, alignment)
 
     for t, off in zip(tensors, offsets):
         body += _pack_tensor_info(t, off)
 
     # Pad from end of tensor info section to start of data blob.
     body_len = len(body)
-    data_blob_start = _ggml_pad(body_len)
+    data_blob_start = _ggml_pad(body_len, alignment)
     body += b"\x00" * (data_blob_start - body_len)
+    if layout is not None:
+        layout["data_offset"] = data_blob_start
 
     # Emit each tensor's bytes at its declared offset within the data
     # blob. The data_blob_start above already aligned us to a 32-byte
@@ -1541,6 +1548,106 @@ def _ecapa_tdnn_gguf(codes: list[str], names: list[str], aliases: list[str], q8_
     )
 
 
+# ---------------------------------------------------------------------------
+# Toy silero_vad (VAD) model
+# ---------------------------------------------------------------------------
+#
+# The metadata and tensor contract scripts/convert-silero_vad.py writes, at
+# the real geometry (the model is only 309K parameters): a real periodic-Hann
+# STFT basis and small seeded pseudo-random weights. Tests assert structure,
+# invariants and stream/offline parity, never specific values.
+
+SILERO_N_FFT    = 256
+SILERO_BINS     = SILERO_N_FFT // 2 + 1
+SILERO_CHANNELS = [SILERO_BINS, 128, 64, 64, 128]
+SILERO_STRIDES  = [1, 2, 2, 1]
+SILERO_HIDDEN   = 128
+
+
+def _silero_vad_gguf(
+    alignment: int = GGUF_DEFAULT_ALIGNMENT,
+    extra_kvs: list[bytes] | None = None,
+    layout: dict | None = None,
+) -> bytes:
+    rng = _random.Random(1)
+    tensors: list[Tensor] = []
+
+    def add(name: str, ne: list[int], values: list[float]) -> None:
+        tensors.append(Tensor(name, ne, GGML_TYPE_F32, _f32_bytes(values)))
+
+    def uniform(name: str, ne: list[int], fan_in: int) -> None:
+        n = 1
+        for d in ne:
+            n *= d
+        bound = 1.0 / fan_in ** 0.5
+        add(name, ne, [rng.uniform(-bound, bound) for _ in range(n)])
+
+    basis = []
+    for half in (0, 1):
+        for k in range(SILERO_BINS):
+            for n in range(SILERO_N_FFT):
+                w = 0.5 - 0.5 * math.cos(2 * math.pi * n / SILERO_N_FFT)
+                a = 2 * math.pi * k * n / SILERO_N_FFT
+                basis.append(w * (math.cos(a) if half == 0 else -math.sin(a)))
+    add("frontend.stft_basis", [SILERO_N_FFT, 2 * SILERO_BINS], basis)
+    for i in range(4):
+        ic, oc = SILERO_CHANNELS[i], SILERO_CHANNELS[i + 1]
+        uniform(f"enc.{i}.conv.weight", [3, ic, oc], 3 * ic)
+        uniform(f"enc.{i}.conv.bias", [oc], 3 * ic)
+    h = SILERO_HIDDEN
+    uniform("lstm.weight_ih", [SILERO_CHANNELS[-1], 4 * h], h)
+    uniform("lstm.weight_hh", [h, 4 * h], h)
+    uniform("lstm.bias_ih", [4 * h], h)
+    uniform("lstm.bias_hh", [4 * h], h)
+    uniform("head.weight", [h], h)
+    add("head.bias", [1], [0.5])
+    return _build_full_gguf(
+        GGUF_MAGIC,
+        [
+            _pack_kv_string("general.architecture", "silero_vad"),
+            _pack_kv_string("stt.variant", "silero-vad-toy"),
+            _pack_kv_uint32("stt.frontend.sample_rate", 16000),
+            _pack_kv_uint32("stt.frontend.n_fft", SILERO_N_FFT),
+            _pack_kv_uint32("stt.frontend.hop_length", 128),
+            _pack_kv_uint32("stt.vad.frame_samples", 512),
+            _pack_kv_uint32("stt.silero_vad.context_samples", 64),
+            _pack_kv_uint32("stt.silero_vad.reflect_pad", 64),
+            _pack_kv_array_int32("stt.silero_vad.encoder_channels", SILERO_CHANNELS),
+            _pack_kv_array_int32("stt.silero_vad.encoder_strides", SILERO_STRIDES),
+            _pack_kv_uint32("stt.silero_vad.lstm_hidden", SILERO_HIDDEN),
+        ]
+        + (extra_kvs or []),
+        tensors,
+        alignment,
+        layout,
+    )
+
+
+def _silero_vad_misaligned_gguf() -> bytes:
+    """The toy silero_vad model as a valid GGUF that cannot be memory-mapped.
+
+    general.alignment = 16 and a padding KV sized so the data section starts
+    16 bytes past a 32-byte boundary: every tensor lands misaligned for
+    ggml's CPU buffers (32-byte TENSOR_ALIGNMENT, which
+    ggml_backend_cpu_buffer_from_ptr asserts). The loader must fall back to
+    copying the weights and produce the same probabilities as
+    arch_silero_vad.gguf.
+    """
+    for pad in range(64):
+        layout: dict = {}
+        data = _silero_vad_gguf(
+            alignment=16,
+            extra_kvs=[
+                _pack_kv_uint32("general.alignment", 16),
+                _pack_kv_string("test.pad", "x" * pad),
+            ],
+            layout=layout,
+        )
+        if layout["data_offset"] % 32 == 16:
+            return data
+    raise RuntimeError("no padding gives a 16-mod-32 data offset")
+
+
 def _write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
@@ -1971,6 +2078,11 @@ def emit_fixtures(out_dir: Path) -> None:
            _ecapa_tdnn_gguf(ECAPA_LABEL_CODES, ECAPA_LABEL_NAMES, ["xx=aa"], hop_length=0))
     _write(out_dir / "arch_ecapa_tdnn_bad_win_gt_fft.gguf",
            _ecapa_tdnn_gguf(ECAPA_LABEL_CODES, ECAPA_LABEL_NAMES, ["xx=aa"], win_length=512))
+
+    # silero_vad (VAD role): the real geometry with seeded weights.
+    _write(out_dir / "arch_silero_vad.gguf", _silero_vad_gguf())
+    # The same model with its tensors misaligned for memory mapping.
+    _write(out_dir / "arch_silero_vad_misaligned.gguf", _silero_vad_misaligned_gguf())
 
 
 def main(argv: list[str]) -> int:

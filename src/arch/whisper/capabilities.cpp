@@ -26,7 +26,7 @@ void apply_family_invariants(transcribe_model & model) {
     transcribe::set_feature(&model, TRANSCRIBE_FEATURE_TEMPERATURE_FALLBACK, true);
     transcribe::set_feature(&model, TRANSCRIBE_FEATURE_LONG_FORM, true);
     transcribe::set_feature(&model, TRANSCRIBE_FEATURE_CANCELLATION, true);
-    // Generic vocabulary (`Glossary: {terms}`) and context prompt, both in the
+    // Generic vocabulary (", "-joined terms) and context prompt, both in the
     // <|startofprev|> slot (prompting A/B, notes/prompting-ab-results.md).
     transcribe::set_feature(&model, TRANSCRIBE_FEATURE_VOCABULARY, true);
     transcribe::set_feature(&model, TRANSCRIBE_FEATURE_CONTEXT_PROMPT, true);

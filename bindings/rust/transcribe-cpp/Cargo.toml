@@ -1,6 +1,6 @@
 [package]
 name = "transcribe-cpp"
-version = "0.3.1"
+version = "0.4.2"
 edition = "2021"
 rust-version = "1.77"
 description = "Rust bindings for transcribe.cpp, a C/C++ speech-to-text library built on ggml"
@@ -52,7 +52,7 @@ serde = ["dep:serde"]
 # `transcribe-cpp --no-default-features`, silently re-enabling Metal. The backend
 # features below forward explicitly, so the default (`metal`) still reaches sys
 # via `metal = ["transcribe-cpp-sys/metal"]`.
-transcribe-cpp-sys = { version = "0.3.1", path = "../../..", default-features = false }
+transcribe-cpp-sys = { version = "0.4.2", path = "../../..", default-features = false }
 thiserror = "2.0.21"
 log = "0.4.34"
 serde = { version = "1.0.229", features = ["derive"], optional = true }

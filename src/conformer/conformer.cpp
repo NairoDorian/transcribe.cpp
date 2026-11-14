@@ -15,6 +15,7 @@
 #include "transcribe-log.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -403,8 +404,9 @@ bool detect_direct_pw(const char * backend) {
 // Conv module (pointwise -> GLU -> depthwise -> BN/LN -> SiLU -> pointwise).
 // Operates on the post-LayerNorm activation (LN applied by the caller).
 // Pointwise convs (k=1) are direct mul_mats in [d_model, T] layout by
-// default; TRANSCRIBE_CONV_NO_DIRECT_PW=1 forces the im2col path. BatchNorm
-// uses fused scale + bias; LayerNorm normalizes per-channel on the fly.
+// default; TRANSCRIBE_CONV_NO_DIRECT_PW=1 forces the im2col path for
+// single-utterance runs. BatchNorm uses fused scale + bias; LayerNorm
+// normalizes per-channel on the fly.
 ggml_tensor * conv_module(ggml_context * ctx, ggml_tensor * x, const BlockView & b, const BlockParams & params) {
     const int          conv_kernel = params.conv_kernel;
     const ConvPolicy & policy      = params.policy;
@@ -424,11 +426,16 @@ ggml_tensor * conv_module(ggml_context * ctx, ggml_tensor * x, const BlockView &
     // B == 1 for single-shot; the offline batched encoder passes B > 1.
     const int64_t B       = x->ne[2];
 
-    // Quantized kernels (e.g. ternary TQ1_G128) have no im2col path; they always
-    // take the direct mul_mat, whatever the backend default.
-    // The im2col branch below is single-utterance (its GLU views pin ne[2] = 1),
-    // so batched graphs (B > 1) always take the direct path as well.
-    if (policy.direct_pw || B > 1 || ggml_is_quantized(b.conv_pw1_w->type)) {
+    // The im2col pointwise fallback is single-utterance only: its bias
+    // reshape and GLU views hardcode ne[2]/ne[3] == 1, so at B > 1 the
+    // conv_pad_mask no longer broadcasts and ggml aborts. Force the
+    // batch-aware direct path at B > 1 regardless of backend policy or
+    // TRANSCRIBE_CONV_NO_DIRECT_PW (correctness beats the perf override).
+    // Quantized kernels (e.g. ternary TQ1_G128) have no im2col path either;
+    // they always take the direct mul_mat, whatever the backend default.
+    const bool direct_pw = policy.direct_pw || B > 1;
+
+    if (direct_pw || ggml_is_quantized(b.conv_pw1_w->type)) {
         // Pointwise conv 1 as direct mul_mat in [d_model, T, B] layout.
         // Kernel ne=[1, d_model, 2*d_model] → reshape to [d_model, 2*d_model].
         // Force F32 accumulation for F16 weights (see mul_mat_f32acc in
@@ -590,7 +597,7 @@ ggml_tensor * conv_module(ggml_context * ctx, ggml_tensor * x, const BlockView &
 
     x = ggml_silu(ctx, x);
 
-    if (policy.direct_pw || B > 1 || ggml_is_quantized(b.conv_pw2_w->type)) {
+    if (direct_pw || ggml_is_quantized(b.conv_pw2_w->type)) {
         // Transpose back: [T, d_model] -> [d_model, T].
         x = ggml_cont(ctx, ggml_permute(ctx, x, 1, 0, 2, 3));
 
@@ -713,51 +720,57 @@ ggml_tensor * rel_pos_mhsa(ggml_context *      ctx,
     }
     ggml_tensor * p = pos_proj == nullptr ? ggml_mul_mat(ctx, b.attn_pos_w, pos_emb) : nullptr;
 
-    // Long offline ChunkedLimited utterances have a block mask: every
-    // chunk of C queries attends to the current chunk plus a fixed number
-    // of complete chunks on its left. Reframe those blocks as a batch of
-    // rectangular attention problems instead of materializing T-by-T
-    // scores. Q/K/V projections still run once over the whole utterance;
-    // only the bounded attention windows are replicated.
-    if (params.chunked_windowed) {
-        const int64_t C           = att_context_right + 1;
-        const int64_t left_chunks = C > 0 ? att_context_left / C : 0;
-        const int64_t W           = (left_chunks + 1) * C;
-        const int64_t T           = x->ne[1];
-        const int64_t N           = C > 0 ? (T + C - 1) / C : 0;
-        const int64_t T_pad       = N * C;
-        const int64_t pad_right   = T_pad - T;
+    // Bounded-window attention: every block of C queries attends to a
+    // fixed window of W keys (ChunkedLimited: the current chunk plus the
+    // left chunks; Regular-local: the |q-k| band). Reframe those blocks as
+    // a batch of rectangular attention problems instead of materializing
+    // T-by-T scores. Q/K/V projections still run once over the whole
+    // utterance; only the bounded attention windows are replicated.
+    if (params.window_chunk > 0) {
+        const int64_t C         = params.window_chunk;
+        const int64_t W         = params.window_keys;
+        const int64_t T         = x->ne[1];
+        const int64_t N         = (T + C - 1) / C;
+        const int64_t T_pad     = N * C;
+        const int64_t pad_right = T_pad - T;
+        // Query blocks of every utterance share one batch axis: block n of
+        // utterance b is slot b*N + n, which is how the padded [.., T_pad, B]
+        // activations already lie in memory.
+        const int64_t NB        = N * B;
 
-        if (rect || B != 1 || C <= 0 || W <= 0 || N <= 0 || pos_len != W + C - 1 ||
+        if (rect || W <= 0 || N <= 0 || params.window_left < 0 || pos_len != W + C - 1 ||
             params.attn_chunked_mask == nullptr || params.attn_chunked_mask->ne[0] != W ||
-            params.attn_chunked_mask->ne[1] != C || params.attn_chunked_mask->ne[3] != N) {
+            params.attn_chunked_mask->ne[1] != C || params.attn_chunked_mask->ne[3] != NB) {
             std::fprintf(stderr,
-                         "conformer rel_pos_mhsa: invalid windowed chunk "
-                         "geometry (T=%lld C=%lld W=%lld N=%lld pos=%lld)\n",
-                         (long long) T, (long long) C, (long long) W, (long long) N, (long long) pos_len);
+                         "conformer rel_pos_mhsa: invalid windowed attention "
+                         "geometry (T=%lld B=%lld C=%lld W=%lld N=%lld pos=%lld)\n",
+                         (long long) T, (long long) B, (long long) C, (long long) W, (long long) N,
+                         (long long) pos_len);
             return nullptr;
         }
 
-        q                 = ggml_reshape_4d(ctx, q, head_dim, n_head, T, 1);
+        q                 = ggml_reshape_4d(ctx, q, head_dim, n_head, T, B);
         ggml_tensor * q_u = ggml_add(ctx, q, b.attn_pos_u);
         ggml_tensor * q_v = ggml_add(ctx, q, b.attn_pos_v);
 
-        // Pad on the time axis while it is ne[2], then move time next to
-        // head_dim and reinterpret query chunks as batch N.
-        q_u = ggml_pad_ext(ctx, q_u, 0, 0, 0, 0, 0, static_cast<int>(pad_right), 0, 0);
-        q_v = ggml_pad_ext(ctx, q_v, 0, 0, 0, 0, 0, static_cast<int>(pad_right), 0, 0);
-        q_u = ggml_cont(ctx, ggml_permute(ctx, q_u, 0, 2, 1, 3));
-        q_v = ggml_cont(ctx, ggml_permute(ctx, q_v, 0, 2, 1, 3));
-        q_u = ggml_reshape_4d(ctx, q_u, head_dim, C, N, n_head);
-        q_v = ggml_reshape_4d(ctx, q_v, head_dim, C, N, n_head);
-        q_u = ggml_cont(ctx, ggml_permute(ctx, q_u, 0, 1, 3, 2));
-        q_v = ggml_cont(ctx, ggml_permute(ctx, q_v, 0, 1, 3, 2));
+        // Pad on the time axis while it is ne[2]. [head_dim, n_head, T_pad, B]
+        // reinterprets in place as [head_dim, n_head, C, N*B]; moving the
+        // block axis next to head_dim then gives [head_dim, C, n_head, N*B].
+        auto block_queries = [&](ggml_tensor * t) -> ggml_tensor * {
+            if (pad_right > 0) {
+                t = ggml_pad_ext(ctx, t, 0, 0, 0, 0, 0, static_cast<int>(pad_right), 0, 0);
+            }
+            t = ggml_reshape_4d(ctx, t, head_dim, n_head, C, NB);
+            return ggml_cont(ctx, ggml_permute(ctx, t, 0, 2, 1, 3));
+        };
+        q_u = block_queries(q_u);
+        q_v = block_queries(q_v);
 
         // Materialize overlapping K/V windows with the existing 1-D
         // im2col op. Pad the ragged tail to a complete chunk first;
         // symmetric left-context padding then produces a few unused windows
-        // on the right, which are sliced before [head_dim,W,head,N].
-        const int left_pad       = static_cast<int>(left_chunks * C);
+        // on the right, which are sliced before [head_dim,W,head,N*B].
+        const int left_pad       = params.window_left;
         ggml_type window_kv_type = GGML_TYPE_F32;
         if (use_flash) {
             window_kv_type = kv_type;
@@ -769,12 +782,14 @@ ggml_tensor * rel_pos_mhsa(ggml_context *      ctx,
             }
         }
         auto window_kv = [&](ggml_tensor * t) -> ggml_tensor * {
-            t = ggml_reshape_4d(ctx, t, head_dim, n_head, T, 1);
+            t = ggml_reshape_4d(ctx, t, head_dim, n_head, T, B);
             if (pad_right > 0) {
                 t = ggml_pad_ext(ctx, t, 0, 0, 0, 0, 0, static_cast<int>(pad_right), 0, 0);
             }
-            t = ggml_cont(ctx, ggml_permute(ctx, t, 0, 2, 1, 3));
-            t = ggml_cont(ctx, ggml_permute(ctx, t, 1, 0, 2, 3));  // [T,head_dim,n_head]
+            // im2col input [T_pad, head_dim, n_head*B]: time innermost, one
+            // "image" per (utterance, head).
+            t = ggml_cont(ctx, ggml_permute(ctx, t, 1, 2, 0, 3));
+            t = ggml_reshape_3d(ctx, t, T_pad, head_dim, n_head * B);
 
             ggml_tensor * kernel_shape =
                 ggml_new_tensor_3d(ctx, window_kv_type, W, head_dim, 1);  // shape-only im2col source
@@ -784,11 +799,21 @@ ggml_tensor * rel_pos_mhsa(ggml_context *      ctx,
                 return nullptr;
             }
             if (cols->ne[1] > N) {
-                cols = ggml_view_4d(ctx, cols, head_dim * W, N, n_head, 1, cols->nb[1], cols->nb[2], cols->nb[3], 0);
+                cols =
+                    ggml_view_4d(ctx, cols, head_dim * W, N, n_head * B, 1, cols->nb[1], cols->nb[2], cols->nb[3], 0);
                 cols = ggml_cont(ctx, cols);
             }
-            cols = ggml_reshape_4d(ctx, cols, W, head_dim, N, n_head);
-            return ggml_cont(ctx, ggml_permute(ctx, cols, 1, 0, 3, 2));
+            // cols is [W, head_dim, N, n_head, B] in memory; the target is
+            // [head_dim, W, n_head, N*B]. B == 1 needs one transpose; a
+            // batch first swaps the block and head axes.
+            if (B == 1) {
+                cols = ggml_reshape_4d(ctx, cols, W, head_dim, N, n_head);
+                return ggml_cont(ctx, ggml_permute(ctx, cols, 1, 0, 3, 2));
+            }
+            cols = ggml_reshape_4d(ctx, cols, W * head_dim, N, n_head, B);
+            cols = ggml_cont(ctx, ggml_permute(ctx, cols, 0, 2, 1, 3));  // [W*head_dim, n_head, N, B]
+            cols = ggml_reshape_4d(ctx, cols, W, head_dim, n_head, NB);
+            return ggml_cont(ctx, ggml_permute(ctx, cols, 1, 0, 2, 3));
         };
         k = window_kv(k);
         v = window_kv(v);
@@ -800,13 +825,14 @@ ggml_tensor * rel_pos_mhsa(ggml_context *      ctx,
         p = ggml_reshape_4d(ctx, p, head_dim, n_head, pos_len, 1);
         p = ggml_cont(ctx, ggml_permute(ctx, p, 0, 2, 1, 3));
 
-        // Position scores [pos_len, C, n_head, N]. The relative shift is the
-        // same strided view as shifted_view below, with the rectangular
+        // Position scores [pos_len, C, n_head, N*B]. The relative shift is
+        // the same strided view as shifted_view below, with the rectangular
         // [W, C] geometry: out[k, q] = in[k - q + C - 1, q].
         ggml_tensor * scores       = ggml_mul_mat(ctx, p, q_v);
         const size_t  query_stride = C == 1 ? static_cast<size_t>(W) * scores->nb[0] : scores->nb[1] - scores->nb[0];
-        ggml_tensor * matrix_bd = ggml_view_4d(ctx, scores, W, C, n_head, N, query_stride, scores->nb[2], scores->nb[3],
-                                               /*offset=*/(C - 1) * scores->nb[0]);
+        ggml_tensor * matrix_bd =
+            ggml_view_4d(ctx, scores, W, C, n_head, NB, query_stride, scores->nb[2], scores->nb[3],
+                         /*offset=*/(C - 1) * scores->nb[0]);
 
         ggml_tensor * o = nullptr;
         if (use_flash) {
@@ -829,13 +855,12 @@ ggml_tensor * rel_pos_mhsa(ggml_context *      ctx,
             o                     = ggml_cont(ctx, ggml_permute(ctx, o, 0, 2, 1, 3));
         }
 
-        // Both branches now have [head_dim,n_head,C,N]. Merge heads and
-        // flatten chunk batch back to the original time axis, dropping the
-        // padded tail before the output projection/residual.
-        o = ggml_reshape_3d(ctx, o, d_model, C, N);
-        o = ggml_reshape_3d(ctx, o, d_model, T_pad, 1);
+        // Both branches now have [head_dim,n_head,C,N*B]. Merge heads and
+        // flatten the blocks back to each utterance's time axis, dropping
+        // the padded tail before the output projection/residual.
+        o = ggml_reshape_3d(ctx, o, d_model, T_pad, B);
         if (pad_right > 0) {
-            o = ggml_view_3d(ctx, o, d_model, T, 1, o->nb[1], o->nb[2], 0);
+            o = ggml_view_3d(ctx, o, d_model, T, B, o->nb[1], o->nb[2], 0);
             o = ggml_cont(ctx, o);
         }
         o = ggml_mul_mat(ctx, b.attn_out_w, o);
@@ -1230,46 +1255,6 @@ ggml_tensor * regular_dw_2d_time_chunked(ggml_context * ctx,
     return chunks.front();
 }
 
-// Causal depthwise subsampling pads [kernel-1, stride-1] on both spatial
-// axes. Slice the output-time axis so only a bounded padded view is live.
-ggml_tensor * causal_dw_2d_time_chunked(ggml_context * ctx, ggml_tensor * kernel, ggml_tensor * data) {
-    constexpr int64_t kTimeChunk = 512;
-    constexpr int64_t kStride    = 2;
-
-    const int64_t extent    = kernel->ne[1];
-    const int64_t pad_left  = extent - 1;
-    const int64_t pad_right = kStride - 1;
-    const int64_t time_out  = (data->ne[1] + pad_left + pad_right - extent) / kStride + 1;
-    kernel                  = dw_kernel_for_direct(ctx, kernel);
-
-    std::vector<ggml_tensor *> chunks;
-    chunks.reserve(static_cast<size_t>((time_out + kTimeChunk - 1) / kTimeChunk));
-    for (int64_t out0 = 0; out0 < time_out; out0 += kTimeChunk) {
-        const int64_t n_out   = std::min<int64_t>(kTimeChunk, time_out - out0);
-        const int64_t src0    = out0 * kStride - pad_left;
-        const int64_t src1    = src0 + (n_out - 1) * kStride + extent;
-        const int64_t view0   = std::max<int64_t>(0, src0);
-        const int64_t view1   = std::min<int64_t>(data->ne[1], src1);
-        const int64_t pad_top = view0 - src0;
-        const int64_t pad_bot = src1 - view1;
-        ggml_tensor * input = ggml_view_4d(ctx, data, data->ne[0], view1 - view0, data->ne[2], data->ne[3], data->nb[1],
-                                           data->nb[2], data->nb[3], view0 * data->nb[1]);
-        input               = ggml_pad_ext(ctx, input, pad_left, pad_right, pad_top, pad_bot, 0, 0, 0, 0);
-        chunks.push_back(ggml_conv_2d_dw_direct(ctx, kernel, input, kStride, kStride,
-                                                /*p0=*/0, /*p1=*/0, /*d0=*/1, /*d1=*/1));
-    }
-
-    while (chunks.size() > 1) {
-        std::vector<ggml_tensor *> next;
-        next.reserve((chunks.size() + 1) / 2);
-        for (size_t i = 0; i < chunks.size(); i += 2) {
-            next.push_back(i + 1 < chunks.size() ? ggml_concat(ctx, chunks[i], chunks[i + 1], /*dim=*/1) : chunks[i]);
-        }
-        chunks.swap(next);
-    }
-    return chunks.front();
-}
-
 // Pre-encode subsampling stack. Op order matches NeMo's
 // DwStridingSubsampling (conformer.py:206-328):
 //
@@ -1315,46 +1300,82 @@ ggml_tensor * build_pre_encode(ggml_context *        ctx,
     x               = ggml_cont(ctx, x);
     x               = name_prefixed(x, name_prefix, "mel_t");
 
-    // Causal pre_encode: NeMo's CausalConv2D pads (left=k-1, right=stride-1)
-    // on both spatial axes before the conv (p=0). Offline variants take the
-    // op-side (k-1)/2 symmetric padding instead.
+    // Causal pre_encode: NeMo's CausalConv2D pads (left=k-1=2, right=stride-1=1)
+    // on both spatial axes before each stride-2 conv (p=0). Materializing
+    // that pad copies the whole activation (conv0's output is ~2 GB at ten
+    // minutes), so the graph instead asks the conv for symmetric op-side
+    // padding p=2, which im2col / direct conv apply without a copy. For
+    // k=3 / s=2 output i reads padded [2i, 2i+2] either way, so every
+    // causal output is identical; the extra right-hand zero only yields one
+    // spurious trailing column/row when the input length is odd. That tail
+    // is zeroed in place before the next conv (where it stands in for the
+    // right-pad zero that conv would have read) and dropped once at the
+    // final flatten. Offline variants take the usual (k-1)/2 = 1 padding.
+    //
+    // Bias + ReLU run in place for the causal stem and wherever the family
+    // opts in (policy.inplace_pre_encode): each stage's activation is then
+    // live once instead of twice.
     const bool causal_pe           = policy.causal_pre_encode;
     const bool inplace_pe          = causal_pe || policy.inplace_pre_encode;
-    const int  pe_p_op             = causal_pe ? 0 : 1;
+    const int  pe_p_op             = causal_pe ? 2 : 1;
     auto       add_pre_encode_bias = [ctx, inplace_pe](ggml_tensor * value, ggml_tensor * bias) {
         return inplace_pe ? add_conv_bias_inplace(ctx, value, bias) : add_conv_bias(ctx, value, bias);
     };
     auto pre_encode_relu = [ctx, inplace_pe](ggml_tensor * value) {
         return inplace_pe ? ggml_relu_inplace(ctx, value) : ggml_relu(ctx, value);
     };
-    auto pad_causal = [&](ggml_tensor * t) {
+    // Exact causal lengths per spatial axis (ne[0] = freq, ne[1] = time),
+    // advanced per stride-2 conv: floor(L/2) + 1.
+    int64_t want_w           = x->ne[0];
+    int64_t want_h           = x->ne[1];
+    auto    zero_causal_tail = [&](ggml_tensor * t) -> ggml_tensor * {
         if (!causal_pe) {
             return t;
         }
-        // For k=3 / s=2: left=2, right=1 on both axes (zero F32 pads).
-        const int left = 2, right = 1;
-        auto      make_pad = [&](int width_w, int width_h) {
-            ggml_tensor * p = ggml_new_tensor_4d(ctx, t->type, width_w > 0 ? width_w : t->ne[0],
-                                                 width_h > 0 ? width_h : t->ne[1], t->ne[2], t->ne[3]);
-            return ggml_fill(ctx, p, 0.0f);
-        };
-        // dim 0 (W = freq).
-        ggml_tensor * pad_l = make_pad(left, /*h=*/0);
-        t                   = ggml_concat(ctx, pad_l, t, /*dim=*/0);
-        ggml_tensor * pad_r = make_pad(right, /*h=*/0);
-        t                   = ggml_concat(ctx, t, pad_r, /*dim=*/0);
-        // dim 1 (H = time). At this point ne[0] grew by left+right.
-        ggml_tensor * pad_t = ggml_new_tensor_4d(ctx, t->type, t->ne[0], left, t->ne[2], t->ne[3]);
-        pad_t               = ggml_fill(ctx, pad_t, 0.0f);
-        t                   = ggml_concat(ctx, pad_t, t, /*dim=*/1);
-        ggml_tensor * pad_b = ggml_new_tensor_4d(ctx, t->type, t->ne[0], right, t->ne[2], t->ne[3]);
-        pad_b               = ggml_fill(ctx, pad_b, 0.0f);
-        t                   = ggml_concat(ctx, t, pad_b, /*dim=*/1);
-        return t;
+        want_w                = want_w / 2 + 1;
+        want_h                = want_h / 2 + 1;
+        const int64_t extra_w = t->ne[0] - want_w;
+        const int64_t extra_h = t->ne[1] - want_h;
+        assert(extra_w >= 0 && extra_w <= 1 && extra_h >= 0 && extra_h <= 1);
+        if (extra_w == 0 && extra_h == 0) {
+            return t;
+        }
+        // [W, H, 1, 1] mask broadcast over channels and batch: ones with a
+        // zero last column / row wherever the tail is spurious.
+        ggml_tensor * m =
+            ggml_fill(ctx, ggml_new_tensor_2d(ctx, GGML_TYPE_F32, t->ne[0] - extra_w, t->ne[1] - extra_h), 1.0f);
+        if (extra_w != 0) {
+            ggml_tensor * col = ggml_fill(ctx, ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 1, m->ne[1]), 0.0f);
+            m                 = ggml_concat(ctx, m, col, /*dim=*/0);
+        }
+        if (extra_h != 0) {
+            ggml_tensor * row = ggml_fill(ctx, ggml_new_tensor_2d(ctx, GGML_TYPE_F32, m->ne[0], 1), 0.0f);
+            m                 = ggml_concat(ctx, m, row, /*dim=*/1);
+        }
+        return ggml_mul_inplace(ctx, t, m);
+    };
+    // Stride-2 depthwise conv of the stem (conv2 / conv5). Direct where the
+    // policy asks for it; otherwise im2col, time-chunked for long offline
+    // inputs when the family sets pre_encode_dw_time_chunk (bounded im2col
+    // scratch). The causal stem never chunks: its symmetric p=2 padding is
+    // already copy-free.
+    auto stem_dw = [&](ggml_tensor * kernel, ggml_tensor * t) -> ggml_tensor * {
+        if (policy.direct_dw_in_pre_encode) {
+            return ggml_conv_2d_dw_direct(ctx, dw_kernel_for_direct(ctx, kernel), t,
+                                          /*s0=*/2, /*s1=*/2,
+                                          /*p0=*/pe_p_op, /*p1=*/pe_p_op,
+                                          /*d0=*/1, /*d1=*/1);
+        }
+        if (!causal_pe && policy.pre_encode_dw_time_chunk > 0) {
+            return regular_dw_2d_time_chunked(ctx, kernel, t, policy.pre_encode_dw_time_chunk);
+        }
+        return conv_2d_dw_f32(ctx, kernel, t,
+                              /*s0=*/2, /*s1=*/2,
+                              /*p0=*/pe_p_op, /*p1=*/pe_p_op,
+                              /*d0=*/1, /*d1=*/1);
     };
 
     // conv0 (standard 2D conv: 1 in, channels out, k=3 s=2)
-    x = pad_causal(x);
     if (policy.direct_conv0_in_pre_encode) {
         x = ggml_conv_2d_direct(ctx, pe.conv0_w, x,
                                 /*s0=*/2, /*s1=*/2,
@@ -1371,27 +1392,10 @@ ggml_tensor * build_pre_encode(ggml_context *        ctx,
     x = pre_encode_relu(x);
     x = name_prefixed(x, name_prefix, "relu0");
     x = apply_valid_mask(x, valid_masks ? &valid_masks->mask_s1 : nullptr, "pre_encode.valid_mask.s1");
+    x = zero_causal_tail(x);
 
     // conv2 (depthwise: channels -> channels, groups=channels, k=3 s=2).
-    // im2col path (conv_2d_dw_f32) when direct_dw_in_pre_encode is false.
-    if (policy.direct_dw_in_pre_encode && causal_pe) {
-        x = causal_dw_2d_time_chunked(ctx, pe.conv2_w, x);
-    } else {
-        x = pad_causal(x);
-        if (policy.direct_dw_in_pre_encode) {
-            x = ggml_conv_2d_dw_direct(ctx, dw_kernel_for_direct(ctx, pe.conv2_w), x,
-                                       /*s0=*/2, /*s1=*/2,
-                                       /*p0=*/pe_p_op, /*p1=*/pe_p_op,
-                                       /*d0=*/1, /*d1=*/1);
-        } else if (!causal_pe && policy.pre_encode_dw_time_chunk > 0) {
-            x = regular_dw_2d_time_chunked(ctx, pe.conv2_w, x, policy.pre_encode_dw_time_chunk);
-        } else {
-            x = conv_2d_dw_f32(ctx, pe.conv2_w, x,
-                               /*s0=*/2, /*s1=*/2,
-                               /*p0=*/pe_p_op, /*p1=*/pe_p_op,
-                               /*d0=*/1, /*d1=*/1);
-        }
-    }
+    x                       = stem_dw(pe.conv2_w, x);
     x                       = add_pre_encode_bias(x, pe.conv2_b);
     x                       = name_prefixed(x, name_prefix, "conv2");
     const bool after_stride = policy.pre_encode_mask_after_stride;
@@ -1415,26 +1419,10 @@ ggml_tensor * build_pre_encode(ggml_context *        ctx,
     } else {
         x = apply_valid_mask(x, valid_masks ? &valid_masks->mask_s2_extent : nullptr, "pre_encode.extent_mask.s2");
     }
+    x = zero_causal_tail(x);
 
     // conv5 (depthwise) -> conv6 (pointwise) -> ReLU
-    if (policy.direct_dw_in_pre_encode && causal_pe) {
-        x = causal_dw_2d_time_chunked(ctx, pe.conv5_w, x);
-    } else {
-        x = pad_causal(x);
-        if (policy.direct_dw_in_pre_encode) {
-            x = ggml_conv_2d_dw_direct(ctx, dw_kernel_for_direct(ctx, pe.conv5_w), x,
-                                       /*s0=*/2, /*s1=*/2,
-                                       /*p0=*/pe_p_op, /*p1=*/pe_p_op,
-                                       /*d0=*/1, /*d1=*/1);
-        } else if (!causal_pe && policy.pre_encode_dw_time_chunk > 0) {
-            x = regular_dw_2d_time_chunked(ctx, pe.conv5_w, x, policy.pre_encode_dw_time_chunk);
-        } else {
-            x = conv_2d_dw_f32(ctx, pe.conv5_w, x,
-                               /*s0=*/2, /*s1=*/2,
-                               /*p0=*/pe_p_op, /*p1=*/pe_p_op,
-                               /*d0=*/1, /*d1=*/1);
-        }
-    }
+    x = stem_dw(pe.conv5_w, x);
     x = add_pre_encode_bias(x, pe.conv5_b);
     x = name_prefixed(x, name_prefix, "conv5");
     if (after_stride) {
@@ -1455,6 +1443,16 @@ ggml_tensor * build_pre_encode(ggml_context *        ctx,
         x = apply_valid_mask(x, valid_masks ? &valid_masks->mask_s3 : nullptr, "pre_encode.valid_mask.s3");
     } else {
         x = apply_valid_mask(x, valid_masks ? &valid_masks->mask_s3_extent : nullptr, "pre_encode.extent_mask.s3");
+    }
+    // Causal: drop the spurious tail of the last stage as a view; the
+    // flatten's cont below materializes the exact [F', T_enc] extent.
+    if (causal_pe) {
+        want_w = want_w / 2 + 1;
+        want_h = want_h / 2 + 1;
+        assert(x->ne[0] >= want_w && x->ne[0] - want_w <= 1 && x->ne[1] >= want_h && x->ne[1] - want_h <= 1);
+        if (x->ne[0] != want_w || x->ne[1] != want_h) {
+            x = ggml_view_4d(ctx, x, want_w, want_h, x->ne[2], x->ne[3], x->nb[1], x->nb[2], x->nb[3], /*offset=*/0);
+        }
     }
 
     // At this point ne = [F'=16, T_enc, channels=256, 1] where

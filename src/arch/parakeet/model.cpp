@@ -1,11 +1,12 @@
 // arch/parakeet/model.cpp - Parakeet family handler.
 //
 // load() binds a runtime backend, opens the GGUF with no_alloc=true so
-// ggml builds the tensor catalog without touching the data section,
-// allocates a backend buffer for every tensor, and streams the data
-// section into it; afterward every borrowed ggml_tensor* in `weights`
-// points at backend memory. The persistent model state is ctx_meta +
-// backend_buffer + backends, freed in that order in the destructor.
+// ggml builds the tensor catalog without touching the data section, then
+// gives every tensor storage via load_common::load_weights (memory-mapped
+// from the file where the device allows it, copied otherwise); afterward
+// every borrowed ggml_tensor* in `weights` points at backend memory. The
+// persistent model state is ctx_meta + weight_storage + backends, freed in
+// that order in the destructor.
 // run() computes the mel front-end, runs the encoder graph, then
 // host-decodes (predictor + joint + TDT).
 
@@ -18,6 +19,7 @@
 #include "longform.h"
 #include "parakeet.h"
 #include "transcribe-arch.h"
+#include "transcribe-backend.h"
 #include "transcribe-batch-util.h"
 #include "transcribe-debug.h"
 #include "transcribe-env.h"
@@ -95,8 +97,8 @@ void ParakeetSession::on_scratch_released() noexcept {
 }
 
 ParakeetModel::~ParakeetModel() {
-    // Teardown order: ctx_meta → backend_buffer → plan backends. The
-    // buffer must be freed before the backends (it holds a backend ref);
+    // Teardown order: ctx_meta → weight_storage → plan backends. The
+    // buffers must be freed before the backends (they hold a backend ref);
     // backends freed in reverse init order.
     if (bn_fused_ctx != nullptr) {
         ggml_free(bn_fused_ctx);
@@ -135,10 +137,7 @@ ParakeetModel::~ParakeetModel() {
         safe_buffer_free(cpu_repack_buffer);
         cpu_repack_buffer = nullptr;
     }
-    if (backend_buffer != nullptr) {
-        safe_buffer_free(backend_buffer);
-        backend_buffer = nullptr;
-    }
+    weight_storage.reset();
     for (auto it = plan.scheduler_list.rbegin(); it != plan.scheduler_list.rend(); ++it) {
         safe_backend_free(*it);
     }
@@ -594,22 +593,12 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
         },
         "parakeet");
 
-    // Allocate a backend buffer for every remaining tensor in ctx_meta on
-    // the primary backend; the weight bytes are streamed in below.
-    ggml_backend_buffer_t weights_buffer = alloc_ctx_tensors_with_reclaim(m->plan.primary, m->ctx_meta);
-    if (weights_buffer == nullptr) {
-        gguf_free(gguf_data);
-        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet: alloc_ctx_tensors_with_reclaim failed");
-        return TRANSCRIBE_ERR_OOM;
-    }
-    m->backend_buffer = weights_buffer;
-    ggml_backend_buffer_set_usage(weights_buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
-
-    // Stream tensor data from the GGUF into the backend buffer slots
-    // (shared loop in transcribe-load-common.h; works on host-memory
-    // backends and discrete GPUs).
-    if (const transcribe_status st =
-            transcribe::load_common::stream_tensor_data(loader.path(), gguf_data, m->ctx_meta, "parakeet");
+    // Every remaining tensor: memory-mapped from the GGUF where the device
+    // can use the file bytes as-is, otherwise allocated on the primary and
+    // streamed in (transcribe-load-common.h). The repacked tensors above
+    // already have storage and are streamed whole.
+    if (const transcribe_status st = transcribe::load_common::load_weights(
+            loader.path(), gguf_data, m->ctx_meta, m->plan, params, "parakeet", m->weight_storage);
         st != TRANSCRIBE_OK) {
         gguf_free(gguf_data);
         return st;
@@ -1145,6 +1134,17 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
         return mst;
     }
     pc->t_mel_us = ggml_time_us() - t_mel_start;
+    // Dump the full frontend output (what NeMo's preprocessor returns)
+    // before the padding frame is dropped.
+    if (transcribe::debug::enabled()) {
+        const long long shape[2] = { mel_n_mels, mel_n_frames };
+        transcribe::debug::dump_host_f32("enc.mel.in", pc->mel_buf.data(), static_cast<long long>(pc->mel_buf.size()),
+                                         shape, 2, "encoder.mel");
+    }
+    // Kestrel-masked checkpoints mask the padding frame in-graph instead.
+    if (!pm->hparams.kestrel_length_masking) {
+        mel_n_frames = pm->mel->drop_nemo_padding_frame(pc->mel_buf, mel_n_frames, static_cast<size_t>(n_samples));
+    }
 
     // Multitalker masked mode (NeMo mask_features): binarize the target
     // speaker's per-diar-frame activity, expand 8x to feature frames from
@@ -1259,7 +1259,7 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
     };
 
     ggml_backend_sched_reset(pc->sched);
-    if (!alloc_inference_graph(pc->sched, eb.graph)) {
+    if (!TRANSCRIBE_ALLOC_INFERENCE_GRAPH_EXTENT(pc->sched, eb.graph, "parakeet", (long long) eb.out->ne[1])) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet run: ggml_backend_sched_alloc_graph failed");
         cleanup_gpu();
         return TRANSCRIBE_ERR_OOM;
@@ -1268,8 +1268,6 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
     // Upload the mel; the row-major [num_mels, n_frames] buffer is
     // byte-identical to the ggml ne=[n_frames, num_mels, 1, 1] input.
     ggml_backend_tensor_set(eb.mel_in, pc->mel_buf.data(), 0, pc->mel_buf.size() * sizeof(float));
-
-    transcribe::debug::dump_tensor("enc.mel.in", eb.mel_in, "encoder.mel");
 
     int T_valid = -1;
     if (kestrel_masks) {
@@ -1362,14 +1360,14 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
         const int pos_len = static_cast<int>(eb.pos_emb_in->ne[1]);
 
         // Position of relative offset 0 in the buffer: (pos_len-1)/2 for
-        // full/dense ChunkedLimited; W_left for Regular local attention;
-        // key_window-1 for the rectangular windowed ChunkedLimited graph.
+        // full/dense ChunkedLimited; W_left for dense Regular local
+        // attention; window_left + chunk - 1 for the bounded-window graph.
         const bool is_chunked = (pm->hparams.enc_att_context_style == ParakeetHParams::AttContextStyle::ChunkedLimited);
-        const bool is_local_pe =
-            (!is_chunked) && (pm->hparams.enc_att_context_left >= 0 && pm->hparams.enc_att_context_right >= 0);
-        const int zero_index = eb.chunked_windowed ? static_cast<int>(eb.chunked_mask_in->ne[0]) - 1 :
-                               is_local_pe         ? pm->hparams.enc_att_context_left :
-                                                     (pos_len - 1) / 2;
+        const bool is_local_pe = !eb.full_attention_shortcut && (!is_chunked) &&
+                                 (pm->hparams.enc_att_context_left >= 0 && pm->hparams.enc_att_context_right >= 0);
+        const int  zero_index  = eb.window_chunk > 0 ? eb.window_left + eb.window_chunk - 1 :
+                                 is_local_pe         ? pm->hparams.enc_att_context_left :
+                                                       (pos_len - 1) / 2;
 
         pc->pos_buf.assign(static_cast<size_t>(pos_len) * d_model, 0.0f);
 
@@ -1395,10 +1393,12 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
         transcribe::debug::dump_tensor("enc.pos_emb", eb.pos_emb_in, "encoder.pos_emb");
     }
 
-    // ChunkedLimited attention mask (streaming variants): 0 on (q, k)
-    // pairs whose chunk indices are in [q_chunk - left_chunks, q_chunk],
-    // -INF outside. NeMo: chunk_size = att_context_right + 1,
-    // left_chunks = att_context_left / chunk_size.
+    // Attention mask. Dense ChunkedLimited (streaming variants): 0 on
+    // (q, k) pairs whose chunk indices are in [q_chunk - left_chunks,
+    // q_chunk], -INF outside (NeMo: chunk_size = att_context_right + 1,
+    // left_chunks = att_context_left / chunk_size). Bounded-window graphs
+    // take the compact [W, C, 1, N] layout for the same chunk band, or the
+    // Regular-local |q-k| band.
     if (eb.chunked_mask_in != nullptr) {
         const int chunk_size  = pm->hparams.enc_att_context_right + 1;
         const int left_chunks = (chunk_size > 0) ? (pm->hparams.enc_att_context_left / chunk_size) : 0;
@@ -1407,10 +1407,13 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
         const int          T_k      = static_cast<int>(eb.chunked_mask_in->ne[0]);
         const int          T_q      = static_cast<int>(eb.chunked_mask_in->ne[1]);
         const int          N        = static_cast<int>(eb.chunked_mask_in->ne[3]);
-        const bool         windowed = eb.chunked_windowed;
+        const bool         windowed = eb.window_chunk > 0;
         std::vector<float> mask_buf(static_cast<size_t>(T_k) * T_q * N, -std::numeric_limits<float>::infinity());
-        if (windowed) {
-            compute_chunked_limited_window_mask(mask_buf.data(), T_enc, chunk_size, left_chunks);
+        if (windowed && pm->hparams.enc_att_context_style == ParakeetHParams::AttContextStyle::ChunkedLimited) {
+            compute_chunked_limited_window_mask(mask_buf.data(), T_enc, T_enc, chunk_size, left_chunks);
+        } else if (windowed) {
+            compute_local_window_mask(mask_buf.data(), T_enc, T_enc, eb.window_chunk, pm->hparams.enc_att_context_left,
+                                      pm->hparams.enc_att_context_right);
         } else {
             // Dense reference layout [T_k,T_q,1,1].
             for (int q = 0; q < T_enc; ++q) {
@@ -1633,7 +1636,7 @@ transcribe_status run_vad_block(ParakeetSession *    pc,
         }
     }
     ggml_backend_sched_reset(pc->sched);
-    if (!ggml_backend_sched_alloc_graph(pc->sched, vb.graph)) {
+    if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(pc->sched, vb.graph, "parakeet")) {
         return TRANSCRIBE_ERR_OOM;
     }
     ggml_backend_tensor_set(vb.mel_in, mel.data(), 0, mel.size() * sizeof(float));
@@ -1970,7 +1973,7 @@ static transcribe_status run_batch_encode(ParakeetSession *                     
         }
     }
     ggml_backend_sched_reset(pc->sched);
-    if (!alloc_inference_graph(pc->sched, eb.graph)) {
+    if (!TRANSCRIBE_ALLOC_INFERENCE_GRAPH(pc->sched, eb.graph, "parakeet")) {
         return TRANSCRIBE_ERR_OOM;
     }
 
@@ -1996,9 +1999,11 @@ static transcribe_status run_batch_encode(ParakeetSession *                     
         const int  d_model    = pm->hparams.enc_d_model;
         const int  pos_len    = static_cast<int>(eb.pos_emb_in->ne[1]);
         const bool is_chunked = (pm->hparams.enc_att_context_style == ParakeetHParams::AttContextStyle::ChunkedLimited);
-        const bool is_local_pe =
-            (!is_chunked) && (pm->hparams.enc_att_context_left >= 0 && pm->hparams.enc_att_context_right >= 0);
-        const int zero_index = is_local_pe ? pm->hparams.enc_att_context_left : (pos_len - 1) / 2;
+        const bool is_local_pe = !eb.full_attention_shortcut && (!is_chunked) &&
+                                 (pm->hparams.enc_att_context_left >= 0 && pm->hparams.enc_att_context_right >= 0);
+        const int  zero_index  = eb.window_chunk > 0 ? eb.window_left + eb.window_chunk - 1 :
+                                 is_local_pe         ? pm->hparams.enc_att_context_left :
+                                                       (pos_len - 1) / 2;
         pc->pos_buf.assign(static_cast<size_t>(pos_len) * d_model, 0.0f);
         pc->pos_div_term.resize(static_cast<size_t>(d_model / 2));
         const float ln_10000 = std::log(10000.0f);
@@ -2045,10 +2050,32 @@ static transcribe_status run_batch_encode(ParakeetSession *                     
         ggml_backend_tensor_set(eb.prompt_one_hot_in, one_hot_buf.data(), 0, one_hot_buf.size() * sizeof(float));
     }
 
-    // ChunkedLimited attention mask (cache-aware variants), same as
-    // run_one_shot_inner. The pattern depends only on T_enc, shared
-    // across the batch, so one mask broadcasts.
-    if (eb.chunked_mask_in != nullptr) {
+    // Attention mask, same as run_one_shot_inner. Dense ChunkedLimited
+    // (cache-aware variants): the pattern depends only on T_enc, shared
+    // across the batch, so one mask broadcasts and attn_pad_mask_in masks
+    // each utterance's padded keys. Bounded-window graphs: one
+    // [W, C, 1, N] slab per utterance at its own valid length, so the
+    // padded tail is masked here and the graph carries no key-pad mask.
+    if (eb.chunked_mask_in != nullptr && eb.window_chunk > 0) {
+        const int    C          = eb.window_chunk;
+        const int    W          = static_cast<int>(eb.chunked_mask_in->ne[0]);
+        const int    N          = (T_enc + C - 1) / C;
+        const size_t slab       = static_cast<size_t>(W) * C * N;
+        const bool   is_chunked = pm->hparams.enc_att_context_style == ParakeetHParams::AttContextStyle::ChunkedLimited;
+        std::vector<float> mask_buf(slab * n);
+        for (int b = 0; b < n; ++b) {
+            const int T_b = std::max(1, real_tenc[static_cast<size_t>(b)]);
+            if (is_chunked) {
+                const int chunk_size  = pm->hparams.enc_att_context_right + 1;
+                const int left_chunks = (chunk_size > 0) ? (pm->hparams.enc_att_context_left / chunk_size) : 0;
+                compute_chunked_limited_window_mask(mask_buf.data() + slab * b, T_b, T_enc, chunk_size, left_chunks);
+            } else {
+                compute_local_window_mask(mask_buf.data() + slab * b, T_b, T_enc, C, pm->hparams.enc_att_context_left,
+                                          pm->hparams.enc_att_context_right);
+            }
+        }
+        ggml_backend_tensor_set(eb.chunked_mask_in, mask_buf.data(), 0, mask_buf.size() * sizeof(float));
+    } else if (eb.chunked_mask_in != nullptr) {
         const int          Tk          = static_cast<int>(eb.chunked_mask_in->ne[0]);
         const int          chunk_size  = pm->hparams.enc_att_context_right + 1;
         const int          left_chunks = (chunk_size > 0) ? (pm->hparams.enc_att_context_left / chunk_size) : 0;
@@ -2195,7 +2222,9 @@ transcribe_status run_batch(transcribe_session *          session,
         if (st != TRANSCRIBE_OK || this_frames <= 0) {
             return false;
         }
-        nf[i]         = this_frames;
+        nf[i]         = pm->hparams.kestrel_length_masking ?
+                            this_frames :
+                            pm->mel->drop_nemo_padding_frame(mels[i], this_frames, static_cast<size_t>(n_samples[i]));
         n_mels_per[i] = this_mels;
         return true;
     });
@@ -2404,7 +2433,7 @@ transcribe_status ensure_pos_proj_cache(ParakeetSession * pc, ParakeetModel * pm
 
     transcribe_status st = TRANSCRIBE_OK;
     ggml_backend_sched_reset(pc->sched);
-    if (!alloc_inference_graph(pc->sched, graph)) {
+    if (!TRANSCRIBE_ALLOC_INFERENCE_GRAPH(pc->sched, graph, "parakeet")) {
         st = TRANSCRIBE_ERR_OOM;
     } else {
         ggml_backend_tensor_set(pos_in, pc->pos_buf.data(), 0, static_cast<size_t>(pos_len) * d_model * sizeof(float));
@@ -2460,15 +2489,16 @@ void compute_chunked_limited_with_rc_mask(float * out_buf,
     }
 }
 
-void compute_chunked_limited_window_mask(float * out_buf, int T, int chunk_size, int left_chunks) {
+void compute_chunked_limited_window_mask(float * out_buf, int T, int T_alloc, int chunk_size, int left_chunks) {
     assert(out_buf != nullptr);
     assert(T >= 1);
+    assert(T_alloc >= T);
     assert(chunk_size >= 1);
     assert(left_chunks >= 0);
 
     const int C = chunk_size;
     const int W = (left_chunks + 1) * C;
-    const int N = (T + C - 1) / C;
+    const int N = (T_alloc + C - 1) / C;
 
     std::fill(out_buf, out_buf + static_cast<size_t>(W) * C * N, -std::numeric_limits<float>::infinity());
     for (int n = 0; n < N; ++n) {
@@ -2483,6 +2513,40 @@ void compute_chunked_limited_window_mask(float * out_buf, int T, int chunk_size,
                 continue;
             }
             for (int k = 0; k < W; ++k) {
+                const int k_abs = key_start + k;
+                if (k_abs >= 0 && k_abs < T) {
+                    row[k] = 0.0f;
+                }
+            }
+        }
+    }
+}
+
+void compute_local_window_mask(float * out_buf, int T, int T_alloc, int chunk_size, int left, int right) {
+    assert(out_buf != nullptr);
+    assert(T >= 1);
+    assert(T_alloc >= T);
+    assert(chunk_size >= 1);
+    assert(left >= 0 && right >= 0);
+
+    const int C = chunk_size;
+    const int W = left + C + right;
+    const int N = (T_alloc + C - 1) / C;
+
+    std::fill(out_buf, out_buf + static_cast<size_t>(W) * C * N, -std::numeric_limits<float>::infinity());
+    for (int n = 0; n < N; ++n) {
+        const int key_start = n * C - left;
+        for (int q = 0; q < C; ++q) {
+            const int q_abs = n * C + q;
+            float *   row   = out_buf + (static_cast<size_t>(n) * C + q) * W;
+            if (q_abs >= T) {
+                row[0] = 0.0f;
+                continue;
+            }
+            // k_abs - q_abs = k - left - q must lie in [-left, right].
+            const int k_lo = q;
+            const int k_hi = q + left + right;  // inclusive
+            for (int k = k_lo; k <= k_hi && k < W; ++k) {
                 const int k_abs = key_start + k;
                 if (k_abs >= 0 && k_abs < T) {
                     row[k] = 0.0f;
@@ -2638,7 +2702,7 @@ transcribe_status emit_streaming_chunk(ParakeetSession * pc,
             }
         }
         ggml_backend_sched_reset(pc->sched);
-        if (!alloc_inference_graph(pc->sched, eb.graph)) {
+        if (!TRANSCRIBE_ALLOC_INFERENCE_GRAPH(pc->sched, eb.graph, "parakeet")) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet stream: alloc_graph failed");
             return TRANSCRIBE_ERR_OOM;
         }
@@ -3086,7 +3150,7 @@ transcribe_status emit_buffered_chunk(ParakeetSession * pc,
         }
     }
     ggml_backend_sched_reset(pc->sched);
-    if (!alloc_inference_graph(pc->sched, eb.graph)) {
+    if (!TRANSCRIBE_ALLOC_INFERENCE_GRAPH(pc->sched, eb.graph, "parakeet")) {
         return TRANSCRIBE_ERR_OOM;
     }
     ggml_backend_tensor_set(eb.mel_in, pc->mel_buf.data(), 0, pc->mel_buf.size() * sizeof(float));

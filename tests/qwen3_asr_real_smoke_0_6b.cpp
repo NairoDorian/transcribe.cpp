@@ -33,6 +33,7 @@
 
 #include "arch/qwen3_asr/qwen3_asr.h"
 #include "arch/qwen3_asr/weights.h"
+#include "ggml-backend.h"
 #include "ggml.h"
 #include "transcribe-model.h"
 #include "transcribe.h"
@@ -250,6 +251,36 @@ int main() {
         }
         if (k) {
             CHECK_EQ_INT(k->ne[0], hp.dec_head_dim);
+        }
+    }
+
+    // ---- gate+up fusion covers real converter output ----
+    // A mapped model keeps tensors at their file offsets, so the alias path
+    // applies exactly when the converter wrote ffn.up directly after ffn.gate.
+    // Asserting it here (not just on the hand-generated fixture) is what would
+    // catch a converter reordering: the memory win would disappear otherwise,
+    // with no wrong answers anywhere to notice it by.
+    {
+        const auto & b0 = qm->weights.dec_blocks[0];
+        CHECK(b0.ffn_gate_w != nullptr && b0.ffn_up_w != nullptr && b0.ffn_gate_up_w != nullptr);
+        if (b0.ffn_gate_w != nullptr && b0.ffn_up_w != nullptr && b0.ffn_gate_up_w != nullptr) {
+            if (qm->weight_storage.is_mapped(b0.ffn_gate_w)) {
+                CHECK(qm->weight_storage.is_mapped(b0.ffn_up_w));
+                CHECK(qm->packed_gate_up.buffer == nullptr);
+                CHECK(b0.ffn_gate_up_w->data == b0.ffn_gate_w->data);
+            } else {
+                // Copied weights: the packed path may copy, but the fused bytes
+                // still have to be gate then up.
+                std::vector<uint8_t> want(ggml_nbytes(b0.ffn_gate_up_w));
+                if (want.size() == ggml_nbytes(b0.ffn_gate_w) + ggml_nbytes(b0.ffn_up_w)) {
+                    ggml_backend_tensor_get(b0.ffn_gate_w, want.data(), 0, ggml_nbytes(b0.ffn_gate_w));
+                    ggml_backend_tensor_get(b0.ffn_up_w, want.data() + ggml_nbytes(b0.ffn_gate_w), 0,
+                                            ggml_nbytes(b0.ffn_up_w));
+                    std::vector<uint8_t> got(want.size());
+                    ggml_backend_tensor_get(b0.ffn_gate_up_w, got.data(), 0, got.size());
+                    CHECK(std::memcmp(want.data(), got.data(), got.size()) == 0);
+                }
+            }
         }
     }
 

@@ -9,6 +9,7 @@
 #include "granite.h"
 #include "projector.h"
 #include "transcribe-arch.h"
+#include "transcribe-backend.h"
 #include "transcribe-batch-util.h"
 #include "transcribe-debug.h"
 #include "transcribe-decode-budget.h"
@@ -61,10 +62,7 @@ GraniteModel::~GraniteModel() {
         ggml_free(ctx_meta);
         ctx_meta = nullptr;
     }
-    if (backend_buffer != nullptr) {
-        safe_buffer_free(backend_buffer);
-        backend_buffer = nullptr;
-    }
+    weight_storage.reset();
     for (auto it = plan.scheduler_list.rbegin(); it != plan.scheduler_list.rend(); ++it) {
         safe_backend_free(*it);
     }
@@ -420,17 +418,8 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
     m->backend         = ggml_backend_name(m->plan.primary);
     m->primary_backend = m->plan.primary;
 
-    ggml_backend_buffer_t weights_buffer = alloc_ctx_tensors_with_reclaim(m->plan.primary, m->ctx_meta);
-    if (weights_buffer == nullptr) {
-        gguf_free(gguf_data);
-        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite: alloc_ctx_tensors_with_reclaim failed");
-        return TRANSCRIBE_ERR_OOM;
-    }
-    m->backend_buffer = weights_buffer;
-    ggml_backend_buffer_set_usage(weights_buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
-
-    if (const transcribe_status st =
-            transcribe::load_common::stream_tensor_data(loader.path(), gguf_data, m->ctx_meta, "granite");
+    if (const transcribe_status st = transcribe::load_common::load_weights(
+            loader.path(), gguf_data, m->ctx_meta, m->plan, params, "granite", m->weight_storage);
         st != TRANSCRIBE_OK) {
         gguf_free(gguf_data);
         return st;
@@ -956,7 +945,7 @@ transcribe_status run(transcribe_session *          ctx_base,
         }
     }
     ggml_backend_sched_reset(cc->sched);
-    if (!alloc_inference_graph(cc->sched, eb.graph)) {
+    if (!TRANSCRIBE_ALLOC_INFERENCE_GRAPH(cc->sched, eb.graph, "granite")) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "granite run: encoder graph allocation failed — out of memory.");
         return TRANSCRIBE_ERR_OOM;
@@ -1062,7 +1051,7 @@ transcribe_status run(transcribe_session *          ctx_base,
     }
 
     ggml_backend_sched_reset(cc->sched);
-    if (!alloc_inference_graph(cc->sched, pb.graph)) {
+    if (!TRANSCRIBE_ALLOC_INFERENCE_GRAPH(cc->sched, pb.graph, "granite")) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "granite run: projector graph allocation failed — out of memory.");
         ggml_free(proj_ctx);
@@ -1243,7 +1232,7 @@ transcribe_status run(transcribe_session *          ctx_base,
     }
 
     ggml_backend_sched_reset(cc->sched);
-    if (!alloc_inference_graph(cc->sched, dec.graph)) {
+    if (!TRANSCRIBE_ALLOC_INFERENCE_GRAPH(cc->sched, dec.graph, "granite")) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "granite run: decoder prefill graph allocation failed — "
                             "out of memory.");
@@ -1353,7 +1342,7 @@ transcribe_status run(transcribe_session *          ctx_base,
         return TRANSCRIBE_ERR_GGUF;
     }
     ggml_backend_sched_reset(cc->sched);
-    if (!alloc_inference_graph(cc->sched, step.graph)) {
+    if (!TRANSCRIBE_ALLOC_INFERENCE_GRAPH(cc->sched, step.graph, "granite")) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "granite run: decode step graph allocation failed — "
                             "out of memory.");
@@ -1516,7 +1505,7 @@ transcribe_status encode_one(GraniteSession *           cc,
         }
     }
     ggml_backend_sched_reset(cc->sched);
-    if (!alloc_inference_graph(cc->sched, eb.graph)) {
+    if (!TRANSCRIBE_ALLOC_INFERENCE_GRAPH(cc->sched, eb.graph, "granite")) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "granite encode_one: encoder graph allocation failed — "
                             "out of memory.");
@@ -1574,7 +1563,7 @@ transcribe_status encode_one(GraniteSession *           cc,
         return TRANSCRIBE_ERR_GGUF;
     }
     ggml_backend_sched_reset(cc->sched);
-    if (!alloc_inference_graph(cc->sched, pb.graph)) {
+    if (!TRANSCRIBE_ALLOC_INFERENCE_GRAPH(cc->sched, pb.graph, "granite")) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "granite encode_one: projector graph allocation failed — "
                             "out of memory.");
@@ -1817,7 +1806,7 @@ transcribe_status run_batch(transcribe_session *          session,
             return TRANSCRIBE_ERR_GGUF;
         }
         ggml_backend_sched_reset(cc->sched);
-        if (!alloc_inference_graph(cc->sched, pb.graph)) {
+        if (!TRANSCRIBE_ALLOC_INFERENCE_GRAPH(cc->sched, pb.graph, "granite")) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "granite run_batch: batched prefill graph allocation failed "
                                 "— out of memory.");
@@ -1909,7 +1898,7 @@ transcribe_status run_batch(transcribe_session *          session,
         return TRANSCRIBE_ERR_GGUF;
     }
     ggml_backend_sched_reset(cc->sched);
-    if (!alloc_inference_graph(cc->sched, sb.graph)) {
+    if (!TRANSCRIBE_ALLOC_INFERENCE_GRAPH(cc->sched, sb.graph, "granite")) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "granite run_batch: batched step graph allocation failed — "
                             "out of memory.");

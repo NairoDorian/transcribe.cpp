@@ -10,9 +10,9 @@
 //     forward pass — no KV cache, is_causal=False)
 //
 // The forward composes in one run() call as:
-//   PCM -> mel -> 2-frame stack -> encoder graph (emit cat_out and
-//     ctc importance) -> bounded BPE-CTC projection + greedy decode ->
-//     initial hypothesis -> add_insertion_slots ->
+//   PCM -> mel -> 2-frame stack -> encoder graph (emit cat_out, ctc_logits,
+//     in-graph pooled BPE head argmax per window) -> host greedy collapse
+//     -> initial hypothesis -> add_insertion_slots ->
 //     text_ids -> decoder forward graph (with projector audio embeds
 //     concatenated to the front of inputs_embeds) -> text_logits ->
 //     argmax + collapse + drop EOS -> final transcript.
@@ -25,6 +25,7 @@
 #include "granite_nar.h"
 #include "projector.h"
 #include "transcribe-arch.h"
+#include "transcribe-backend.h"
 #include "transcribe-batch-util.h"
 #include "transcribe-debug.h"
 #include "transcribe-flash-policy.h"
@@ -67,10 +68,7 @@ GraniteNarModel::~GraniteNarModel() {
         ggml_free(ctx_meta);
         ctx_meta = nullptr;
     }
-    if (backend_buffer != nullptr) {
-        safe_buffer_free(backend_buffer);
-        backend_buffer = nullptr;
-    }
+    weight_storage.reset();
     for (auto it = plan.scheduler_list.rbegin(); it != plan.scheduler_list.rend(); ++it) {
         safe_backend_free(*it);
     }
@@ -339,17 +337,8 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
     m->backend         = ggml_backend_name(m->plan.primary);
     m->primary_backend = m->plan.primary;
 
-    ggml_backend_buffer_t weights_buffer = alloc_ctx_tensors_with_reclaim(m->plan.primary, m->ctx_meta);
-    if (weights_buffer == nullptr) {
-        gguf_free(gguf_data);
-        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite_nar: alloc_ctx_tensors_with_reclaim failed");
-        return TRANSCRIBE_ERR_OOM;
-    }
-    m->backend_buffer = weights_buffer;
-    ggml_backend_buffer_set_usage(weights_buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
-
-    if (const transcribe_status st =
-            transcribe::load_common::stream_tensor_data(loader.path(), gguf_data, m->ctx_meta, "granite_nar");
+    if (const transcribe_status st = transcribe::load_common::load_weights(
+            loader.path(), gguf_data, m->ctx_meta, m->plan, params, "granite_nar", m->weight_storage);
         st != TRANSCRIBE_OK) {
         gguf_free(gguf_data);
         return st;
@@ -377,8 +366,12 @@ transcribe_status init_context(transcribe_model *                model,
     cc->n_threads         = params->n_threads;
     cc->kv_type           = params->kv_type;
     cc->n_ctx             = transcribe_session_params_n_ctx(params);
-    cc->encoder_use_flash = false;
-    cc->decoder_use_flash = false;  // bidirectional path doesn't use KV cache
+    cc->encoder_use_flash = false;  // the Shaw block-local attention has no flash form
+    // The bidirectional editor attends over audio + text in one pass;
+    // flash keeps it from materialising [T_total, T_total, n_heads] scores
+    // (~1.07 GB f32 per layer at the 4096-token cap). TRANSCRIBE_NO_FLASH
+    // restores the mul_mat + soft_max path.
+    cc->decoder_use_flash = true;
     transcribe::flash::apply_env_overrides(cc->encoder_use_flash, cc->decoder_use_flash);
 
     *out_ctx = cc.release();
@@ -389,118 +382,6 @@ namespace {
 
 void apply_thread_count(ggml_backend_sched_t sched, int n_threads) {
     transcribe::configure_sched_n_threads(sched, n_threads);
-}
-
-// Keep the 100k-wide BPE projection bounded. At five minutes, projecting all
-// T_enc frames at once would materialize a 5.7 GiB F32 tensor. Pooling four
-// encoder states before the linear projection is mathematically equivalent to
-// pooling their logits, cuts the projection work by 4x, and lets each bounded
-// chunk return only token IDs to the host.
-constexpr int kBpeCtcWindowsPerChunk = 512;
-
-transcribe_status compute_bpe_ctc_initial_hypothesis(ggml_backend_sched_t       sched,
-                                                     const GraniteNarWeights &  weights,
-                                                     const GraniteNarHParams &  hp,
-                                                     const std::vector<float> & enc_cat,
-                                                     int64_t                    cat_h,
-                                                     int                        T_enc,
-                                                     int64_t                    final_offset,
-                                                     const std::vector<float> & non_blank,
-                                                     std::vector<int32_t> &     out_token_ids,
-                                                     int64_t &                  compute_us) {
-    out_token_ids.clear();
-    compute_us            = 0;
-    const int pool_window = hp.enc_bpe_pool_window;
-    if (sched == nullptr || T_enc <= 0 || pool_window <= 0 || hp.enc_hidden <= 0 || final_offset < 0 ||
-        final_offset + hp.enc_hidden > cat_h || enc_cat.size() < static_cast<size_t>(cat_h) * T_enc ||
-        non_blank.size() < static_cast<size_t>(T_enc)) {
-        return TRANSCRIBE_ERR_INVALID_ARG;
-    }
-
-    const int n_windows     = (T_enc + pool_window - 1) / pool_window;
-    const int chunk_windows = std::min(kBpeCtcWindowsPerChunk, n_windows);
-
-    ggml_init_params ip{};
-    ip.mem_size            = 1024 * 1024;
-    ip.mem_buffer          = nullptr;
-    ip.no_alloc            = true;
-    ggml_context * bpe_ctx = ggml_init(ip);
-    if (bpe_ctx == nullptr) {
-        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite_nar BPE CTC: context allocation failed");
-        return TRANSCRIBE_ERR_OOM;
-    }
-
-    BpeCtcBuild bb = build_bpe_ctc_graph(bpe_ctx, weights, hp, chunk_windows);
-    if (bb.graph == nullptr || bb.hidden_in == nullptr || bb.token_ids == nullptr) {
-        ggml_free(bpe_ctx);
-        return TRANSCRIBE_ERR_GGUF;
-    }
-
-    ggml_backend_sched_reset(sched);
-    if (!ggml_backend_sched_alloc_graph(sched, bb.graph)) {
-        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite_nar BPE CTC: graph allocation failed -- out of memory");
-        ggml_free(bpe_ctx);
-        return TRANSCRIBE_ERR_OOM;
-    }
-
-    const int            hidden = hp.enc_hidden;
-    std::vector<float>   hidden_chunk(static_cast<size_t>(hidden) * bb.n_windows, 0.0f);
-    std::vector<int32_t> chunk_ids(bb.n_windows, hp.enc_bpe_blank_id);
-    std::vector<uint8_t> valid(bb.n_windows, 0);
-
-    int prev = -1;
-    out_token_ids.reserve(n_windows);
-    for (int w0 = 0; w0 < n_windows; w0 += chunk_windows) {
-        std::fill(hidden_chunk.begin(), hidden_chunk.end(), 0.0f);
-        std::fill(valid.begin(), valid.end(), 0);
-
-        const int actual_windows = std::min(chunk_windows, n_windows - w0);
-        for (int w = 0; w < actual_windows; ++w) {
-            const int global_window = w0 + w;
-            const int t0            = global_window * pool_window;
-            const int t1            = std::min(t0 + pool_window, T_enc);
-            float     total         = 0.0f;
-            for (int t = t0; t < t1; ++t) {
-                total += non_blank[static_cast<size_t>(t)];
-            }
-            if (total <= 1e-9f) {
-                continue;
-            }
-            valid[static_cast<size_t>(w)] = 1;
-            float * dst                   = hidden_chunk.data() + static_cast<size_t>(w) * hidden;
-            for (int t = t0; t < t1; ++t) {
-                const float   wt  = non_blank[static_cast<size_t>(t)] / total;
-                const float * src = enc_cat.data() + static_cast<size_t>(t) * cat_h + final_offset;
-                for (int h = 0; h < hidden; ++h) {
-                    dst[h] += wt * src[h];
-                }
-            }
-        }
-
-        ggml_backend_tensor_set(bb.hidden_in, hidden_chunk.data(), 0, hidden_chunk.size() * sizeof(float));
-
-        const int64_t     t_compute_start = ggml_time_us();
-        const ggml_status gs              = ggml_backend_sched_graph_compute(sched, bb.graph);
-        compute_us += ggml_time_us() - t_compute_start;
-        if (gs != GGML_STATUS_SUCCESS) {
-            log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite_nar BPE CTC: compute failed (%d)", static_cast<int>(gs));
-            ggml_free(bpe_ctx);
-            return TRANSCRIBE_ERR_GGUF;
-        }
-        ggml_backend_tensor_get(bb.token_ids, chunk_ids.data(), 0, chunk_ids.size() * sizeof(int32_t));
-
-        for (int w = 0; w < actual_windows; ++w) {
-            const int argmax = valid[static_cast<size_t>(w)] ? chunk_ids[static_cast<size_t>(w)] : hp.enc_bpe_blank_id;
-            if (argmax != hp.enc_bpe_blank_id && argmax != prev) {
-                const int shift = (hp.enc_bpe_blank_id == 0) ? 1 : 0;
-                out_token_ids.push_back(argmax - shift);
-            }
-            prev = argmax;
-        }
-    }
-
-    ggml_free(bpe_ctx);
-    return TRANSCRIBE_OK;
 }
 
 }  // namespace
@@ -516,6 +397,23 @@ transcribe_status run(transcribe_session *          ctx_base,
     }
     auto * cc = static_cast<GraniteNarSession *>(ctx_base);
     auto * cm = static_cast<GraniteNarModel *>(cc->model);
+
+    // Free GPU buffers (scheduler galloc buffers) when this call returns, on
+    // every path, to prevent memory accumulation across repeated runs. The
+    // session is reused across calls (e.g. Multi-STT extra models kept
+    // loaded), so releasing here lets CUDA's caching allocator reuse freed
+    // blocks on the next run() rather than growing the cache (GPU memory
+    // leak on Windows). The scheduler is recreated on demand.
+    struct SchedRelease {
+        GraniteNarSession * cc;
+
+        ~SchedRelease() {
+            if (cc->sched != nullptr) {
+                safe_sched_free(cc->sched);
+                cc->sched = nullptr;
+            }
+        }
+    } sched_release{ cc };
 
     transcribe::debug::init();
 
@@ -575,24 +473,10 @@ transcribe_status run(transcribe_session *          ctx_base,
             return TRANSCRIBE_ERR_BACKEND;
         }
     }
-    // Free GPU buffers (scheduler galloc buffers) after each transcription to
-    // prevent memory accumulation across repeated runs. The session is reused
-    // across calls (e.g. Multi-STT extra models with
-    // multi_stt_keep_extra_models_loaded), so releasing here lets CUDA's
-    // caching allocator reuse freed blocks on the next run() rather than
-    // growing the cache (GPU memory leak on Windows).
-    auto cleanup_gpu = [&]() {
-        if (cc->sched != nullptr) {
-            safe_sched_free(cc->sched);
-            cc->sched = nullptr;
-        }
-    };
-
     ggml_backend_sched_reset(cc->sched);
-    if (!ggml_backend_sched_alloc_graph(cc->sched, eb.graph)) {
+    if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, eb.graph, "granite_nar")) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "granite_nar run: encoder graph allocation failed — out of memory.");
-        cleanup_gpu();
         return TRANSCRIBE_ERR_OOM;
     }
 
@@ -624,7 +508,6 @@ transcribe_status run(transcribe_session *          ctx_base,
     const int64_t t_enc_start = ggml_time_us();
     if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, eb.graph); gs != GGML_STATUS_SUCCESS) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite_nar run: encoder compute failed (%d)", static_cast<int>(gs));
-        cleanup_gpu();
         return TRANSCRIBE_ERR_BACKEND;
     }
     cc->t_encode_us = ggml_time_us() - t_enc_start;
@@ -657,29 +540,26 @@ transcribe_status run(transcribe_session *          ctx_base,
     cc->enc_cat_host.resize(static_cast<size_t>(cat_h) * cat_T);
     ggml_backend_tensor_get(eb.cat_out, cc->enc_cat_host.data(), 0, cc->enc_cat_host.size() * sizeof(float));
 
-    std::vector<float> mid_non_blank;
-    if (eb.mid_blank_probs != nullptr) {
-        std::vector<float> mid_blank(t_enc);
-        ggml_backend_tensor_get(eb.mid_blank_probs, mid_blank.data(), 0, mid_blank.size() * sizeof(float));
-        mid_non_blank.resize(t_enc);
-        for (int i = 0; i < t_enc; ++i) {
-            mid_non_blank[i] = 1.0f - mid_blank[i];
-        }
-    }
-
-    // Initial BPE hypothesis. cat_out is host-row-major [T_enc, cat_h];
-    // final_capture_offset identifies the final 1024-wide encoder state used
-    // by the BPE head inside each row.
+    // Initial BPE hypothesis from the in-graph pooled head (see
+    // build_encoder_graph): one argmax id per pool window, plus each window's
+    // importance mass for the all-blank rule.
     std::vector<int32_t> hyp_ids;
-    int64_t              bpe_compute_us = 0;
-    if (!mid_non_blank.empty()) {
-        const transcribe_status bst =
-            compute_bpe_ctc_initial_hypothesis(cc->sched, cm->weights, cm->hparams, cc->enc_cat_host, cat_h, t_enc,
-                                               eb.final_capture_offset, mid_non_blank, hyp_ids, bpe_compute_us);
-        if (bst != TRANSCRIBE_OK) {
-            return bst;
+    if (eb.bpe_window_mass != nullptr && eb.n_bpe_windows > 0) {
+        std::vector<float> window_mass(static_cast<size_t>(eb.n_bpe_windows));
+        ggml_backend_tensor_get(eb.bpe_window_mass, window_mass.data(), 0, window_mass.size() * sizeof(float));
+        std::vector<int32_t> window_ids;
+        window_ids.reserve(static_cast<size_t>(eb.n_bpe_windows));
+        for (ggml_tensor * ids : eb.bpe_window_ids) {
+            const size_t off = window_ids.size();
+            window_ids.resize(off + static_cast<size_t>(ids->ne[0]));
+            ggml_backend_tensor_get(ids, window_ids.data() + off, 0, static_cast<size_t>(ids->ne[0]) * sizeof(int32_t));
         }
-        cc->t_encode_us += bpe_compute_us;
+        if (!collapse_bpe_window_ids(window_ids, window_mass, /*blank_id=*/cm->hparams.enc_bpe_blank_id, hyp_ids)) {
+            transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
+                                "granite_nar run: BPE head emitted %zu window ids but %zu window masses",
+                                window_ids.size(), window_mass.size());
+            return TRANSCRIBE_ERR_BACKEND;
+        }
     }
     if (hyp_ids.empty()) {
         // No tokens — emit empty transcript and return.
@@ -691,7 +571,6 @@ transcribe_status run(transcribe_session *          ctx_base,
         seg.t0_ms = 0;
         seg.t1_ms = static_cast<int64_t>(n_samples) * 1000 / static_cast<int64_t>(cm->hparams.fe_sample_rate);
         cc->segments.push_back(std::move(seg));
-        cleanup_gpu();
         return TRANSCRIBE_OK;
     }
 
@@ -706,24 +585,21 @@ transcribe_status run(transcribe_session *          ctx_base,
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "granite_nar run: projector compute context allocation failed "
                                 "— out of memory.");
-            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
     }
     ProjectorBuild pb = build_projector_graph(proj_ctx, cm->weights, cm->hparams, t_enc);
     if (pb.graph == nullptr || pb.out == nullptr) {
         ggml_free(proj_ctx);
-        cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
 
     ggml_backend_sched_reset(cc->sched);
-    if (!ggml_backend_sched_alloc_graph(cc->sched, pb.graph)) {
+    if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, pb.graph, "granite_nar")) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "granite_nar run: projector graph allocation failed — "
                             "out of memory.");
         ggml_free(proj_ctx);
-        cleanup_gpu();
         return TRANSCRIBE_ERR_OOM;
     }
 
@@ -740,7 +616,6 @@ transcribe_status run(transcribe_session *          ctx_base,
     if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, pb.graph); gs != GGML_STATUS_SUCCESS) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite_nar run: projector compute failed (%d)", static_cast<int>(gs));
         ggml_free(proj_ctx);
-        cleanup_gpu();
         return TRANSCRIBE_ERR_BACKEND;
     }
 
@@ -784,7 +659,6 @@ transcribe_status run(transcribe_session *          ctx_base,
                             "exceed the %d-token context. Shorten audio or see "
                             "transcribe_capabilities.max_audio_ms.",
                             cc->n_audio_tokens, n_text, ceiling);
-        cleanup_gpu();
         return TRANSCRIBE_ERR_INPUT_TOO_LONG;
     }
 
@@ -811,24 +685,25 @@ transcribe_status run(transcribe_session *          ctx_base,
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "granite_nar run: decoder compute context allocation failed — "
                                 "out of memory.");
-            cleanup_gpu();
             return TRANSCRIBE_ERR_OOM;
         }
     }
-    ForwardBuild fb = build_forward_graph(dec_ctx, cm->weights, cm->hparams, cc->n_audio_tokens, n_text);
-    if (fb.graph == nullptr || fb.out == nullptr) {
+    // Full [vocab, n_text] logits only when tensors are being dumped (the
+    // dec.text_logits parity tap); otherwise argmax in-graph.
+    const bool   full_logits = transcribe::debug::enabled();
+    ForwardBuild fb          = build_forward_graph(dec_ctx, cm->weights, cm->hparams, cc->n_audio_tokens, n_text,
+                                                   cc->decoder_use_flash, full_logits);
+    if (fb.graph == nullptr || (fb.out == nullptr && fb.text_ids.empty())) {
         ggml_free(dec_ctx);
-        cleanup_gpu();
         return TRANSCRIBE_ERR_GGUF;
     }
 
     ggml_backend_sched_reset(cc->sched);
-    if (!ggml_backend_sched_alloc_graph(cc->sched, fb.graph)) {
+    if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, fb.graph, "granite_nar")) {
         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                             "granite_nar run: decoder graph allocation failed — "
                             "out of memory.");
         ggml_free(dec_ctx);
-        cleanup_gpu();
         return TRANSCRIBE_ERR_OOM;
     }
 
@@ -846,7 +721,6 @@ transcribe_status run(transcribe_session *          ctx_base,
     if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, fb.graph); gs != GGML_STATUS_SUCCESS) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite_nar run: decoder compute failed (%d)", static_cast<int>(gs));
         ggml_free(dec_ctx);
-        cleanup_gpu();
         return TRANSCRIBE_ERR_BACKEND;
     }
     cc->t_decode_us = ggml_time_us() - t_dec_start;
@@ -854,16 +728,26 @@ transcribe_status run(transcribe_session *          ctx_base,
     try_dump("dec.flat_embeds", fb.dumps.flat_embeds, "decoder");
     try_dump("dec.text_logits", fb.dumps.text_logits, "decoder");
 
-    // Read text-portion logits. ggml stores ne[0]=vocab as the innermost
-    // axis, which means the host buffer layout is [t * vocab + v] —
-    // i.e. `[n_text, vocab]` numpy row-major already. No transpose.
-    const int64_t      vocab = fb.out->ne[0];
-    std::vector<float> logits_host(static_cast<size_t>(vocab) * n_text);
-    ggml_backend_tensor_get(fb.out, logits_host.data(), 0, logits_host.size() * sizeof(float));
-    ggml_free(dec_ctx);
-
     std::vector<int32_t> final_ids;
-    argmax_collapse_drop_eos(logits_host, static_cast<int>(vocab), n_text, cm->hparams.dec_eos_id, final_ids);
+    if (fb.out != nullptr) {
+        // Read text-portion logits. ggml stores ne[0]=vocab as the innermost
+        // axis, which means the host buffer layout is [t * vocab + v] —
+        // i.e. `[n_text, vocab]` numpy row-major already. No transpose.
+        const int64_t      vocab = fb.out->ne[0];
+        std::vector<float> logits_host(static_cast<size_t>(vocab) * n_text);
+        ggml_backend_tensor_get(fb.out, logits_host.data(), 0, logits_host.size() * sizeof(float));
+        argmax_collapse_drop_eos(logits_host, static_cast<int>(vocab), n_text, cm->hparams.dec_eos_id, final_ids);
+    } else {
+        std::vector<int32_t> row_ids;
+        row_ids.reserve(static_cast<size_t>(n_text));
+        for (ggml_tensor * ids : fb.text_ids) {
+            const size_t off = row_ids.size();
+            row_ids.resize(off + static_cast<size_t>(ids->ne[0]));
+            ggml_backend_tensor_get(ids, row_ids.data() + off, 0, static_cast<size_t>(ids->ne[0]) * sizeof(int32_t));
+        }
+        collapse_drop_eos(row_ids, cm->hparams.dec_eos_id, final_ids);
+    }
+    ggml_free(dec_ctx);
 
     cc->full_text = cm->tok.decode(final_ids.data(), static_cast<int>(final_ids.size()));
     cc->raw_text  = cc->full_text;  // no post-processing, via transcribe_raw_text
@@ -876,7 +760,6 @@ transcribe_status run(transcribe_session *          ctx_base,
     seg.t1_ms = static_cast<int64_t>(n_samples) * 1000 / static_cast<int64_t>(cm->hparams.fe_sample_rate);
     cc->segments.push_back(std::move(seg));
 
-    cleanup_gpu();
     return TRANSCRIBE_OK;
 }
 

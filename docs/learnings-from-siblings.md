@@ -399,7 +399,7 @@ The box can measure it: CUDA 13.3 toolkit and a 4070 Laptop with 8188 MiB are
 both present, and the scenario is the 4-model Handy flow.
 
 **Outcome — written, not yet measured.** The patch exists as
-`patches/ggml/0002-export-cuda-pool-trim-and-graph-evict.patch` (+102 lines
+`patches/ggml/0101-export-cuda-pool-trim-and-graph-evict.patch` (+102 lines
 across `include/ggml-cuda.h`, `src/ggml-cuda/common.cuh`,
 `src/ggml-cuda/ggml-cuda.cu`), and the transcribe side as
 `trim_backend_pools` / `evict_backend_graph_cache` /

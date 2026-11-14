@@ -1,11 +1,12 @@
 {
   "default": "asr-publication-v2",
   "roles": {
-    "langid": "langid-publication-v1"
+    "langid": "langid-publication-v1",
+    "vad": "vad-publication-v1"
   },
   "profiles": {
     "asr-publication-v2": {
-      "description": "The complete benchmark set published for transcription models. v2: accuracy on L40S; batch_size is the recommended setting for new runs, and a cell is satisfied at any batch size (the row records the one used).",
+      "description": "The complete benchmark set published for transcription models. v2: accuracy on L40S; batch_size is the recommended setting for new runs, and a cell is satisfied at any batch size (the row records the one used). A target may declare max_model_gib: weak reference machines (a base M4, a Ryzen 4750U host) are then required to run only models whose reference publication footprint fits, and larger models are published on the strong reference alone.",
       "accuracy": [
         {
           "dataset": "librispeech",
@@ -45,6 +46,15 @@
         "warmup": 1,
         "targets": [
           {
+            "machine": "m4",
+            "display": "Apple M4",
+            "backends": [
+              "cpu",
+              "metal"
+            ],
+            "max_model_gib": 5
+          },
+          {
             "machine": "m4-max",
             "display": "Apple M4 Max",
             "backends": [
@@ -59,7 +69,8 @@
               "cpu",
               "vulkan"
             ],
-            "cooldown_tctl_c": 55.0
+            "cooldown_tctl_c": 55.0,
+            "max_model_gib": 5
           }
         ],
         "single_language_samples": {
@@ -114,6 +125,15 @@
         "warmup": 3,
         "targets": [
           {
+            "machine": "m4",
+            "display": "Apple M4",
+            "backends": [
+              "cpu",
+              "metal"
+            ],
+            "max_model_gib": 5
+          },
+          {
             "machine": "m4-max",
             "display": "Apple M4 Max",
             "backends": [
@@ -128,7 +148,35 @@
               "cpu",
               "vulkan"
             ],
-            "cooldown_tctl_c": 55.0
+            "cooldown_tctl_c": 55.0,
+            "max_model_gib": 5
+          }
+        ]
+      }
+    },
+    "vad-publication-v1": {
+      "role": "vad",
+      "description": "VAD speed only, no accuracy suite (numerical parity is the porting gate). scripts/vad/bench.py through the Python binding, CPU, one thread, every shipped quant. <clip>: transcribe_vad_run over the whole clip. <clip>-<N>ms: one pass of transcribe_vad_stream_feed over the clip in N ms chunks; a cell is the mean time per feed call.",
+      "accuracy": [],
+      "speed": {
+        "quants": "all-downloads",
+        "samples": [
+          "love-loss-32ms",
+          "love-loss-128ms",
+          "love-loss-512ms",
+          "jfk",
+          "love-loss"
+        ],
+        "iterations": 10,
+        "warmup": 3,
+        "targets": [
+          {
+            "machine": "m4",
+            "display": "Apple M4",
+            "backends": [
+              "cpu"
+            ],
+            "max_model_gib": 5
           }
         ]
       }

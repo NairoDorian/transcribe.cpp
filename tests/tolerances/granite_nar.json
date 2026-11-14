@@ -11,8 +11,11 @@
     "    then processor.batch_decode(output.preds). LibriSpeech test-clean",
     "    WER 1.29% (matches the model card).",
     "  - C++: bf16 weights (F32 norms / biases, F16 conv kernels), F32",
-    "    accumulators, CPU backend, threads=1. Bidirectional attention via",
-    "    ggml_soft_max_ext(kq, mask=nullptr) in decoder.cpp.",
+    "    accumulators, CPU backend, threads=1. Bidirectional decoder",
+    "    attention via ggml_flash_attn_ext with no mask (the default;",
+    "    TRANSCRIBE_NO_FLASH restores ggml_soft_max_ext(kq, mask=nullptr)).",
+    "    Encoder depthwise conv via the direct op, not im2col + mul_mat.",
+    "    Re-measured with both on: every tensor within the budgets below.",
     "  - Mel: production C++ MelFrontend in eval mode against the HF",
     "    GraniteSpeechNarFeatureExtractor (torchaudio MelSpectrogram +",
     "    log10/max-8/div-4/add-1 + 2-frame stack).",
@@ -54,7 +57,7 @@
     "argmax index directly. The older 7d20732d snapshot used bpe_output_dim",
     "= vocab_size + 1 with blank at channel 0 and `argmax - 1` shift. The",
     "converter writes the actual blank_token_id as a new KV so C++ honors",
-    "the right scheme — see encoder.cpp::compute_bpe_ctc_initial_hypothesis.",
+    "the right scheme — see collapse_bpe_window_ids in encoder.cpp.",
     "",
     "All numbers measured with `validate.py all --family granite_nar --variant",
     "granite-speech-4.1-2b-nar`. Recipe: max(1.5x observed, 1e-6)."
@@ -82,7 +85,7 @@
   "enc.block.0.post_conv": {
     "max_abs": 0.1,
     "mean_abs": 0.005,
-    "_comment": "Block 0 sub-step: post-conv residual. Observed 6.3e-2 / 3.3e-3."
+    "_comment": "Block 0 sub-step: post-conv residual. Observed 6.3e-2 / 3.3e-3 (6.2e-2 / 3.4e-3 with the direct depthwise conv)."
   },
   "enc.block.0.post_ff2": {
     "max_abs": 0.1,
@@ -132,6 +135,6 @@
   "dec.text_logits": {
     "max_abs": 0.6,
     "mean_abs": 0.06,
-    "_comment": "Per-sample text-portion lm_head logits with /logits_scaling=8 applied (matching the 99a4df9 modeling — see decoder.cpp). 40 bf16 LLM layers + bf16 lm_head accumulate noise on post-scaling magnitudes of ~O(20). Observed 4.0e-1 / 3.5e-2."
+    "_comment": "Per-sample text-portion lm_head logits with /logits_scaling=8 applied (matching the 99a4df9 modeling — see decoder.cpp). 40 bf16 LLM layers + bf16 lm_head accumulate noise on post-scaling magnitudes of ~O(20). Observed 4.0e-1 / 3.5e-2 (4.1e-1 / 3.5e-2 with flash attention)."
   }
 }

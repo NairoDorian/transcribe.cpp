@@ -17,6 +17,9 @@
 
 #include "transcribe.h"
 
+#if defined(TRANSCRIBE_ENABLE_ARCH_SILERO_VAD)
+#    include "arch/silero_vad/silero_vad.h"
+#endif
 #if defined(TRANSCRIBE_ENABLE_ARCH_WHISPER)
 #    include "arch/whisper/bin_load.h"
 #endif
@@ -33,6 +36,7 @@
 #include "transcribe-path.h"
 #include "transcribe/diarize.h"
 #include "transcribe/langid.h"
+#include "transcribe/vad.h"
 
 #if defined(TRANSCRIBE_GGML_BACKEND_DL) && defined(_WIN32)
 #    ifndef WIN32_LEAN_AND_MEAN
@@ -244,6 +248,16 @@ extern "C" size_t transcribe_abi_struct_size(transcribe_abi_struct which) {
             return sizeof(struct transcribe_langid_result);
         case TRANSCRIBE_ABI_LANGID_CANDIDATE:
             return sizeof(struct transcribe_langid_candidate);
+        case TRANSCRIBE_ABI_VAD_INFO:
+            return sizeof(struct transcribe_vad_info);
+        case TRANSCRIBE_ABI_VAD_SESSION_PARAMS:
+            return sizeof(struct transcribe_vad_session_params);
+        case TRANSCRIBE_ABI_VAD_PARAMS:
+            return sizeof(struct transcribe_vad_params);
+        case TRANSCRIBE_ABI_VAD_RESULT:
+            return sizeof(struct transcribe_vad_result);
+        case TRANSCRIBE_ABI_VAD_SEGMENT:
+            return sizeof(struct transcribe_vad_segment);
     }
     return 0;  // unknown id: "cannot verify", never a real size
 }
@@ -298,6 +312,16 @@ extern "C" size_t transcribe_abi_struct_align(transcribe_abi_struct which) {
             return alignof(struct transcribe_langid_result);
         case TRANSCRIBE_ABI_LANGID_CANDIDATE:
             return alignof(struct transcribe_langid_candidate);
+        case TRANSCRIBE_ABI_VAD_INFO:
+            return alignof(struct transcribe_vad_info);
+        case TRANSCRIBE_ABI_VAD_SESSION_PARAMS:
+            return alignof(struct transcribe_vad_session_params);
+        case TRANSCRIBE_ABI_VAD_PARAMS:
+            return alignof(struct transcribe_vad_params);
+        case TRANSCRIBE_ABI_VAD_RESULT:
+            return alignof(struct transcribe_vad_result);
+        case TRANSCRIBE_ABI_VAD_SEGMENT:
+            return alignof(struct transcribe_vad_segment);
     }
     return 0;
 }
@@ -1055,6 +1079,21 @@ static transcribe_status transcribe_model_load_file_impl(const char *           
     if (const auto st = check_input_struct_size(params->struct_size, k_min_model_params_size); st != TRANSCRIBE_OK) {
         return st;
     }
+    // Full-size view for the family loaders: defaults first, then only the
+    // prefix the caller's struct_size covers, so every trailing field is
+    // readable (no_mmap reads false for a caller built before it existed).
+    // The bool is re-derived from its raw byte: a C caller can store any
+    // value there, and loading a non-0/1 byte as bool is UB.
+    struct transcribe_model_load_params params_view;
+    transcribe_model_load_params_init(&params_view);
+    std::memcpy(&params_view, params,
+                static_cast<size_t>(std::min<uint64_t>(params->struct_size, sizeof(params_view))));
+    {
+        unsigned char no_mmap_raw = 0;
+        std::memcpy(&no_mmap_raw, &params_view.no_mmap, sizeof(no_mmap_raw));
+        params_view.no_mmap = no_mmap_raw != 0;
+    }
+    params = &params_view;
 
     // device is validated where the registry is available, in
     // load_common::init_backends. NULL means automatic selection; a non-NULL
@@ -1081,12 +1120,13 @@ static transcribe_status transcribe_model_load_file_impl(const char *           
 
     // Format sniff by reading the first four bytes (not the file extension,
     // which HF/users mislabel): GGUF magic 0x46554747 is the canonical path,
-    // ggml magic 0x67676d6c is a legacy whisper.cpp .bin. Public contract:
+    // ggml magic 0x67676d6c is a whisper.cpp ASR or Silero .bin. Public contract:
     // missing path -> ERR_FILE_NOT_FOUND; every other failure -> ERR_GGUF.
     if (!transcribe::path_is_present(path)) {
         return TRANSCRIBE_ERR_FILE_NOT_FOUND;
     }
-    uint32_t magic = 0;
+    uint32_t magic      = 0;
+    bool     silero_bin = false;
     {
         std::ifstream fin(transcribe::path_from_utf8(path), std::ios::binary);
         if (!fin) {
@@ -1095,20 +1135,32 @@ static transcribe_status transcribe_model_load_file_impl(const char *           
             // load failure rather than FILE_NOT_FOUND.
             return TRANSCRIBE_ERR_GGUF;
         }
-        fin.read(reinterpret_cast<char *>(&magic), sizeof(magic));
-        if (!fin || fin.gcount() != sizeof(magic)) {
-            transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
-                                "transcribe_model_load_file: short read on file "
-                                "magic for %s",
-                                path);
+        uint8_t bytes[4];
+        if (!fin.read(reinterpret_cast<char *>(bytes), sizeof(bytes))) {
             return TRANSCRIBE_ERR_GGUF;
+        }
+        magic = uint32_t(bytes[0]) | uint32_t(bytes[1]) << 8 | uint32_t(bytes[2]) << 16 | uint32_t(bytes[3]) << 24;
+        if (magic == 0x67676d6cu) {
+            // A bounded tag sniff, never an extension check. Whisper's first
+            // hparam can equal 10, so require the complete Silero tag as well.
+            char tag[sizeof("silero-16k") - 1];
+            if (fin.read(reinterpret_cast<char *>(bytes), sizeof(bytes)) && bytes[0] == sizeof(tag) && bytes[1] == 0 &&
+                bytes[2] == 0 && bytes[3] == 0 && fin.read(tag, sizeof(tag))) {
+                silero_bin = std::memcmp(tag, "silero-16k", sizeof(tag)) == 0;
+            }
         }
     }
 
-    // 0x67676d6c ("ggml" little-endian): legacy whisper.cpp .bin. Hand off
-    // to the whisper .bin adapter, which validates the hparams as
-    // whisper-shaped (rejecting unrelated ggml-magic files like Silero VAD).
     if (magic == 0x67676d6cu) {
+        if (silero_bin) {
+#if defined(TRANSCRIBE_ENABLE_ARCH_SILERO_VAD)
+            return transcribe::silero_vad::load_from_bin(path, params, out_model);
+#else
+            transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
+                                "transcribe_model_load_file: Silero .bin requires silero_vad support\n");
+            return TRANSCRIBE_ERR_UNSUPPORTED_ARCH;
+#endif
+        }
 #if defined(TRANSCRIBE_ENABLE_ARCH_WHISPER)
         return transcribe::whisper::load_from_bin(path, params, out_model);
 #else

@@ -103,7 +103,7 @@ Runnable examples live in
 
 ## Diarization
 
-A model's `roles` say what it serves (`.asr`, `.diarize`). Diarization models
+A model's `roles` say what it serves (`.asr`, `.diarize`, `.langId`, `.vad`). Diarization models
 such as Sortformer (DIARIZE only) return speaker turns from a `DiarizeSession`:
 
 ```swift
@@ -130,6 +130,28 @@ let result = try model.langIdSession().run(pcm, options: LangIdOptions(allowed: 
 print(result.code ?? "-", result.allowedMass)
 ```
 
+## Voice activity detection
+
+VAD models (`.vad`, e.g. Silero VAD; the whisper.cpp `ggml-silero-*.bin` files
+load too) score `vadInfo.frameSamples`-sample frames from a `VadSession`.
+`run` returns per-frame `probs` and speech `segments` in samples;
+`streamFeed` / `streamFlush` return the probabilities of the frames each call
+completed, starting at `firstFrame`.
+
+```swift
+let model = try Model(path: "silero-vad-v6.2-F32.gguf")
+let vad = try model.vadSession()
+for s in try vad.run(pcm, options: VadOptions(threshold: 0.6)).segments {
+    print(s.startSample, s.endSample)
+}
+
+for chunk in micChunks {
+    let r = try vad.streamFeed(chunk)
+    // r.probs[i] scores stream frame r.firstFrame + i
+}
+try vad.streamFlush()
+```
+
 ## Backends
 
 Backends are compiled into the xcframework per Apple slice:
@@ -145,6 +167,13 @@ Request a backend policy with `ModelOptions(backend:)`; probe availability with
 `Transcribe.backendAvailable(_:)`. For exact selection, pass an entry from
 `Transcribe.devices()` to `ModelOptions(device:)`; exact selection never falls
 back to another primary device.
+
+On the CPU and on Metal, model weights are memory-mapped from the file: they
+are served from the page cache, which the OS can reclaim, and do not count
+toward the app's memory footprint (the figure jetsam enforces on iOS). Don't
+truncate or rewrite a model file in place while it is loaded; write a new file
+and rename it over the old one. `ModelOptions(noMmap: true)` copies the weights
+instead.
 
 ## Concurrency and lifetime
 
@@ -172,7 +201,9 @@ token.cancel()
 
 The active `run`, `runBatch`, or stream feed throws `TranscribeError.aborted`
 with any partial transcript preserved. Async `run`/`runBatch` also bridge Swift
-task cancellation when no custom token is installed.
+task cancellation when no custom token is installed. Role sessions
+(`DiarizeSession`, `LangIdSession`, `VadSession`, including a VAD stream feed)
+take a token the same way.
 
 ## C, Objective-C, and C++
 

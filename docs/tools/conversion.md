@@ -38,7 +38,9 @@ source format:
   `voxtral_realtime`, `granite`, `granite_nar`, `moonshine`,
   `moonshine_streaming`, `qwen3_asr`, `medasr`, `cohere`
 - **FunASR**: `sensevoice`, `funasr_nano`
-- **Author package**: `gigaam` (the upstream `gigaam` pip package)
+- **Author package**: `gigaam` (the upstream `gigaam` pip package; GigaAM
+  Multilingual is built from that package's classes and a pinned Hugging Face
+  snapshot)
 
 Each converter is a single-file script with inline documentation of its
 tensor catalog, hparam map, and layout transforms. No base class. See
@@ -93,7 +95,14 @@ models/
 
 This matches the raw-checkpoint layout under `$TRANSCRIBE_MODELS_DIR`
 (also keyed by HF repo name), so `models/<slug>/` on the converted side
-mirrors `$TRANSCRIBE_MODELS_DIR/<slug>/` on the source side.
+mirrors `$TRANSCRIBE_MODELS_DIR/<slug>/` on the source side. A snapshot
+pinned to a commit hash, full or abbreviated, sits beside it in
+`$TRANSCRIBE_MODELS_DIR/<slug>@<commit>/`, so that an offline run reads only
+the files of that commit. A pinned run (gigaam, ecapa_tdnn, or any
+`--revision <hash>`) never reads `<slug>/`: online it downloads the commit
+into `<slug>@<commit>/`, and offline without that directory it fails with an
+error that names it. A `<slug>/` copy that only pinned runs used can be
+deleted.
 
 The `--repo-id` flag on each converter builds both the directory and
 filename for you via `slug_from_repo_id()` + `gguf_name()` in

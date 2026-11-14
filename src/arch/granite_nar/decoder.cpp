@@ -64,7 +64,8 @@ ggml_tensor * block_bidi(ggml_context *             ctx,
                          const GraniteNarDecBlock & view,
                          const BlockParams &        params,
                          int                        T_total,
-                         ggml_tensor *              positions) {
+                         ggml_tensor *              positions,
+                         bool                       use_flash) {
     const int64_t n_heads    = params.n_heads;
     const int64_t n_kv_heads = params.n_kv_heads;
     const int64_t n_groups   = n_heads / n_kv_heads;
@@ -95,34 +96,45 @@ ggml_tensor * block_bidi(ggml_context *             ctx,
     ggml_tensor * K_att = ggml_cont(ctx, ggml_permute(ctx, K, 0, 2, 1, 3));
     ggml_tensor * V_att = ggml_cont(ctx, ggml_permute(ctx, V, 0, 2, 1, 3));
 
-    // GQA: repeat each KV head across the n_groups Q heads.
-    ggml_tensor * K_full;
-    ggml_tensor * V_full;
-    if (n_groups == 1) {
-        K_full = K_att;
-        V_full = V_att;
+    ggml_tensor * o = nullptr;
+    if (use_flash) {
+        // flash_attn_ext broadcasts the n_kv_heads K/V across the n_heads Q
+        // heads itself and never materialises [T_total, T_total, n_heads]
+        // scores (~1.07 GB f32 per layer at the 4096-token cap). No mask:
+        // bidirectional. Result is [head_dim, n_heads, T_total].
+        o = ggml_flash_attn_ext(ctx, Q_att, K_att, V_att, /*mask=*/nullptr, scale_attn, /*max_bias=*/0.0f,
+                                /*logit_softcap=*/0.0f);
+        o = ggml_reshape_2d(ctx, o, static_cast<int64_t>(n_heads) * head_dim, T_total);
     } else {
-        ggml_tensor * K_4d  = ggml_reshape_4d(ctx, K_att, head_dim, T_total, 1, n_kv_heads);
-        ggml_tensor * V_4d  = ggml_reshape_4d(ctx, V_att, head_dim, T_total, 1, n_kv_heads);
-        ggml_tensor * K_tpl = ggml_new_tensor_4d(ctx, K_att->type, head_dim, T_total, n_groups, n_kv_heads);
-        ggml_tensor * V_tpl = ggml_new_tensor_4d(ctx, V_att->type, head_dim, T_total, n_groups, n_kv_heads);
-        ggml_tensor * K_rep = ggml_repeat(ctx, K_4d, K_tpl);
-        ggml_tensor * V_rep = ggml_repeat(ctx, V_4d, V_tpl);
-        K_full              = ggml_reshape_3d(ctx, K_rep, head_dim, T_total, n_heads);
-        V_full              = ggml_reshape_3d(ctx, V_rep, head_dim, T_total, n_heads);
+        // GQA: repeat each KV head across the n_groups Q heads.
+        ggml_tensor * K_full;
+        ggml_tensor * V_full;
+        if (n_groups == 1) {
+            K_full = K_att;
+            V_full = V_att;
+        } else {
+            ggml_tensor * K_4d  = ggml_reshape_4d(ctx, K_att, head_dim, T_total, 1, n_kv_heads);
+            ggml_tensor * V_4d  = ggml_reshape_4d(ctx, V_att, head_dim, T_total, 1, n_kv_heads);
+            ggml_tensor * K_tpl = ggml_new_tensor_4d(ctx, K_att->type, head_dim, T_total, n_groups, n_kv_heads);
+            ggml_tensor * V_tpl = ggml_new_tensor_4d(ctx, V_att->type, head_dim, T_total, n_groups, n_kv_heads);
+            ggml_tensor * K_rep = ggml_repeat(ctx, K_4d, K_tpl);
+            ggml_tensor * V_rep = ggml_repeat(ctx, V_4d, V_tpl);
+            K_full              = ggml_reshape_3d(ctx, K_rep, head_dim, T_total, n_heads);
+            V_full              = ggml_reshape_3d(ctx, V_rep, head_dim, T_total, n_heads);
+        }
+
+        // scores = (K^T Q) * scale_attn. ggml_mul_mat(K, Q) yields
+        // [T_total_k, T_total_q, n_heads].
+        ggml_tensor * kq      = ggml_mul_mat(ctx, K_full, Q_att);
+        // No mask (bidirectional). Use soft_max_ext with mask=nullptr for the
+        // scaling, then softmax.
+        ggml_tensor * kq_soft = ggml_soft_max_ext(ctx, kq, /*mask=*/nullptr, scale_attn, /*max_bias=*/0.0f);
+
+        ggml_tensor * V_t = ggml_cont(ctx, ggml_permute(ctx, V_full, 1, 0, 2, 3));
+        o                 = ggml_mul_mat(ctx, V_t, kq_soft);
+        o                 = ggml_cont(ctx, ggml_permute(ctx, o, 0, 2, 1, 3));
+        o                 = ggml_reshape_2d(ctx, o, static_cast<int64_t>(n_heads) * head_dim, T_total);
     }
-
-    // scores = (K^T Q) * scale_attn. ggml_mul_mat(K, Q) yields
-    // [T_total_k, T_total_q, n_heads].
-    ggml_tensor * kq      = ggml_mul_mat(ctx, K_full, Q_att);
-    // No mask (bidirectional). Use soft_max_ext with mask=nullptr for the
-    // scaling, then softmax.
-    ggml_tensor * kq_soft = ggml_soft_max_ext(ctx, kq, /*mask=*/nullptr, scale_attn, /*max_bias=*/0.0f);
-
-    ggml_tensor * V_t = ggml_cont(ctx, ggml_permute(ctx, V_full, 1, 0, 2, 3));
-    ggml_tensor * o   = ggml_mul_mat(ctx, V_t, kq_soft);
-    o                 = ggml_cont(ctx, ggml_permute(ctx, o, 0, 2, 1, 3));
-    o                 = ggml_reshape_2d(ctx, o, static_cast<int64_t>(n_heads) * head_dim, T_total);
 
     o = ggml_mul_mat(ctx, view.attn_o_w, o);
     o = ggml_scale(ctx, o, params.residual_mul);
@@ -145,7 +157,9 @@ ForwardBuild build_forward_graph(ggml_context *            ctx,
                                  const GraniteNarWeights & weights,
                                  const GraniteNarHParams & hp,
                                  int                       n_audio_tokens,
-                                 int                       n_text) {
+                                 int                       n_text,
+                                 bool                      use_flash,
+                                 bool                      full_logits) {
     ForwardBuild fb{};
     fb.n_audio_tokens = n_audio_tokens;
     fb.n_text         = n_text;
@@ -208,7 +222,7 @@ ForwardBuild build_forward_graph(ggml_context *            ctx,
 
     // Block stack.
     for (int il = 0; il < n_layer; ++il) {
-        x = block_bidi(ctx, x, weights.dec_blocks[il], params, fb.T_total, fb.positions_in);
+        x = block_bidi(ctx, x, weights.dec_blocks[il], params, fb.T_total, fb.positions_in, use_flash);
     }
 
     // Final RMSNorm.
@@ -220,22 +234,39 @@ ForwardBuild build_forward_graph(ggml_context *            ctx,
                                         ggml_element_size(x) * hidden * static_cast<size_t>(n_audio_tokens));
     text_x               = ggml_cont(ctx, text_x);
 
-    // LM head (tied to token_embd). The Granite-4 head divides by
-    // logits_scaling; we mirror it so dec.text_logits aligns numerically with
-    // the reference dump. Argmax is scale-invariant, so the transcript is
-    // unchanged by this division.
-    ggml_tensor * logits = ggml_mul_mat(ctx, weights.dec_embed.token_w, text_x);
-    if (hp.dec_logits_scaling > 0.0f && hp.dec_logits_scaling != 1.0f) {
-        logits = ggml_scale(ctx, logits, 1.0f / hp.dec_logits_scaling);
+    if (full_logits) {
+        // LM head (tied to token_embd). The Granite-4 head divides by
+        // logits_scaling; we mirror it so dec.text_logits aligns numerically
+        // with the reference dump. Argmax is scale-invariant, so the
+        // transcript is unchanged by this division.
+        ggml_tensor * logits = ggml_mul_mat(ctx, weights.dec_embed.token_w, text_x);
+        if (hp.dec_logits_scaling > 0.0f && hp.dec_logits_scaling != 1.0f) {
+            logits = ggml_scale(ctx, logits, 1.0f / hp.dec_logits_scaling);
+        }
+        // ne = [vocab, n_text]
+        named(logits, "dec.text_logits");
+        fb.out               = logits;
+        fb.dumps.text_logits = logits;
+        ggml_set_output(logits);
+        transcribe::debug::mark_tensor_for_dump(logits);
+        ggml_build_forward_expand(gf, fb.out);
+    } else {
+        // Argmax form: [vocab, n_text] f32 is ~0.8 GB at a 2000-row
+        // hypothesis, plus its host copy, for a result that is one id per row.
+        // Tiles are expanded in order so each tile's logits are retired before
+        // the next tile's are allocated. logits_scaling is skipped: dividing
+        // by a positive constant does not move the argmax.
+        for (int r0 = 0; r0 < n_text; r0 += kTextTileRows) {
+            const int     n = std::min(kTextTileRows, n_text - r0);
+            ggml_tensor * tv =
+                ggml_view_2d(ctx, text_x, hidden, n, text_x->nb[1], static_cast<size_t>(r0) * text_x->nb[1]);
+            ggml_tensor * id = ggml_argmax(ctx, ggml_mul_mat(ctx, weights.dec_embed.token_w, tv));  // [n] i32
+            ggml_set_output(id);
+            fb.text_ids.push_back(id);
+            ggml_build_forward_expand(gf, id);
+        }
     }
-    // ne = [vocab, n_text]
-    named(logits, "dec.text_logits");
-    fb.out               = logits;
-    fb.dumps.text_logits = logits;
-    ggml_set_output(logits);
-    transcribe::debug::mark_tensor_for_dump(logits);
 
-    ggml_build_forward_expand(gf, fb.out);
     if (fb.dumps.flat_embeds) {
         ggml_build_forward_expand(gf, fb.dumps.flat_embeds);
     }
@@ -256,23 +287,10 @@ void add_insertion_slots(const std::vector<int32_t> & hyp_ids, int32_t eos_id, s
     }
 }
 
-void argmax_collapse_drop_eos(const std::vector<float> & text_logits,
-                              int                        vocab,
-                              int                        n_text,
-                              int32_t                    eos_id,
-                              std::vector<int32_t> &     out_ids) {
+void collapse_drop_eos(const std::vector<int32_t> & row_ids, int32_t eos_id, std::vector<int32_t> & out_ids) {
     out_ids.clear();
     int32_t prev = -1;
-    for (int i = 0; i < n_text; ++i) {
-        const float * row    = text_logits.data() + static_cast<size_t>(i) * vocab;
-        int32_t       best   = 0;
-        float         best_v = row[0];
-        for (int v = 1; v < vocab; ++v) {
-            if (row[v] > best_v) {
-                best_v = row[v];
-                best   = v;
-            }
-        }
+    for (const int32_t best : row_ids) {
         if (best == eos_id) {
             prev = best;
             continue;
@@ -283,6 +301,27 @@ void argmax_collapse_drop_eos(const std::vector<float> & text_logits,
         out_ids.push_back(best);
         prev = best;
     }
+}
+
+void argmax_collapse_drop_eos(const std::vector<float> & text_logits,
+                              int                        vocab,
+                              int                        n_text,
+                              int32_t                    eos_id,
+                              std::vector<int32_t> &     out_ids) {
+    std::vector<int32_t> row_ids(static_cast<size_t>(std::max(n_text, 0)));
+    for (int i = 0; i < n_text; ++i) {
+        const float * row    = text_logits.data() + static_cast<size_t>(i) * vocab;
+        int32_t       best   = 0;
+        float         best_v = row[0];
+        for (int v = 1; v < vocab; ++v) {
+            if (row[v] > best_v) {
+                best_v = row[v];
+                best   = v;
+            }
+        }
+        row_ids[static_cast<size_t>(i)] = best;
+    }
+    collapse_drop_eos(row_ids, eos_id, out_ids);
 }
 
 }  // namespace transcribe::granite_nar

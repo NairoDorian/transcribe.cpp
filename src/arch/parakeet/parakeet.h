@@ -12,6 +12,7 @@
 #endif
 #include "decoder.h"
 #include "transcribe-backend.h"
+#include "transcribe-load-common.h"
 #include "transcribe-mel.h"
 #include "transcribe-model.h"
 #include "transcribe-session.h"
@@ -72,10 +73,19 @@ void compute_chunked_limited_with_rc_mask(float * out_buf,
 // left plus itself. This helper emits the equivalent compact layout used by
 // rel_pos_mhsa: [window, chunk_size, 1, n_chunks], contiguous in `window`,
 // where window = (left_chunks + 1)*chunk_size and
-// n_chunks = ceil(T/chunk_size). Prefix/tail K padding is -INF. Padded query
-// rows retain one finite cell to avoid an all-masked softmax; those rows are
-// removed from the graph output before the residual path.
-void compute_chunked_limited_window_mask(float * out_buf, int T, int chunk_size, int left_chunks);
+// n_chunks = ceil(T_alloc/chunk_size). T is the utterance's valid length and
+// T_alloc >= T the graph's padded length (the batch T_max; T itself when
+// unpadded): keys and queries at or past T are the utterance's padded tail
+// and are -INF. Padded query rows retain one finite cell to avoid an
+// all-masked softmax; those rows never reach the residual path.
+void compute_chunked_limited_window_mask(float * out_buf, int T, int T_alloc, int chunk_size, int left_chunks);
+
+// Bounded Regular-local mask (NeMo rel_pos_local_attn / att_context
+// [left, right]): query q attends to keys k with q - left <= k <= q + right.
+// Same compact layout and T / T_alloc contract as above with
+// window = left + chunk_size + right and block n's keys starting at
+// n*chunk_size - left.
+void compute_local_window_mask(float * out_buf, int T, int T_alloc, int chunk_size, int left, int right);
 
 // Family defaults — applied before transcribe::read_capability_kv runs
 // (KV present overrides, KV absent leaves the default). Defined in
@@ -97,12 +107,12 @@ struct ParakeetModel final : public transcribe_model {
     // load_common::init_backends (see transcribe-backend.h). plan's
     // scheduler_list owns the backends; the destructor frees them in
     // reverse order.
-    transcribe::BackendPlan plan;
-    ggml_backend_buffer_t   backend_buffer    = nullptr;
+    transcribe::BackendPlan                plan;
+    transcribe::load_common::WeightStorage weight_storage;
     // Encoder linear weights repacked for ggml's CPU GEMM kernels (CPU
-    // primary only; see load_common::alloc_cpu_repack_weights). Freed with
-    // backend_buffer.
-    ggml_backend_buffer_t   cpu_repack_buffer = nullptr;
+    // primary only; see load_common::alloc_cpu_repack_weights). Freed before
+    // weight_storage.
+    ggml_backend_buffer_t                  cpu_repack_buffer = nullptr;
 
     // Fused BN parameters live in a separate ggml context + buffer,
     // computed at load time from the raw BN tensors. Freed in dtor.

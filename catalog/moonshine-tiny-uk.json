@@ -5,8 +5,10 @@
   "display_name": "moonshine-tiny-uk",
   "params": 27092736,
   "license": {
-    "spdx": "mit",
-    "display": "MIT"
+    "spdx": "other",
+    "display": "Moonshine AI Community License",
+    "name": "moonshine-community-license",
+    "link": "https://github.com/moonshine-ai/moonshine/blob/main/LICENSE"
   },
   "upstream_repo": "UsefulSensors/moonshine-tiny-uk",
   "upstream_commit": "8cf70f4",
@@ -24,9 +26,9 @@
     "batching": {"supported":true,"verified":false}
   },
   "downloads": [
-    {"quant":"F32","filename":"moonshine-tiny-uk-F32.gguf","size_bytes":109969088},
-    {"quant":"F16","filename":"moonshine-tiny-uk-F16.gguf","size_bytes":59244224},
-    {"quant":"Q8_0","filename":"moonshine-tiny-uk-Q8_0.gguf","size_bytes":35466944}
+    {"quant":"F32","filename":"moonshine-tiny-uk-F32.gguf","size_bytes":109969120},
+    {"quant":"F16","filename":"moonshine-tiny-uk-F16.gguf","size_bytes":59244256},
+    {"quant":"Q8_0","filename":"moonshine-tiny-uk-Q8_0.gguf","size_bytes":35466976}
   ],
   "accuracy_benchmarks": [
     {"dataset":"fleurs","split":"test","language":"uk","quant":"Q8_0","metric":"wer","err_pct":18.76,"ci95":[17.7,19.93],"n_utts":750,"batch_size":8,"timestamps":"none","engine_sha":null,"measured_on":null,"errors":{"sub":2065,"del":229,"ins":402},"empty_hyp":0,"utts_over_50pct":40,"measurement_provenance":"legacy-published"},
@@ -49,6 +51,10 @@
     {"machine":"ryzen-4750u","backend":"cpu","quant":"Q8_0","sample":"uk-long","sample_duration_s":28.92,"total_ms":1458.1,"xrt_compute":19.83,"wall_ms":1462.0,"xrt_wall":19.78,"load_ms":99.6,"mel_ms":0.0,"encode_ms":219.0,"decode_ms":1239.1,"engine_sha":"522ccd68","publication_profile":"asr-publication-v2","measured_on":"2026-09-15","thermal_gated":null},
     {"machine":"ryzen-4750u","backend":"cpu","quant":"Q8_0","sample":"uk-short","sample_duration_s":10.98,"total_ms":264.0,"xrt_compute":41.6,"wall_ms":264.0,"xrt_wall":41.59,"load_ms":88.1,"mel_ms":0.0,"encode_ms":71.9,"decode_ms":192.1,"engine_sha":"522ccd68","publication_profile":"asr-publication-v2","measured_on":"2026-09-15","thermal_gated":null},
     {"machine":"ryzen-4750u","backend":"vulkan","quant":"Q8_0","sample":"uk-long","sample_duration_s":28.92,"total_ms":843.5,"xrt_compute":34.28,"wall_ms":843.9,"xrt_wall":34.27,"load_ms":80.6,"mel_ms":0.0,"encode_ms":117.4,"decode_ms":726.1,"engine_sha":"522ccd68","publication_profile":"asr-publication-v2","measured_on":"2026-09-15","thermal_gated":null},
-    {"machine":"ryzen-4750u","backend":"vulkan","quant":"Q8_0","sample":"uk-short","sample_duration_s":10.98,"total_ms":197.3,"xrt_compute":55.64,"wall_ms":197.5,"xrt_wall":55.58,"load_ms":81.7,"mel_ms":0.0,"encode_ms":43.8,"decode_ms":153.5,"engine_sha":"522ccd68","publication_profile":"asr-publication-v2","measured_on":"2026-09-15","thermal_gated":null}
+    {"machine":"ryzen-4750u","backend":"vulkan","quant":"Q8_0","sample":"uk-short","sample_duration_s":10.98,"total_ms":197.3,"xrt_compute":55.64,"wall_ms":197.5,"xrt_wall":55.58,"load_ms":81.7,"mel_ms":0.0,"encode_ms":43.8,"decode_ms":153.5,"engine_sha":"522ccd68","publication_profile":"asr-publication-v2","measured_on":"2026-09-15","thermal_gated":null},
+    {"machine":"m4","backend":"cpu","quant":"Q8_0","sample":"uk-long","sample_duration_s":28.92,"total_ms":484.7,"xrt_compute":59.67,"wall_ms":485.2,"xrt_wall":59.6,"load_ms":36.7,"mel_ms":0.0,"encode_ms":126.6,"decode_ms":358.1,"engine_sha":"db678a03","publication_profile":"asr-publication-v2","measured_on":"2026-10-22","thermal_gated":null},
+    {"machine":"m4","backend":"cpu","quant":"Q8_0","sample":"uk-short","sample_duration_s":10.98,"total_ms":106.6,"xrt_compute":102.98,"wall_ms":106.8,"xrt_wall":102.77,"load_ms":36.5,"mel_ms":0.0,"encode_ms":44.8,"decode_ms":61.8,"engine_sha":"db678a03","publication_profile":"asr-publication-v2","measured_on":"2026-10-22","thermal_gated":null},
+    {"machine":"m4","backend":"metal","quant":"Q8_0","sample":"uk-long","sample_duration_s":28.92,"total_ms":800.0,"xrt_compute":36.15,"wall_ms":800.2,"xrt_wall":36.14,"load_ms":116.1,"mel_ms":0.0,"encode_ms":80.6,"decode_ms":719.4,"engine_sha":"db678a03","publication_profile":"asr-publication-v2","measured_on":"2026-10-22","thermal_gated":null},
+    {"machine":"m4","backend":"metal","quant":"Q8_0","sample":"uk-short","sample_duration_s":10.98,"total_ms":161.9,"xrt_compute":67.81,"wall_ms":162.1,"xrt_wall":67.75,"load_ms":37.8,"mel_ms":0.0,"encode_ms":26.6,"decode_ms":135.3,"engine_sha":"db678a03","publication_profile":"asr-publication-v2","measured_on":"2026-10-22","thermal_gated":null}
   ]
 }

@@ -46,6 +46,21 @@ def load_profiles(path: pathlib.Path = PROFILE_PATH) -> dict:
         if data["profiles"].get(profile_id, {}).get("role") != role:
             raise ValueError(f"{path}: roles.{role} must name a defined profile "
                              f"whose role is {role!r}")
+    for profile_id, profile in data["profiles"].items():
+        targets = (profile.get("speed") or {}).get("targets") or []
+        if not isinstance(targets, list):
+            raise ValueError(f"{path}: {profile_id}.speed.targets must be a list")
+        for target in targets:
+            if not isinstance(target, dict) or not isinstance(target.get("machine"), str):
+                raise ValueError(f"{path}: {profile_id}.speed.targets entries must be "
+                                 f"objects with a machine name")
+            cap = target.get("max_model_gib")
+            if cap is not None and (isinstance(cap, bool)
+                                    or not isinstance(cap, (int, float))
+                                    or cap <= 0):
+                raise ValueError(f"{path}: {profile_id} target {target['machine']!r} "
+                                 f"max_model_gib must be a positive number of GiB, "
+                                 f"not {cap!r}")
     return data
 
 
@@ -213,6 +228,52 @@ def all_speed_samples(profile: dict, records: dict[str, dict]) -> list[str]:
     return sorted(samples)
 
 
+def published_gib(record: dict) -> float | None:
+    """The reference publication footprint of one variant, in GiB.
+
+    The Q8_0 quant is the published size proxy; a variant that publishes no
+    Q8_0 falls back to its largest published quant. None when the record
+    carries no sizes at all, so an unknown size never silently waives a cell.
+    """
+    sizes = {str(item.get("quant")): item.get("size_bytes")
+             for item in record.get("downloads", [])}
+    known = [size for size in sizes.values() if size]
+    if not known:
+        return None
+    reference = sizes.get("Q8_0") or max(known)
+    return reference / (1 << 30)
+
+
+def target_admits(record: dict, target: dict) -> bool:
+    """Whether a machine target is required to run this variant.
+
+    A target may declare `max_model_gib`: models whose reference publication
+    footprint is larger are outside that machine's scope, so their cells are
+    not required and `scripts/bench/run.py --profile` does not run them. This
+    expresses a policy for weak reference machines (a base M4 or a Ryzen
+    4750U class host) once per target instead of one hand-written exception
+    per large model.
+    """
+    cap = target.get("max_model_gib")
+    if cap is None:
+        return True
+    size = published_gib(record)
+    return size is None or size <= float(cap)
+
+
+def admission_reason(record: dict, target: dict) -> str | None:
+    """Why a target does not run this variant, or None when it does.
+
+    Shared by the per-variant drivers so an out-of-scope model fails with the
+    policy that excluded it instead of an empty cell list.
+    """
+    if target_admits(record, target):
+        return None
+    size = published_gib(record)
+    return (f"{size:.2f} GiB publication footprint exceeds the target's "
+            f"max_model_gib={float(target['max_model_gib']):g}")
+
+
 def expected_speed(record: dict, profile: dict) -> list[dict]:
     """Expand the exact publication speed matrix for one model."""
     if not governs(profile, record):
@@ -221,6 +282,8 @@ def expected_speed(record: dict, profile: dict) -> list[dict]:
     samples = speed_samples(record, profile)
     cells: list[dict] = []
     for target in spec.get("targets", []):
+        if not target_admits(record, target):
+            continue
         for backend in target.get("backends", []):
             for quant in _quants(spec["quants"], record):
                 for sample in samples:

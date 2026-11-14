@@ -332,6 +332,27 @@ transcribe_apply_warnings(transcribe_chunking_unit)
 add_test(NAME transcribe_chunking_unit COMMAND transcribe_chunking_unit)
 
 # -----------------------------------------------------------------------------
+# granite_nar BPE CTC pool: in-graph pooled head vs the frame-level reference
+# (pure host, no model)
+
+# Links granite_nar's encoder from libtranscribe, so it needs the family
+# compiled in (not a TRANSCRIBE_ARCH_DL plugin, and in the active model set).
+if("granite_nar" IN_LIST TRANSCRIBE_ACTIVE_MODELS AND NOT TRANSCRIBE_ARCH_DL)
+    add_executable(transcribe_granite_nar_bpe_pool_unit
+        granite_nar_bpe_pool_unit.cpp)
+
+    target_link_libraries(transcribe_granite_nar_bpe_pool_unit PRIVATE transcribe ggml)
+
+    target_include_directories(transcribe_granite_nar_bpe_pool_unit PRIVATE
+        ${CMAKE_SOURCE_DIR}/src)
+
+    transcribe_apply_warnings(transcribe_granite_nar_bpe_pool_unit)
+
+    add_test(NAME transcribe_granite_nar_bpe_pool_unit
+        COMMAND transcribe_granite_nar_bpe_pool_unit)
+endif()
+
+# -----------------------------------------------------------------------------
 # Per-run decode budget rule (pure host, no model)
 
 add_executable(transcribe_decode_budget_unit
@@ -420,6 +441,23 @@ add_test(NAME transcribe_conv_pw_promote_unit
     COMMAND transcribe_conv_pw_promote_unit)
 
 # -----------------------------------------------------------------------------
+# causal_lm::pack_gate_up: alias / copy / mismatch, no model needed
+# -----------------------------------------------------------------------------
+
+add_executable(transcribe_pack_gate_up_unit
+    pack_gate_up_unit.cpp)
+
+target_link_libraries(transcribe_pack_gate_up_unit PRIVATE transcribe ggml)
+
+target_include_directories(transcribe_pack_gate_up_unit PRIVATE
+    ${CMAKE_SOURCE_DIR}/src)
+
+transcribe_apply_warnings(transcribe_pack_gate_up_unit)
+
+add_test(NAME transcribe_pack_gate_up_unit
+    COMMAND transcribe_pack_gate_up_unit)
+
+# -----------------------------------------------------------------------------
 # Dispatcher-level transcribe_run behavior
 # -----------------------------------------------------------------------------
 
@@ -438,10 +476,10 @@ add_test(NAME transcribe_run_dispatch_unit
 
 # -----------------------------------------------------------------------------
 # Dispatcher units against fake arches: roles, host thread pool, non-finite
-# input, throwing stream hooks, DIARIZE and LANGID roles
+# input, throwing stream hooks, DIARIZE and LANGID roles, VAD segmentation
 # -----------------------------------------------------------------------------
 
-foreach(_t role_resolve run_on_threads nonfinite_input stream_hook_throw diarize_dispatch langid_dispatch)
+foreach(_t role_resolve run_on_threads nonfinite_input stream_hook_throw diarize_dispatch langid_dispatch vad_segments)
     add_executable(transcribe_${_t}_unit ${_t}_unit.cpp)
     target_link_libraries(transcribe_${_t}_unit PRIVATE transcribe)
     target_include_directories(transcribe_${_t}_unit PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -617,7 +655,9 @@ set(TRANSCRIBE_FIXTURE_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/arch_ecapa_tdnn_q8_0.gguf
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/arch_ecapa_tdnn_q8_0_as_f16.gguf
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/arch_ecapa_tdnn_bad_hop0.gguf
-    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/arch_ecapa_tdnn_bad_win_gt_fft.gguf)
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/arch_ecapa_tdnn_bad_win_gt_fft.gguf
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/arch_silero_vad.gguf
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/arch_silero_vad_misaligned.gguf)
 
 find_program(TRANSCRIBE_UV uv)
 
@@ -880,6 +920,36 @@ if(TRANSCRIBE_UV)
 endif()
 
 # -----------------------------------------------------------------------------
+# silero_vad (VAD role) fixture smoke
+# -----------------------------------------------------------------------------
+
+if(TRANSCRIBE_UV AND "silero_vad" IN_LIST TRANSCRIBE_ACTIVE_MODELS)
+    add_executable(transcribe_silero_vad_smoke silero_vad_smoke.cpp)
+    target_link_libraries(transcribe_silero_vad_smoke PRIVATE transcribe)
+    target_compile_definitions(transcribe_silero_vad_smoke PRIVATE
+        "TRANSCRIBE_TEST_FIXTURES_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures\"")
+    transcribe_apply_warnings(transcribe_silero_vad_smoke)
+    add_dependencies(transcribe_silero_vad_smoke fixtures)
+    add_test(NAME transcribe_silero_vad_smoke COMMAND transcribe_silero_vad_smoke)
+endif()
+
+# -----------------------------------------------------------------------------
+# Memory-mapped weights (no_mmap / TRANSCRIBE_NO_MMAP) across the fixture
+# families: mapping decision, mapped-vs-copied equivalence, misaligned and
+# truncated files, two models on one file, Metal when present.
+# -----------------------------------------------------------------------------
+
+if(TRANSCRIBE_UV)
+    add_executable(transcribe_weights_mmap_smoke weights_mmap_smoke.cpp)
+    target_link_libraries(transcribe_weights_mmap_smoke PRIVATE transcribe)
+    target_compile_definitions(transcribe_weights_mmap_smoke PRIVATE
+        "TRANSCRIBE_TEST_FIXTURES_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures\"")
+    transcribe_apply_warnings(transcribe_weights_mmap_smoke)
+    add_dependencies(transcribe_weights_mmap_smoke fixtures)
+    add_test(NAME transcribe_weights_mmap_smoke COMMAND transcribe_weights_mmap_smoke)
+endif()
+
+# -----------------------------------------------------------------------------
 # Real-model gated test (developer-local, never CI)
 # -----------------------------------------------------------------------------
 #
@@ -1003,9 +1073,9 @@ endif()
 # -----------------------------------------------------------------------------
 #
 # Phase 5 acceptance gate: end-to-end transcription on jfk.wav. Loads
-# a real Parakeet v2 GGUF, runs transcribe_run, and asserts the full
-# text is within Levenshtein edit distance 3 of the canonical JFK
-# reference text. Tensor-level numerical validation lives in
+# a real Parakeet v2 or Phonon-2 GGUF, runs transcribe_run, and asserts
+# the full text matches its JFK reference (edit distance 3 for v2,
+# exact for Phonon-2). Tensor-level numerical validation lives in
 # scripts/validate.py.
 # Also exercises every public result accessor (segment / word / token
 # levels) including the safe-sentinel out-of-bounds path.
@@ -1055,23 +1125,24 @@ if(TRANSCRIBE_BUILD_REAL_MODEL_TESTS)
         SKIP_RETURN_CODE 77)
 endif()
 
-# Hard adapter-position input limit in one-shot and batch moonshine_streaming.
+# moonshine_streaming input cap (81.92 s, the adapter position table): one-shot,
+# run_batch and streaming past it, on the default backend and CPU.
 # Skipped (RC 77) when TRANSCRIBE_MOONSHINE_STREAMING_TINY_GGUF is unset.
 if(TRANSCRIBE_BUILD_REAL_MODEL_TESTS)
-    add_executable(transcribe_moonshine_streaming_input_limit
-        moonshine_streaming_batch_truncation.cpp)
+    add_executable(transcribe_moonshine_streaming_input_cap
+        moonshine_streaming_input_cap.cpp)
 
-    target_link_libraries(transcribe_moonshine_streaming_input_limit
+    target_link_libraries(transcribe_moonshine_streaming_input_cap
         PRIVATE transcribe transcribe-common-example)
 
-    target_compile_definitions(transcribe_moonshine_streaming_input_limit PRIVATE
+    target_compile_definitions(transcribe_moonshine_streaming_input_cap PRIVATE
         "TRANSCRIBE_TEST_SAMPLES_DIR=\"${CMAKE_SOURCE_DIR}/samples\"")
 
-    transcribe_apply_warnings(transcribe_moonshine_streaming_input_limit)
+    transcribe_apply_warnings(transcribe_moonshine_streaming_input_cap)
 
-    add_test(NAME transcribe_moonshine_streaming_input_limit
-        COMMAND transcribe_moonshine_streaming_input_limit)
-    set_tests_properties(transcribe_moonshine_streaming_input_limit PROPERTIES
+    add_test(NAME transcribe_moonshine_streaming_input_cap
+        COMMAND transcribe_moonshine_streaming_input_cap)
+    set_tests_properties(transcribe_moonshine_streaming_input_cap PROPERTIES
         SKIP_RETURN_CODE 77)
 endif()
 
@@ -1496,6 +1567,24 @@ if(TRANSCRIBE_BUILD_REAL_MODEL_TESTS)
         COMMAND transcribe_ecapa_tdnn_real_smoke)
     set_tests_properties(transcribe_ecapa_tdnn_real_smoke PROPERTIES
         SKIP_RETURN_CODE 77)
+
+    # silero_vad on the VAD role: reference segments of jfk.wav, no speech
+    # in noise.wav and 20 ms streaming parity, on the CPU at 1 and 4
+    # threads. Gated by TRANSCRIBE_SILERO_VAD_GGUF / _V5_BIN / _V6_BIN
+    # (RC 77 skip).
+    if("silero_vad" IN_LIST TRANSCRIBE_ACTIVE_MODELS)
+        add_executable(transcribe_silero_vad_real_smoke
+            silero_vad_real_smoke.cpp)
+        target_link_libraries(transcribe_silero_vad_real_smoke
+            PRIVATE transcribe transcribe-common-example)
+        target_compile_definitions(transcribe_silero_vad_real_smoke PRIVATE
+            "TRANSCRIBE_TEST_SAMPLES_DIR=\"${CMAKE_SOURCE_DIR}/samples\"")
+        transcribe_apply_warnings(transcribe_silero_vad_real_smoke)
+        add_test(NAME transcribe_silero_vad_real_smoke
+            COMMAND transcribe_silero_vad_real_smoke)
+        set_tests_properties(transcribe_silero_vad_real_smoke PROPERTIES
+            SKIP_RETURN_CODE 77)
+    endif()
 endif()
 
 # -----------------------------------------------------------------------------

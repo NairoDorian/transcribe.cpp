@@ -5,9 +5,11 @@ date: 2026-10-05
 patches:
   patches/ggml/0001-fix-threadpool-oversubscription.patch
   patches/ggml/0002-backend-reg-filter.patch
-  patches/ggml/0002-export-cuda-pool-trim-and-graph-evict.patch
-  patches/ggml/0003-tq1_g128-ternary.patch
-  patches/ggml/0004-cuda-decode-kv-trim-and-mmvq-rows.patch
+  patches/ggml/0003-metal-mapped-buffer-null.patch
+  patches/ggml/0004-cpu-x86-score-os-xsave-check.patch
+  patches/ggml/0101-export-cuda-pool-trim-and-graph-evict.patch
+  patches/ggml/0102-tq1_g128-ternary.patch
+  patches/ggml/0103-cuda-decode-kv-trim-and-mmvq-rows.patch
 
 The `version` and `date` lines are conveniences for humans reviewing a pin bump:
 they are read from the vendored ggml/CMakeLists.txt and the upstream commit

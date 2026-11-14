@@ -9,6 +9,7 @@
 #include "ggml-backend.h"
 #include "ggml.h"
 #include "transcribe-backend.h"
+#include "transcribe-load-common.h"
 #include "transcribe-mel.h"
 #include "transcribe-model.h"
 #include "transcribe-session.h"
@@ -131,12 +132,17 @@ struct CohereModel final : public transcribe_model {
 
     // Runtime backend plan — see transcribe-backend.h. scheduler_list
     // holds the backend handles plus a classified primary kind.
-    transcribe::BackendPlan plan;
-    ggml_backend_buffer_t   backend_buffer = nullptr;
+    transcribe::BackendPlan                plan;
+    transcribe::load_common::WeightStorage weight_storage;
 
     // Fused BN parameters (same as Parakeet).
     ggml_context *        bn_fused_ctx    = nullptr;
     ggml_backend_buffer_t bn_fused_buffer = nullptr;
+
+    // pos_bias_u/v with the encoder Q bias folded in (fuse_encoder_q_bias);
+    // block attn_pos_u/v slots point here once the fusion has run.
+    ggml_context *        q_bias_fused_ctx    = nullptr;
+    ggml_backend_buffer_t q_bias_fused_buffer = nullptr;
 
     // On CPU primary backend, the conformer 1×1 pointwise conv weights
     // are dequantized F16->F32 at load time (Zen 2 has no native F16

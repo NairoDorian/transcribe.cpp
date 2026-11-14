@@ -145,6 +145,13 @@ export interface ModelOptions {
   /** Exact device returned by {@link getAvailableBackends}. Omit for the
    *  backend's automatic policy. Exact selection never falls back. */
   device?: BackendInfo;
+  /** Copy the weights into memory instead of memory-mapping the model file.
+   *  Default false: where the device can use host memory (CPU, Metal on Apple
+   *  silicon) the weights are served from the file's page cache, which the OS
+   *  can reclaim. Don't truncate or rewrite a mapped model file in place;
+   *  write a new file and rename it over the old one. The
+   *  `TRANSCRIBE_NO_MMAP=1` environment variable forces true. */
+  noMmap?: boolean;
 }
 
 export interface SessionOptions {
@@ -291,8 +298,11 @@ export type FamilyExtension =
 
 // ---- roles -----------------------------------------------------------------
 
-/** What a model serves: "asr" (transcription), "diarize" (speaker turns), "langid" (language). */
-export type Role = "asr" | "diarize" | "langid";
+/**
+ * What a model serves: "asr" (transcription), "diarize" (speaker turns),
+ * "langid" (language), "vad" (voice activity).
+ */
+export type Role = "asr" | "diarize" | "langid" | "vad";
 
 export interface DiarizeInfo {
   /** Input PCM rate. */
@@ -360,4 +370,54 @@ export interface LangIdResult {
   code: string | null;
   /** Unrestricted probability inside the allowed set (1 when unrestricted). */
   allowedMass: number;
+}
+
+export interface VadInfo {
+  /** Input PCM rate (16000). */
+  sampleRate: number;
+  /** Samples per probability (512 = 32 ms for Silero). */
+  frameSamples: number;
+}
+
+export interface VadSessionOptions {
+  /** CPU threads; 0 = library default. */
+  nThreads?: number;
+}
+
+/** Segmentation options for VadSession.run; omitted fields keep Silero's defaults. */
+export interface VadOptions {
+  /** Cancel the run cooperatively. */
+  signal?: AbortSignal;
+  /** A frame with p >= threshold is speech (default 0.5). */
+  threshold?: number;
+  /** Inside speech, p < negThreshold is silence; negative (default) = max(threshold - 0.15, 0.01). */
+  negThreshold?: number;
+  /** Shorter segments are dropped (default 250). */
+  minSpeechMs?: number;
+  /** Silence this long ends a segment (default 100). */
+  minSilenceMs?: number;
+  /** Padding added to each side of a segment (default 30). */
+  speechPadMs?: number;
+  /** Longer segments are split; 0 (default) = no limit. */
+  maxSpeechMs?: number;
+}
+
+export interface VadFeedOptions {
+  /** Cancel the feed cooperatively. */
+  signal?: AbortSignal;
+}
+
+/** One speech segment, in samples of the run's input: [startSample, endSample). */
+export interface VadSegment {
+  startSample: number;
+  endSample: number;
+}
+
+export interface VadResult {
+  /** Per-frame speech probabilities produced by this call (copied). */
+  probs: number[];
+  /** Stream frame index of probs[0]: 0 after run; frames scored before a feed / flush. */
+  firstFrame: number;
+  /** Speech segments; run only, empty after a feed or flush. */
+  segments: VadSegment[];
 }

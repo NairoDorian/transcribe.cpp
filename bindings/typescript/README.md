@@ -12,6 +12,13 @@ A matching prebuilt native package is selected automatically for your
 platform (`@transcribe-cpp/<platform>`); there is nothing to compile and no
 environment variables to set.
 
+On Windows, the prebuilt libraries are built with the Visual C++ 2022
+toolset and require the
+[Microsoft Visual C++ 2015–2022 Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+version 14.40 or newer. Older runtimes (for example the 2021-era 14.29
+redistributable) crash with a native access violation inside `std::mutex`
+during backend initialization.
+
 Upgrading from 0.1? See the
 [0.2 migration guide](https://github.com/handy-computer/transcribe.cpp/blob/main/docs/migrating-to-0.2.md),
 including the replacement of `gpuDevice` with exact device objects.
@@ -111,8 +118,9 @@ model.accepts({ kind: "whisper" }); // does this model take that extension?
 
 ### Diarization (DIARIZE role)
 
-`model.roles` lists what a model serves (`"asr"`, `"diarize"`; Sortformer is
-diarize-only). Calls for a role the model lacks throw `UnsupportedRole`.
+`model.roles` lists what a model serves (`"asr"`, `"diarize"`, `"langid"`,
+`"vad"`; Sortformer is diarize-only). Calls for a role the model lacks throw
+`UnsupportedRole`.
 
 ```ts
 const { sampleRate, maxSpeakers } = model.diarizeInfo;
@@ -141,9 +149,39 @@ const result = await lid.run(pcm, { allowed: ["en", "de", "fr"] });
 console.log(result.code, result.candidates[0].p, result.allowedMass);
 ```
 
+### Voice activity detection (VAD role)
+
+A `"vad"` model (Silero VAD) scores `model.vadInfo.frameSamples`-sample frames
+(512 = 32 ms at 16 kHz) with a speech probability. `run` scores a whole clip
+and segments it with Silero's `get_speech_timestamps` rules (options such as
+`threshold`, `minSilenceMs` and `maxSpeechMs`; samples are 16 kHz indices):
+
+```ts
+using vad = model.createVadSession();
+const { segments, probs } = await vad.run(pcm, { threshold: 0.5 });
+for (const s of segments) console.log(s.startSample, s.endSample);
+```
+
+For live audio, `streamFeed(chunk)` returns the probabilities of the frames
+each chunk completes (`firstFrame` is the index of `probs[0]`), `streamFlush()`
+scores the zero-padded remainder and ends the stream, and `streamReset()` drops
+it. The next feed after either starts at frame 0, as does the next feed after an
+abort or processing error.
+
+```ts
+for await (const chunk of mic) {
+  const { firstFrame, probs } = await vad.streamFeed(chunk);
+  probs.forEach((p, i) => console.log(firstFrame + i, p));
+}
+const tail = await vad.streamFlush();
+```
+
+A VAD stream is session state, not a stream lease: VAD calls raise `Busy` only
+while an ASR stream on the same model holds the lease.
+
 ### Resource management
 
-`TranscribeModel`, `Session`, `DiarizeSession`, `LangIdSession`, and `Stream` all implement
+`TranscribeModel`, `Session`, `DiarizeSession`, `LangIdSession`, `VadSession`, and `Stream` all implement
 `Symbol.dispose`, so `using` works (TypeScript 5.2+ / Node 22+):
 
 ```ts
@@ -187,6 +225,13 @@ const exact = await TranscribeModel.load("model.gguf", { device: cpu });
 `backend` defaults to `"auto"` (best accelerator, else CPU). A missing Vulkan
 loader/driver degrades silently to CPU; an explicit backend that cannot be
 satisfied raises a `BackendError`.
+
+Where the device can use host memory (CPU, Metal on Apple silicon), weights are
+memory-mapped from the model file and served from the page cache, which the OS
+can reclaim, instead of being copied into process memory. Don't truncate or
+rewrite a model file in place while it is loaded; write a new file and rename
+it over the old one. `{ noMmap: true }` (or `TRANSCRIBE_NO_MMAP=1`) copies the
+weights instead.
 
 ## Thread-safety
 
@@ -333,4 +378,4 @@ to your `build.rs` as `DEP_TRANSCRIBE_CPP_RUNTIME_DIR`.
 ## License
 
 MIT. Bundled native packages include third-party license texts (ggml, miniz,
-and any bundled backend runtimes).
+Silero VAD, and any bundled backend runtimes).

@@ -64,12 +64,23 @@ each per-variant doc has direct download links.
 
 ## Input limits
 
-No input-length limit, but the decoder is capped at its output window — about
-**17 minutes** of typical speech (a 4,096-token decode window, shared across
-variants). Offline, a transcript that reaches the cap is returned with
-`TRANSCRIBE_ERR_OUTPUT_TRUNCATED` (partial text retained); when streaming, the
-stream keeps its committed text and sets `transcribe_was_truncated()` while
-finalize still returns OK. See the [input-length contract](../input-limits.md).
+**81.9 s of audio per decode** (all variants). The encoder adapter adds a
+learned position embedding to every encoder frame from a 4,096-entry table, and
+one encoder frame is 20 ms; the reference implementation has no defined output
+past it either. `transcribe_capabilities::max_audio_ms` reports 81920.
+
+- **Offline** (`transcribe_run`, `transcribe_run_batch`): longer input is
+  rejected up front with `TRANSCRIBE_ERR_INPUT_TOO_LONG` (per utterance in a
+  batch). Split long recordings before transcribing them.
+- **Streaming**: a stream that runs past 81.9 s keeps its transcript up to the
+  cap, ignores later audio, sets `transcribe_was_truncated()` and logs one
+  `WARN`; feeds and finalize still return `TRANSCRIBE_OK`. Start a new stream
+  (for example at a pause) to keep transcribing.
+
+Within that window the decoder can still stop early: a transcript that reaches
+the generation budget is returned with `TRANSCRIBE_ERR_OUTPUT_TRUNCATED`
+offline (partial text retained), or flagged via `transcribe_was_truncated()`
+when streaming. See the [input-length contract](../input-limits.md).
 
 ## Quick start
 

@@ -7,6 +7,7 @@
 #include "ggml-backend.h"
 #include "ggml.h"
 #include "transcribe-backend.h"
+#include "transcribe-load-common.h"
 #include "transcribe-mel.h"
 #include "transcribe-model.h"
 #include "transcribe-session.h"
@@ -268,8 +269,8 @@ struct WhisperModel final : public transcribe_model {
     ggml_context * ctx_meta = nullptr;
 
     // Runtime backend plan. See transcribe-backend.h.
-    transcribe::BackendPlan plan;
-    ggml_backend_buffer_t   backend_buffer = nullptr;
+    transcribe::BackendPlan                plan;
+    transcribe::load_common::WeightStorage weight_storage;
 
     // Language token ids keyed by BCP-47 short code (from general.languages).
     // Resolves a params.language string to the <|lang_xx|> token id (whisper

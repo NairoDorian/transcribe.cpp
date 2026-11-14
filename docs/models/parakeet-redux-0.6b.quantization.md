@@ -30,7 +30,7 @@ of this port did) loses the format's whole point: the result is 7× larger than 
 checkpoint.
 
 So transcribe.cpp adds **`GGML_TYPE_TQ1_G128`** (id 96), shipped as the downstream ggml
-patch `patches/ggml/0003-tq1_g128-ternary.patch`:
+patch `patches/ggml/0102-tq1_g128-ternary.patch`:
 
 ```c
 // one block = 256 weights = two independent 128-weight groups, 56 bytes (1.75 bpw)

@@ -115,7 +115,7 @@ def ternary_weight_zero_fraction(weight: np.ndarray) -> float:
 
 
 # ---------------------------------------------------------------------------
-# thrush codes -> GGML_TYPE_TQ1_G128 (patches/ggml/0003), lossless
+# thrush codes -> GGML_TYPE_TQ1_G128 (patches/ggml/0102), lossless
 # ---------------------------------------------------------------------------
 
 #: ggml type id of the downstream group-128 ternary type (ggml.h).

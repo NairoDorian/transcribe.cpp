@@ -109,7 +109,7 @@ Compute latency (mel + encode + decode), speedup over realtime in parentheses.
 | CPU     | jfk (11.0s)  |  136 ms (80.68×) | 109 ms (101.09×) |
 | CPU     | dots (35.3s) |  794 ms (44.49×) |  685 ms (51.59×) |
 
-m4: transcribe.cpp `d42c3bb` on 2026-07-22.
+Apple M4: transcribe.cpp `d42c3bb` on 2026-07-22.
 <!-- /catalog -->
 
 Benchmark reproduction:

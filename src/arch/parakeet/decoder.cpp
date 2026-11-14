@@ -1235,6 +1235,27 @@ float token_confidence(const float * token_logits, int n_token_classes, std::vec
 
 }  // namespace
 
+int argmax_range_masked(const float * data, int n, const std::vector<uint8_t> * blocked) {
+    if (blocked == nullptr || blocked->empty()) {
+        return argmax_range(data, n);
+    }
+    const int n_mask = static_cast<int>(blocked->size());
+    int       best_i = -1;
+    float     best_v = 0.0f;
+    for (int i = 0; i < n; ++i) {
+        if (i < n_mask && (*blocked)[static_cast<size_t>(i)] != 0) {
+            continue;
+        }
+        if (best_i < 0 || data[i] > best_v) {
+            best_v = data[i];
+            best_i = i;
+        }
+    }
+    // Every id blocked cannot happen (blank is never a locale tag); keep the
+    // plain argmax as the defined answer rather than an out-of-range id.
+    return best_i < 0 ? argmax_range(data, n) : best_i;
+}
+
 // ---------------------------------------------------------------------------
 // Greedy decode driver
 // ---------------------------------------------------------------------------
@@ -1526,12 +1547,13 @@ transcribe_status decode_tdt_greedy(const HostDecoderWeights & w,
 // duration). Matches the reference dump points (`dec.embed.0`,
 // `dec.lstm.{layer}.{h,c}.0`, `dec.joint.0`) emitted on iter 1.
 
-transcribe_status decode_rnnt_greedy(const HostDecoderWeights & w,
-                                     const float *              enc_out,
-                                     int                        T_enc,
-                                     int                        d_enc,
-                                     int                        n_threads,
-                                     std::vector<TdtToken> &    out_tokens) {
+transcribe_status decode_rnnt_greedy(const HostDecoderWeights &   w,
+                                     const float *                enc_out,
+                                     int                          T_enc,
+                                     int                          d_enc,
+                                     int                          n_threads,
+                                     std::vector<TdtToken> &      out_tokens,
+                                     const std::vector<uint8_t> * blocked_tokens) {
     if (enc_out == nullptr || T_enc <= 0 || d_enc <= 0) {
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
@@ -1665,8 +1687,9 @@ transcribe_status decode_rnnt_greedy(const HostDecoderWeights & w,
         t_joint_us += t2 - t1;
 
         // RNNT joint output is just `n_token_cls` floats (no duration extras).
+        // The same line serves the serial joint and the frame-batched window.
         const float * token_logits = frame_logits;
-        const int     pred_token   = argmax_range(token_logits, n_token_cls);
+        const int     pred_token   = argmax_range_masked(token_logits, n_token_cls, blocked_tokens);
 
         if (iter == 1 && transcribe::debug::enabled()) {
             const long long s_h = H;
@@ -1745,7 +1768,8 @@ transcribe_status decode_rnnt_greedy_streaming(const HostDecoderWeights &      w
                                                int                             frame_offset,
                                                int                             n_threads,
                                                std::vector<TdtToken> &         out_tokens,
-                                               ParakeetStreamingDecoderGraph * dec_graph) {
+                                               ParakeetStreamingDecoderGraph * dec_graph,
+                                               const std::vector<uint8_t> *    blocked_tokens) {
     if (enc_out == nullptr || T_enc_new <= 0 || d_enc <= 0) {
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
@@ -1895,7 +1919,7 @@ transcribe_status decode_rnnt_greedy_streaming(const HostDecoderWeights &      w
         }
 
         const float * token_logits = logits.data();
-        const int     pred_token   = argmax_range(token_logits, n_token_cls);
+        const int     pred_token   = argmax_range_masked(token_logits, n_token_cls, blocked_tokens);
 
         const bool is_blank = (pred_token == blank_id);
         if (is_blank) {

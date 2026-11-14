@@ -24,6 +24,7 @@
 #include "transcribe-debug.h"
 #include "transcribe-env.h"
 #include "transcribe-graph-opt.h"
+#include "transcribe-lang.h"
 #include "transcribe-load-common.h"
 #include "transcribe-loader.h"
 #include "transcribe-log.h"
@@ -406,6 +407,8 @@ extern transcribe_status load(Loader &, const transcribe_model_load_params *, tr
 extern transcribe_status init_context(transcribe_model *, const transcribe_session_params *, transcribe_session **);
 extern transcribe_status run(transcribe_session *, const float *, int, const transcribe_run_params *);
 
+static bool is_lang_tag_piece(const std::string & p);
+
 transcribe_status load(Loader & loader, const transcribe_model_load_params * params, transcribe_model ** out_model) {
     // The dispatcher has verified out_model is non-null and cleared it,
     // and the loader has a valid gguf_context.
@@ -655,6 +658,22 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
         return st;
     }
 
+    // Locale-tag tokens, for the language allowlist. Only an RNN-T head with
+    // a real tag set can honour it: the mask acts on the tags the decoder
+    // emits (nemotron-3.5 marks every segment with one).
+    for (int id = 0; id < m->tok.n_tokens(); ++id) {
+        const std::string & piece = m->tok.token(id);
+        if (is_lang_tag_piece(piece)) {
+            m->lang_tag_ids.push_back(id);
+            m->lang_tag_codes.push_back(piece.substr(1, piece.size() - 2));
+        } else if (piece == "<" || piece == "\xE2\x96\x81<") {
+            m->lang_tag_opener_ids.push_back(id);
+        }
+    }
+    if (m->host_decoder.head_kind == HostHeadKind::RNNT && m->lang_tag_ids.size() >= 2) {
+        transcribe::set_feature(m.get(), TRANSCRIBE_FEATURE_LANGUAGE_ALLOWLIST, true);
+    }
+
     // Multitalker bundle post-load: fuse the diarizer conformer's BN (needs
     // uploaded data), build its ceil-framed mel frontend, and publish the
     // DIARIZATION capability — for a bundle it is a property of the file.
@@ -864,6 +883,68 @@ static double parakeet_ms_per_enc_frame(const ParakeetHParams & hp) {
 // activation for ONE utterance; utt_index >= 0 tags the per-utterance
 // dump (-1 for single-shot). Writes the session result slot (tokens /
 // words / segments / full_text / result_kind / has_result).
+// Language allowlist -> blocked-token mask (token id -> 1 when the decoder
+// must never emit it). Empty when the request does not restrict detection:
+// an explicit `language`, or no list. Codes resolve against the model's
+// locale tags with transcribe-lang.h matching ("fr" allows <fr-FR> and
+// <fr-CA>). The allowlist is intersected with what the model can detect: a
+// code it cannot is skipped with a WARN (one list can serve every model of
+// a multi-model host), and only an empty intersection is
+// UNSUPPORTED_LANGUAGE. Pieces that open a spelled-out tag are blocked too
+// (see lang_tag_opener_ids).
+static transcribe_status resolve_language_block_mask(const ParakeetModel *         pm,
+                                                     const transcribe_run_params * params,
+                                                     std::vector<uint8_t> &        mask) {
+    mask.clear();
+    if (params == nullptr || params->language != nullptr || params->n_allowed_languages <= 0 ||
+        params->allowed_languages == nullptr) {
+        return TRANSCRIBE_OK;
+    }
+    if (!transcribe::has_feature(pm, TRANSCRIBE_FEATURE_LANGUAGE_ALLOWLIST)) {
+        return TRANSCRIBE_ERR_UNSUPPORTED_LANGUAGE;
+    }
+    std::vector<uint8_t> allowed(pm->lang_tag_ids.size(), 0);
+    int                  n_resolved = 0;
+    for (int32_t i = 0; i < params->n_allowed_languages; ++i) {
+        const char * code = params->allowed_languages[i];
+        if (code == nullptr || code[0] == '\0') {
+            return TRANSCRIBE_ERR_INVALID_ARG;
+        }
+        const std::vector<int> hits = transcribe::lang::resolve_all(code, pm->lang_tag_codes);
+        if (hits.empty()) {
+            log_msg(TRANSCRIBE_LOG_LEVEL_WARN,
+                    "parakeet: allowed language \"%s\" is not one this model can detect; skipping it", code);
+            continue;
+        }
+        n_resolved += 1;
+        for (const int k : hits) {
+            allowed[static_cast<size_t>(k)] = 1;
+        }
+    }
+    if (n_resolved == 0) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet: none of the %d allowed languages is one this model can detect",
+                params->n_allowed_languages);
+        return TRANSCRIBE_ERR_UNSUPPORTED_LANGUAGE;
+    }
+    int max_id = 0;
+    for (const int id : pm->lang_tag_ids) {
+        max_id = std::max(max_id, id);
+    }
+    for (const int id : pm->lang_tag_opener_ids) {
+        max_id = std::max(max_id, id);
+    }
+    mask.assign(static_cast<size_t>(max_id) + 1, 0);
+    for (size_t k = 0; k < pm->lang_tag_ids.size(); ++k) {
+        if (allowed[k] == 0) {
+            mask[static_cast<size_t>(pm->lang_tag_ids[k])] = 1;
+        }
+    }
+    for (const int id : pm->lang_tag_opener_ids) {
+        mask[static_cast<size_t>(id)] = 1;
+    }
+    return TRANSCRIBE_OK;
+}
+
 static transcribe_status decode_and_populate(ParakeetSession *             pc,
                                              ParakeetModel *               pm,
                                              const transcribe_run_params * params,
@@ -895,6 +976,12 @@ static transcribe_status decode_and_populate(ParakeetSession *             pc,
             dump_name.c_str(), enc, static_cast<long long>(T_enc) * static_cast<long long>(d_enc), shape, 2, stage);
     }
 
+    std::vector<uint8_t> language_block_mask;
+    if (const transcribe_status st = resolve_language_block_mask(pm, params, language_block_mask);
+        st != TRANSCRIBE_OK) {
+        return st;
+    }
+
     pc->raw_tokens.clear();
     const int64_t t_dec_start = ggml_time_us();
     {
@@ -904,7 +991,8 @@ static transcribe_status decode_and_populate(ParakeetSession *             pc,
                 st = decode_tdt_greedy(pm->host_decoder, enc, T_enc, d_enc, pc->n_threads, pc->raw_tokens);
                 break;
             case HostHeadKind::RNNT:
-                st = decode_rnnt_greedy(pm->host_decoder, enc, T_enc, d_enc, pc->n_threads, pc->raw_tokens);
+                st = decode_rnnt_greedy(pm->host_decoder, enc, T_enc, d_enc, pc->n_threads, pc->raw_tokens,
+                                        &language_block_mask);
                 break;
             case HostHeadKind::CTC:
                 st = decode_ctc_greedy(pm->host_decoder, enc, T_enc, d_enc, pc->n_threads, pc->raw_tokens);
@@ -948,6 +1036,13 @@ transcribe_status build_result_from_raw_tokens(ParakeetSession *             pc,
     // is_strippable_special for the detection rules.
     const bool strip_tags = (params == nullptr) ? true : !params->keep_special_tags;
     for (const TdtToken & rt : pc->raw_tokens) {
+        // The first locale tag the decoder emitted is the detected language
+        // (nemotron-3.5 marks each segment; with an allowlist it is always
+        // one of the allowed languages).
+        if (pc->detected_language.empty() && is_lang_tag_piece(tok.token(rt.id))) {
+            const std::string & piece = tok.token(rt.id);
+            pc->detected_language     = piece.substr(1, piece.size() - 2);
+        }
         if (strip_tags && is_strippable_special(tok, rt.id)) {
             continue;
         }
@@ -2908,7 +3003,7 @@ transcribe_status emit_streaming_chunk(ParakeetSession * pc,
     if (const transcribe_status st = decode_rnnt_greedy_streaming(
             pm->host_decoder, pc->enc_host.data(), T_q_new, d_enc, pc->stream_dec_state.lstm_state,
             pc->stream_dec_state.prev_token_id, static_cast<int>(pc->stream_dec_state.frame_offset), pc->n_threads,
-            pc->raw_tokens, pc->stream_dec_state.dec_graph.get());
+            pc->raw_tokens, pc->stream_dec_state.dec_graph.get(), &pc->stream_language_block_mask);
         st != TRANSCRIBE_OK) {
         return st;
     }
@@ -2970,6 +3065,10 @@ void rebuild_streaming_result_text(ParakeetSession * pc, const ParakeetModel * p
     std::vector<int32_t> all_ids;
     all_ids.reserve(pc->raw_tokens.size());
     for (const auto & tk : pc->raw_tokens) {
+        if (pc->detected_language.empty() && is_lang_tag_piece(tok.token(tk.id))) {
+            const std::string & piece = tok.token(tk.id);
+            pc->detected_language     = piece.substr(1, piece.size() - 2);
+        }
         if (strip_tags && is_strippable_special(tok, tk.id)) {
             continue;
         }
@@ -3324,7 +3423,7 @@ transcribe_status emit_buffered_chunk(ParakeetSession * pc,
     if (const transcribe_status st = decode_rnnt_greedy_streaming(
             pm->host_decoder, enc_chunk, T_to_decode, d_enc, pc->stream_dec_state.lstm_state,
             pc->stream_dec_state.prev_token_id, static_cast<int>(pc->stream_dec_state.frame_offset), pc->n_threads,
-            pc->raw_tokens, pc->stream_dec_state.dec_graph.get());
+            pc->raw_tokens, pc->stream_dec_state.dec_graph.get(), &pc->stream_language_block_mask);
         st != TRANSCRIBE_OK) {
         return st;
     }
@@ -3498,13 +3597,20 @@ transcribe_status resolve_cache_aware_stream_geom(const ParakeetModel *         
 // Pre-flight: validate caller extension fields without mutating state.
 // Called by the dispatcher before clear_result, so a rejection leaves the
 // previous snapshot intact. stream_begin re-runs the same resolvers.
-transcribe_status stream_validate(const transcribe_session * session,
-                                  const transcribe_run_params * /*run_params*/,
+transcribe_status stream_validate(const transcribe_session *       session,
+                                  const transcribe_run_params *    run_params,
                                   const transcribe_stream_params * stream_params) {
     const auto * pc = static_cast<const ParakeetSession *>(session);
     const auto * pm = static_cast<const ParakeetModel *>(pc->model);
     if (pm == nullptr || pm->plan.scheduler_list.empty()) {
         return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+    {
+        std::vector<uint8_t> language_block_mask;
+        if (const transcribe_status st = resolve_language_block_mask(pm, run_params, language_block_mask);
+            st != TRANSCRIBE_OK) {
+            return st;
+        }
     }
 
     const bool is_chunked_limited =
@@ -3535,6 +3641,14 @@ transcribe_status stream_begin(transcribe_session *             session,
 
     // Streaming may run without going through run(), so init the dumper here.
     transcribe::debug::init();
+
+    // Language allowlist for the whole stream: run_params points at
+    // library-owned copies (see transcribe_stream_begin), but the mask is
+    // resolved once here and applied at every decode step.
+    if (const transcribe_status st = resolve_language_block_mask(pm, run_params, pc->stream_language_block_mask);
+        st != TRANSCRIBE_OK) {
+        return st;
+    }
 
     // Defense in depth (the dispatcher already gates on supports_streaming).
     const bool is_chunked_limited =

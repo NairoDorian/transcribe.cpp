@@ -319,6 +319,16 @@ int run_asr_batch(const cli_args & args, std::ofstream * output) {
     if (!args.language.empty()) {
         rp.language = args.language.c_str();
     }
+    // --allow also restricts ASR automatic language detection
+    // (TRANSCRIBE_FEATURE_LANGUAGE_ALLOWLIST); ignored when -l is given.
+    std::vector<const char *> allowed_ptrs;
+    for (const std::string & code : args.langid_allow) {
+        allowed_ptrs.push_back(code.c_str());
+    }
+    if (!allowed_ptrs.empty()) {
+        rp.allowed_languages   = allowed_ptrs.data();
+        rp.n_allowed_languages = static_cast<int32_t>(allowed_ptrs.size());
+    }
     if (!args.target_language.empty()) {
         rp.target_language = args.target_language.c_str();
     }
@@ -731,6 +741,16 @@ int run_asr_file(const cli_args &           args,
     apply_prompting(args, rp, vocabulary_ptrs);
     if (!args.language.empty()) {
         rp.language = args.language.c_str();
+    }
+    // --allow also restricts ASR automatic language detection
+    // (TRANSCRIBE_FEATURE_LANGUAGE_ALLOWLIST); ignored when -l is given.
+    std::vector<const char *> allowed_ptrs;
+    for (const std::string & code : args.langid_allow) {
+        allowed_ptrs.push_back(code.c_str());
+    }
+    if (!allowed_ptrs.empty()) {
+        rp.allowed_languages   = allowed_ptrs.data();
+        rp.n_allowed_languages = static_cast<int32_t>(allowed_ptrs.size());
     }
     if (!args.target_language.empty()) {
         rp.target_language = args.target_language.c_str();

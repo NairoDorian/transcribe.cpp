@@ -4,6 +4,25 @@ Read `CONTRIBUTING.md` for contribution policy, review gates, and coding
 style. This file is only the local command/automation convention sheet for
 coding agents.
 
+## Paired development with ZER0
+
+This engine fork and the local ZER0 app (`Handy_V2`) are complementary projects.
+Before changing audio preprocessing, VAD, streaming defaults, model capabilities,
+bindings, or a behavior consumed by the app, read
+[`docs/zer0-engine-integration.md`](docs/zer0-engine-integration.md), locate the
+peer checkout/worktree, and read its `AGENTS.md` and
+`docs/TRANSCRIBE_CPP_INTEGRATION.md`. Inspect the real Rust call sites as well as
+the C++ implementation; a defaulted option can enable behavior implicitly.
+
+Usual peer path: `C:/Users/Z/Downloads/PROJECTS/Handy_V2`. Use `git worktree list`
+when a feature lives elsewhere. Check both branches/dirty states and the app's
+Cargo pin/native build identity. Preserve unrelated work. When moving ownership
+or changing a shared contract, update both integration notes and test both sides.
+The overall roadmap is
+[`docs/plans/2026-11-fork-master-plan.md`](docs/plans/2026-11-fork-master-plan.md);
+the VAD/RNNoise engineering contract is
+[`docs/plans/2026-10-three-tier-super-vad-and-firered-architecture-plan.md`](docs/plans/2026-10-three-tier-super-vad-and-firered-architecture-plan.md).
+
 ## Python
 
 - ALWAYS use `uv run` for every Python invocation. Never bare `python`,
@@ -16,12 +35,13 @@ coding agents.
 uv run --project scripts/envs/<family> scripts/<script>.py ...
 ```
 
-- **Backlog (deferred, not started):** every env under `scripts/envs/` should
-  eventually get its dependencies bumped to latest — and where the env uses
-  PyTorch, to the nightly CUDA index matching the local toolkit (the parakeet
-  port env is the reference for this: `https://download.pytorch.org/whl/nightly/cu134`
-  for a CUDA 13.4 host). Do this as a dedicated refresh pass later; never mix
-  fleet-wide dep bumps into a behavior-change commit.
+- **Env refresh:** keep every env under `scripts/envs/` on its latest
+  dependencies with `uv lock --upgrade` in each env directory — and where the
+  env uses PyTorch, on the nightly CUDA index matching the local toolkit (the
+  parakeet port env is the reference: `https://download.pytorch.org/whl/nightly/cu134`
+  for a CUDA 13.4 host). Last done 2026-11-14 (all 23 relocked, floors
+  unchanged). Do it as its own commit; never mix fleet-wide dep bumps into a
+  behavior-change commit.
 
 ## Build
 

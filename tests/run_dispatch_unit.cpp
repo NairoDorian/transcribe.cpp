@@ -758,7 +758,49 @@ void test_prompting_short_struct_reads_defaults() {
     CHECK(prompt_run(model, p) == TRANSCRIBE_OK);
     CHECK(g_seen_params.vocabulary == nullptr && g_seen_params.n_vocabulary == 0);
     CHECK(g_seen_params.prompt == nullptr && g_seen_params.prefix == nullptr);
+    CHECK(g_seen_params.n_allowed_languages == 0 && g_seen_params.allowed_languages == nullptr);
     CHECK(g_seen_params.struct_size == old_size);
+}
+
+// The language allowlist contract at the dispatcher: shape errors are
+// INVALID_ARG, a non-empty list on a model without the feature is rejected
+// (never silently ignored), an explicit language wins, and with the feature
+// the list reaches the family untouched.
+void test_language_allowlist_validation() {
+    transcribe_model model;
+    model.arch           = &capture_arch();
+    const char * langs[] = { "fr", "en-US" };
+
+    transcribe_run_params p;
+    transcribe_run_params_init(&p);
+    CHECK(p.n_allowed_languages == 0 && p.allowed_languages == nullptr);
+    CHECK(prompt_run(model, p) == TRANSCRIBE_OK);
+
+    p.allowed_languages   = langs;
+    p.n_allowed_languages = 2;
+    CHECK(prompt_run(model, p) == TRANSCRIBE_ERR_UNSUPPORTED_LANGUAGE);
+
+    // An explicit language wins: the list is not read at all.
+    p.language = "fr";
+    CHECK(prompt_run(model, p) == TRANSCRIBE_OK);
+    p.language = nullptr;
+
+    transcribe::set_feature(&model, TRANSCRIBE_FEATURE_LANGUAGE_ALLOWLIST, true);
+    CHECK(prompt_run(model, p) == TRANSCRIBE_OK);
+    CHECK(g_seen_params.allowed_languages == langs && g_seen_params.n_allowed_languages == 2);
+
+    // Shape.
+    p.n_allowed_languages = -1;
+    CHECK(prompt_run(model, p) == TRANSCRIBE_ERR_INVALID_ARG);
+    p.n_allowed_languages = 2;
+    p.allowed_languages   = nullptr;
+    CHECK(prompt_run(model, p) == TRANSCRIBE_ERR_INVALID_ARG);
+    const char * empty_entry[] = { "fr", "" };
+    p.allowed_languages        = empty_entry;
+    CHECK(prompt_run(model, p) == TRANSCRIBE_ERR_INVALID_ARG);
+    const char * null_entry[] = { nullptr, "fr" };
+    p.allowed_languages       = null_entry;
+    CHECK(prompt_run(model, p) == TRANSCRIBE_ERR_INVALID_ARG);
 }
 
 void test_prompting_batch_rejects_prefix() {
@@ -804,5 +846,6 @@ int main() {
     test_prompting_validation();
     test_prompting_short_struct_reads_defaults();
     test_prompting_batch_rejects_prefix();
+    test_language_allowlist_validation();
     return g_failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

@@ -10,8 +10,9 @@
 
 #include <stdint.h>
 
-// Arch now includes the VAD ops table; rebuild modules from earlier layouts.
-#define TRANSCRIBE_ARCH_PLUGIN_ABI_VERSION 3
+// Session base gained the stream language-allowlist storage (ABI 4; ABI 3 added
+// the VAD ops table to Arch); rebuild modules from earlier layouts.
+#define TRANSCRIBE_ARCH_PLUGIN_ABI_VERSION 4
 
 #if defined(_WIN32)
 #    define TRANSCRIBE_PLUGIN_EXPORT __declspec(dllexport)

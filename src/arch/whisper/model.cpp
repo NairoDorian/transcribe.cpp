@@ -16,6 +16,7 @@
 #include "transcribe-debug.h"
 #include "transcribe-env.h"
 #include "transcribe-flash-policy.h"
+#include "transcribe-lang.h"
 #include "transcribe-load-common.h"
 #include "transcribe-loader.h"
 #include "transcribe-log.h"
@@ -535,6 +536,9 @@ transcribe_status whisper_load(Loader &                             loader,
             m->lang_token_ids.push_back(static_cast<int32_t>(id));
         }
     }
+    // Multilingual checkpoints pick the language as an argmax over the
+    // language tokens, which an allowlist can restrict exactly.
+    transcribe::set_feature(m.get(), TRANSCRIBE_FEATURE_LANGUAGE_ALLOWLIST, m->lang_token_ids.size() >= 2);
 
     m->t_load_us = ggml_time_us() - t_load_start;
     *out_model   = m.release();
@@ -934,6 +938,49 @@ transcribe_status load_mel_from_ref(const char * ref_dir, int n_mels, int n_mel_
 
 namespace {
 
+// Language allowlist for the detection pass: allowed[i] != 0 when
+// cm.lang_codes[i] / cm.lang_token_ids[i] may be detected. Empty when the
+// request does not restrict detection (explicit `language`, or no list).
+// Codes this model cannot detect are skipped with a WARN (transcribe-lang.h
+// matching); only an allowlist with none it can detect is
+// UNSUPPORTED_LANGUAGE.
+transcribe_status whisper_allowed_languages(const WhisperModel &          cm,
+                                            const transcribe_run_params * params,
+                                            std::vector<uint8_t> &        allowed) {
+    allowed.clear();
+    if (params == nullptr || params->language != nullptr || params->n_allowed_languages <= 0 ||
+        params->allowed_languages == nullptr) {
+        return TRANSCRIBE_OK;
+    }
+    if (cm.lang_token_ids.size() < 2 || cm.lang_token_ids.size() != cm.lang_codes.size()) {
+        return TRANSCRIBE_ERR_UNSUPPORTED_LANGUAGE;
+    }
+    allowed.assign(cm.lang_codes.size(), 0);
+    int n_resolved = 0;
+    for (int32_t i = 0; i < params->n_allowed_languages; ++i) {
+        const char * code = params->allowed_languages[i];
+        if (code == nullptr || code[0] == '\0') {
+            return TRANSCRIBE_ERR_INVALID_ARG;
+        }
+        const std::vector<int> hits = transcribe::lang::resolve_all(code, cm.lang_codes);
+        if (hits.empty()) {
+            log_msg(TRANSCRIBE_LOG_LEVEL_WARN,
+                    "whisper: allowed language \"%s\" is not one this model can detect; skipping it", code);
+            continue;
+        }
+        n_resolved += 1;
+        for (const int k : hits) {
+            allowed[static_cast<size_t>(k)] = 1;
+        }
+    }
+    if (n_resolved == 0) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "whisper: none of the %d allowed languages is one this model can detect",
+                params->n_allowed_languages);
+        return TRANSCRIBE_ERR_UNSUPPORTED_LANGUAGE;
+    }
+    return TRANSCRIBE_OK;
+}
+
 bool whisper_has_generic_prompt(const transcribe_run_params * params) {
     return params != nullptr && (params->n_vocabulary > 0 || transcribe::prompting::has_text(params->prompt));
 }
@@ -1293,6 +1340,10 @@ transcribe_status whisper_run(transcribe_session *          session,
     auto * cm = static_cast<WhisperModel *>(cc->model);
     if (cm == nullptr || cm->plan.scheduler_list.empty()) {
         return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+    std::vector<uint8_t> allowed_langs;
+    if (const transcribe_status st = whisper_allowed_languages(*cm, params, allowed_langs); st != TRANSCRIBE_OK) {
+        return st;
     }
 
     if (cc->poll_abort()) {
@@ -1821,6 +1872,9 @@ transcribe_status whisper_run(transcribe_session *          session,
             float best       = -INFINITY;
             int   best_index = -1;
             for (size_t i = 0; i < cm->lang_token_ids.size(); ++i) {
+                if (!allowed_langs.empty() && allowed_langs[i] == 0) {
+                    continue;  // outside the language allowlist
+                }
                 const int32_t id = cm->lang_token_ids[i];
                 if (id >= 0 && id < static_cast<int>(vocab_size)) {
                     const float v = last_logits[static_cast<size_t>(id)];
@@ -2685,6 +2739,10 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
     if (cm == nullptr || cm->plan.scheduler_list.empty() || !cm->mel.has_value()) {
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
+    std::vector<uint8_t> allowed_langs;
+    if (const transcribe_status st = whisper_allowed_languages(*cm, params, allowed_langs); st != TRANSCRIBE_OK) {
+        return st;
+    }
 
     // Resolve the whisper run-ext (NULL → shipping defaults).
     if (const transcribe_status st =
@@ -2998,6 +3056,9 @@ transcribe_status whisper_run_batch(transcribe_session *          session,
             float best     = -INFINITY;
             int   best_idx = -1;
             for (size_t i = 0; i < cm->lang_token_ids.size(); ++i) {
+                if (!allowed_langs.empty() && allowed_langs[i] == 0) {
+                    continue;  // outside the language allowlist
+                }
                 const int32_t id = cm->lang_token_ids[i];
                 if (id >= 0 && id < static_cast<int>(vocab_size) && ll[static_cast<size_t>(id)] > best) {
                     best       = ll[static_cast<size_t>(id)];
@@ -3600,6 +3661,14 @@ static transcribe_status whisper_run_validate(const transcribe_session * ctx, co
                                  sizeof(struct transcribe_whisper_run_ext));
         st != TRANSCRIBE_OK) {
         return st;
+    }
+    {
+        std::vector<uint8_t> allowed_langs;
+        if (const transcribe_status st =
+                whisper_allowed_languages(*static_cast<const WhisperModel *>(ctx->model), params, allowed_langs);
+            st != TRANSCRIBE_OK) {
+            return st;
+        }
     }
     // Transcript prefix: with explicit SEGMENT timestamps the timestamp rules
     // restart after the prefix and force an initial timestamp while the

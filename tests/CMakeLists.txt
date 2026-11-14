@@ -335,6 +335,21 @@ add_test(NAME transcribe_chunking_unit COMMAND transcribe_chunking_unit)
 # granite_nar BPE CTC pool: in-graph pooled head vs the frame-level reference
 # (pure host, no model)
 
+# Language-code matching for the allowlist (header-only, no model).
+add_executable(transcribe_language_match_unit language_match_unit.cpp)
+target_include_directories(transcribe_language_match_unit PRIVATE ${CMAKE_SOURCE_DIR}/src)
+transcribe_apply_warnings(transcribe_language_match_unit)
+add_test(NAME transcribe_language_match_unit COMMAND transcribe_language_match_unit)
+
+# Parakeet RNN-T allowlist mask; links the decoder from libtranscribe.
+if("parakeet" IN_LIST TRANSCRIBE_ACTIVE_MODELS AND NOT TRANSCRIBE_ARCH_DL)
+    add_executable(transcribe_parakeet_language_mask_unit parakeet_language_mask_unit.cpp)
+    target_link_libraries(transcribe_parakeet_language_mask_unit PRIVATE transcribe ggml)
+    target_include_directories(transcribe_parakeet_language_mask_unit PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    transcribe_apply_warnings(transcribe_parakeet_language_mask_unit)
+    add_test(NAME transcribe_parakeet_language_mask_unit COMMAND transcribe_parakeet_language_mask_unit)
+endif()
+
 # Links granite_nar's encoder from libtranscribe, so it needs the family
 # compiled in (not a TRANSCRIBE_ARCH_DL plugin, and in the active model set).
 if("granite_nar" IN_LIST TRANSCRIBE_ACTIVE_MODELS AND NOT TRANSCRIBE_ARCH_DL)

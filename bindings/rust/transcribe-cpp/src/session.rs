@@ -59,6 +59,11 @@ pub struct RunOptions {
     /// an error elsewhere, and in batch and streaming runs). `text` holds only
     /// the continuation; `raw_text` leads with the prefix.
     pub prefix: Option<String>,
+    /// Languages automatic detection may choose from
+    /// (`Feature::LanguageAllowlist`). Empty = unrestricted; ignored when
+    /// `language` is set. Codes match loosely (`"fr"` allows fr-FR and fr-CA,
+    /// `"en_us"` names en-US). A streaming run applies it to every step.
+    pub allowed_languages: Vec<String>,
 }
 
 impl Default for RunOptions {
@@ -77,6 +82,7 @@ impl Default for RunOptions {
             vocabulary: Vec::new(),
             prompt: None,
             prefix: None,
+            allowed_languages: Vec::new(),
         }
     }
 }
@@ -431,6 +437,8 @@ struct PromptingKeepalive {
     _term_ptrs: Vec<*const std::os::raw::c_char>,
     _prompt: Option<CString>,
     _prefix: Option<CString>,
+    _allowed: Vec<CString>,
+    _allowed_ptrs: Vec<*const std::os::raw::c_char>,
 }
 
 /// Build `transcribe_run_params` from options. The returned keepalives own the
@@ -476,11 +484,27 @@ fn build_run_params(o: &RunOptions) -> Result<RunParamsBundle> {
     params.n_vocabulary = clamp_len(term_ptrs.len())?;
     params.prompt = prompt.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
     params.prefix = prefix.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
+
+    let allowed = o
+        .allowed_languages
+        .iter()
+        .map(|c| CString::new(c.as_str()))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let allowed_ptrs: Vec<*const std::os::raw::c_char> =
+        allowed.iter().map(|c| c.as_ptr()).collect();
+    params.n_allowed_languages = clamp_len(allowed_ptrs.len())?;
+    params.allowed_languages = if allowed_ptrs.is_empty() {
+        std::ptr::null()
+    } else {
+        allowed_ptrs.as_ptr()
+    };
     let prompting = PromptingKeepalive {
         _terms: terms,
         _term_ptrs: term_ptrs,
         _prompt: prompt,
         _prefix: prefix,
+        _allowed: allowed,
+        _allowed_ptrs: allowed_ptrs,
     };
 
     Ok((params, lang, target, family, prompting))
@@ -668,5 +692,36 @@ impl Stream<'_> {
     /// Whether the stream was ended by cancellation.
     pub fn was_aborted(&self) -> bool {
         self.session.was_aborted()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allowed_languages_reach_the_params_and_stay_alive() {
+        let options = RunOptions {
+            allowed_languages: vec!["fr".into(), "en-US".into()],
+            ..RunOptions::default()
+        };
+        let (params, _lang, _target, _family, keep) = build_run_params(&options).unwrap();
+        assert_eq!(params.n_allowed_languages, 2);
+        assert_eq!(params.allowed_languages, keep._allowed_ptrs.as_ptr());
+        let first = unsafe { std::ffi::CStr::from_ptr(*params.allowed_languages) };
+        assert_eq!(first.to_str().unwrap(), "fr");
+
+        let (empty, ..) = build_run_params(&RunOptions::default()).unwrap();
+        assert_eq!(empty.n_allowed_languages, 0);
+        assert!(empty.allowed_languages.is_null());
+    }
+
+    #[test]
+    fn allowed_languages_reject_interior_nul() {
+        let options = RunOptions {
+            allowed_languages: vec!["f\0r".into()],
+            ..RunOptions::default()
+        };
+        assert!(build_run_params(&options).is_err());
     }
 }

@@ -1,0 +1,723 @@
+{
+  "research_date": "2026-10-16",
+  "scope": "source and metadata review; no new model-quality evaluation",
+  "sources": [
+    {
+      "repository": "xiph/rnnoise",
+      "branch": "main",
+      "commit": "70f1d256acd4b34a572f999a05c87bf00b67730d",
+      "commit_date": "2025-02-22T23:58:18Z",
+      "files": [
+        {
+          "path": "README",
+          "sha256": "87fc8de7620259a3200be2012e7c77fc9383997d3224318451eaded27691754f",
+          "url": "https://raw.githubusercontent.com/xiph/rnnoise/70f1d256acd4b34a572f999a05c87bf00b67730d/README"
+        },
+        {
+          "path": "README.md",
+          "error": "HTTP Error 404: Not Found"
+        },
+        {
+          "path": "src/denoise.c",
+          "sha256": "f12ac3cc97d798cdfd7c7bd4366a08a72c5516c382056c891b61a61cb17eb031",
+          "url": "https://raw.githubusercontent.com/xiph/rnnoise/70f1d256acd4b34a572f999a05c87bf00b67730d/src/denoise.c"
+        },
+        {
+          "path": "include/rnnoise.h",
+          "sha256": "15ca0f5c0db9dfa48907e91a32995d37e57552b0e14fef5ebb8d3dc073528f83",
+          "url": "https://raw.githubusercontent.com/xiph/rnnoise/70f1d256acd4b34a572f999a05c87bf00b67730d/include/rnnoise.h"
+        },
+        {
+          "path": "COPYING",
+          "sha256": "45d37ca1cdb278c088e1aa85e0e65ca3a534ed86a28dcc96ca16810248a61d35",
+          "url": "https://raw.githubusercontent.com/xiph/rnnoise/70f1d256acd4b34a572f999a05c87bf00b67730d/COPYING"
+        }
+      ]
+    },
+    {
+      "repository": "jneem/nnnoiseless",
+      "branch": "main",
+      "commit": "49fa1945e997f0fee4814a5038703fb40aaf756c",
+      "commit_date": "2026-09-28T18:45:28Z",
+      "files": [
+        {
+          "path": "Cargo.toml",
+          "sha256": "60ce58654c5299a40b908fd8519d217663536f4bbc0a6f4469379bbae0c72ed9",
+          "url": "https://raw.githubusercontent.com/jneem/nnnoiseless/49fa1945e997f0fee4814a5038703fb40aaf756c/Cargo.toml"
+        },
+        {
+          "path": "README.md",
+          "sha256": "6fe3638a09e9143e9ab728ac71a3de5198990860ad9f845af6e997bf83400e65",
+          "url": "https://raw.githubusercontent.com/jneem/nnnoiseless/49fa1945e997f0fee4814a5038703fb40aaf756c/README.md"
+        },
+        {
+          "path": "src/denoise.rs",
+          "sha256": "7dc9ab2fc69db544d8eacef5910d085c324eccea0945a1eb0821bcd042794bbe",
+          "url": "https://raw.githubusercontent.com/jneem/nnnoiseless/49fa1945e997f0fee4814a5038703fb40aaf756c/src/denoise.rs"
+        },
+        {
+          "path": "src/lib.rs",
+          "sha256": "fa53ebcc84a5852df618237765e4ceb99a19fefc75dafed72ecc4c2234d6bee8",
+          "url": "https://raw.githubusercontent.com/jneem/nnnoiseless/49fa1945e997f0fee4814a5038703fb40aaf756c/src/lib.rs"
+        },
+        {
+          "path": "LICENSE",
+          "error": "HTTP Error 404: Not Found"
+        }
+      ]
+    },
+    {
+      "repository": "FireRedTeam/FireRedVAD",
+      "branch": "main",
+      "commit": "c30ec49e8cc69642b0ee65362eba11b9d11c6e54",
+      "commit_date": "2026-05-06T04:18:33Z",
+      "files": [
+        {
+          "path": "README.md",
+          "sha256": "864b4ac07e8be50b59d07e2e4d2d56e3e717d8a18ba3b22912417adb02ca76c1",
+          "url": "https://raw.githubusercontent.com/FireRedTeam/FireRedVAD/c30ec49e8cc69642b0ee65362eba11b9d11c6e54/README.md"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+          "url": "https://raw.githubusercontent.com/FireRedTeam/FireRedVAD/c30ec49e8cc69642b0ee65362eba11b9d11c6e54/LICENSE"
+        },
+        {
+          "path": "fireredvad/core/audio_feat.py",
+          "sha256": "4c156976a7f3ffe26ec669022516028fd59978c685922a5a26ccf4fe72307960",
+          "url": "https://raw.githubusercontent.com/FireRedTeam/FireRedVAD/c30ec49e8cc69642b0ee65362eba11b9d11c6e54/fireredvad/core/audio_feat.py"
+        },
+        {
+          "path": "fireredvad/core/stream_vad_postprocessor.py",
+          "sha256": "cf759df5951736767d91133ec852604ba80fe194bc6e2ba04661f782161e1bea",
+          "url": "https://raw.githubusercontent.com/FireRedTeam/FireRedVAD/c30ec49e8cc69642b0ee65362eba11b9d11c6e54/fireredvad/core/stream_vad_postprocessor.py"
+        },
+        {
+          "path": "fireredvad/core/dfsmn.py",
+          "error": "HTTP Error 404: Not Found"
+        },
+        {
+          "path": "fireredvad/core/detect_model.py",
+          "sha256": "abb6521b712c6204351d57e1829dd0a25e0c61314b11c23859b5b508cb326f9e",
+          "url": "https://raw.githubusercontent.com/FireRedTeam/FireRedVAD/c30ec49e8cc69642b0ee65362eba11b9d11c6e54/fireredvad/core/detect_model.py"
+        },
+        {
+          "path": "fireredvad/core/constants.py",
+          "sha256": "606264135225c00e8c27f189742f82d60744b646637d161c0b3c67090f32364a",
+          "url": "https://raw.githubusercontent.com/FireRedTeam/FireRedVAD/c30ec49e8cc69642b0ee65362eba11b9d11c6e54/fireredvad/core/constants.py"
+        },
+        {
+          "path": "fireredvad/stream_vad.py",
+          "sha256": "bfb5aedb6fe0928d77f23d841aad9b21eb0dd5191df707ccbe6b953319a47f25",
+          "url": "https://raw.githubusercontent.com/FireRedTeam/FireRedVAD/c30ec49e8cc69642b0ee65362eba11b9d11c6e54/fireredvad/stream_vad.py"
+        }
+      ]
+    },
+    {
+      "repository": "pipecat-ai/smart-turn",
+      "branch": "main",
+      "commit": "4786657e242dfe77dd138699ac564ee074a2a543",
+      "commit_date": "2026-01-29T12:29:53Z",
+      "files": [
+        {
+          "path": "README.md",
+          "sha256": "ddac4b3e1346e43c1a04ed751af35a0bca86f677ca7dddc371da489a6d2b4d46",
+          "url": "https://raw.githubusercontent.com/pipecat-ai/smart-turn/4786657e242dfe77dd138699ac564ee074a2a543/README.md"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "0d66364067f678c08586ebb60a16a2aed4fa081ec11057df35585759ce0e774f",
+          "url": "https://raw.githubusercontent.com/pipecat-ai/smart-turn/4786657e242dfe77dd138699ac564ee074a2a543/LICENSE"
+        },
+        {
+          "path": "inference.py",
+          "sha256": "39a6422beb864788a4428e631ba7c45a69ce4c58e913ead383450766b9bd8683",
+          "url": "https://raw.githubusercontent.com/pipecat-ai/smart-turn/4786657e242dfe77dd138699ac564ee074a2a543/inference.py"
+        },
+        {
+          "path": "train.py",
+          "sha256": "5b72d6f93286ca10eb939abbfbd7ea8b80fef37888cca29537bf49e132392918",
+          "url": "https://raw.githubusercontent.com/pipecat-ai/smart-turn/4786657e242dfe77dd138699ac564ee074a2a543/train.py"
+        },
+        {
+          "path": "model.py",
+          "error": "HTTP Error 404: Not Found"
+        },
+        {
+          "path": "audio_utils.py",
+          "sha256": "22fed11a57d019350d6e4821895ce749220ed06203220e8c44a7c32ab31f2595",
+          "url": "https://raw.githubusercontent.com/pipecat-ai/smart-turn/4786657e242dfe77dd138699ac564ee074a2a543/audio_utils.py"
+        }
+      ]
+    },
+    {
+      "repository": "pipecat-ai/pipecat",
+      "branch": "main",
+      "commit": "f4d1dea8f3f2555074b9a37e97f85c6c43355cb5",
+      "commit_date": "2026-10-16T15:28:42Z",
+      "files": [
+        {
+          "path": "src/pipecat/audio/turn/smart_turn/local_smart_turn_v3.py",
+          "sha256": "8bd3bc15ed96fd54539ec63400ce64ce86ce82a388d0aa467e641c9a27a2f970",
+          "url": "https://raw.githubusercontent.com/pipecat-ai/pipecat/f4d1dea8f3f2555074b9a37e97f85c6c43355cb5/src/pipecat/audio/turn/smart_turn/local_smart_turn_v3.py"
+        },
+        {
+          "path": "src/pipecat/audio/turn/smart_turn/base_smart_turn.py",
+          "sha256": "8c5c11aa3a72abb9d37447baa58475126bee7eb5932d5c8a17ee56d858be6c8a",
+          "url": "https://raw.githubusercontent.com/pipecat-ai/pipecat/f4d1dea8f3f2555074b9a37e97f85c6c43355cb5/src/pipecat/audio/turn/smart_turn/base_smart_turn.py"
+        },
+        {
+          "path": "src/pipecat/audio/turn/smart_turn/_whisper_features.py",
+          "sha256": "139b047d10dee42ad5b4894489012e515a882d8f5e2bffe8ad27b30728fc9968",
+          "url": "https://raw.githubusercontent.com/pipecat-ai/pipecat/f4d1dea8f3f2555074b9a37e97f85c6c43355cb5/src/pipecat/audio/turn/smart_turn/_whisper_features.py"
+        }
+      ]
+    },
+    {
+      "repository": "snakers4/silero-vad",
+      "branch": "master",
+      "commit": "1e261b036686cd0017d500ee96acd1c4ba572a9d",
+      "commit_date": "2026-09-29T10:20:28Z",
+      "files": [
+        {
+          "path": "README.md",
+          "sha256": "cd0ee56c91b8042e62a714c0c94bc8b74dbea127a483e390f8033bb8ec8cec78",
+          "url": "https://raw.githubusercontent.com/snakers4/silero-vad/1e261b036686cd0017d500ee96acd1c4ba572a9d/README.md"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "2e63e9a38b6e8fc0c7bc37ce174caca1862870856c6daf5697cfb785e925520b",
+          "url": "https://raw.githubusercontent.com/snakers4/silero-vad/1e261b036686cd0017d500ee96acd1c4ba572a9d/LICENSE"
+        },
+        {
+          "path": "src/silero_vad/utils_vad.py",
+          "sha256": "7e0f9b3334ee4feb79abcf2251be12458329077bce28c8540878ed9d35e5aa6b",
+          "url": "https://raw.githubusercontent.com/snakers4/silero-vad/1e261b036686cd0017d500ee96acd1c4ba572a9d/src/silero_vad/utils_vad.py"
+        }
+      ]
+    },
+    {
+      "repository": "HEnquist/rubato",
+      "branch": "master",
+      "commit": "eb9190855133fd40d54b17f8d17065ef98ab4db0",
+      "commit_date": "2026-10-01T07:02:07Z",
+      "files": [
+        {
+          "path": "README.md",
+          "sha256": "fe32aeb4f6b39155987015fb03c35336904b85df4c892d6d3233e9c3dd585da4",
+          "url": "https://raw.githubusercontent.com/HEnquist/rubato/eb9190855133fd40d54b17f8d17065ef98ab4db0/README.md"
+        },
+        {
+          "path": "src/lib.rs",
+          "sha256": "424589aa0061d9061e4acdfa0ca3c7260dba88a0d743d6091ac470c42731a2f7",
+          "url": "https://raw.githubusercontent.com/HEnquist/rubato/eb9190855133fd40d54b17f8d17065ef98ab4db0/src/lib.rs"
+        },
+        {
+          "path": "src/synchro.rs",
+          "sha256": "877911e04b3ca3b8d30a47327274415cb7fc633dda8da41dd6907bed3a7801ea",
+          "url": "https://raw.githubusercontent.com/HEnquist/rubato/eb9190855133fd40d54b17f8d17065ef98ab4db0/src/synchro.rs"
+        }
+      ]
+    }
+  ],
+  "model_metadata": [
+    {
+      "repository": "FireRedTeam/FireRedVAD",
+      "revision": "7990aaccc6b7aec1e527743bd30201f2c4a03b8c",
+      "license": "apache-2.0",
+      "files": [
+        {
+          "path": "AED/cmvn.ark",
+          "size": 1311,
+          "lfs": null,
+          "blobId": "5b21592ae056b8b11ae23074542a175cdf8160a4"
+        },
+        {
+          "path": "AED/model.pth.tar",
+          "size": 2370097,
+          "lfs": {
+            "sha256": "ad08a4e05b58ca328154e158d24cff57a2fe796ceabb63bb701544c3f7d4f7ad",
+            "size": 2370097,
+            "pointerSize": 132
+          },
+          "blobId": "2ff62aa12b811c48d9f7fad3d40696cf04282e5c"
+        },
+        {
+          "path": "README.md",
+          "size": 7936,
+          "lfs": null,
+          "blobId": "4c64ef69c8b3e2d7ac6d410da630f0780cb46964"
+        },
+        {
+          "path": "Stream-VAD/cmvn.ark",
+          "size": 1311,
+          "lfs": null,
+          "blobId": "5b21592ae056b8b11ae23074542a175cdf8160a4"
+        },
+        {
+          "path": "Stream-VAD/model.pth.tar",
+          "size": 2283513,
+          "lfs": {
+            "sha256": "ec88a8ae8ac5f004cdbd20c1eac4a9e9d12067c3d51ac5b141afa1f921fb59c9",
+            "size": 2283513,
+            "pointerSize": 132
+          },
+          "blobId": "9abd15bd11e6ed37f5f2f4712fbd5dd5775ec482"
+        },
+        {
+          "path": "VAD/cmvn.ark",
+          "size": 1311,
+          "lfs": null,
+          "blobId": "5b21592ae056b8b11ae23074542a175cdf8160a4"
+        },
+        {
+          "path": "VAD/model.pth.tar",
+          "size": 2368049,
+          "lfs": {
+            "sha256": "63f4fb1b00a6b8607c118dd48efc18d5e40d67d99b7bf9aa7a8d61540cf23d71",
+            "size": 2368049,
+            "pointerSize": 132
+          },
+          "blobId": "24ae4844cc341414e0a97554a8cf94696810efed"
+        }
+      ]
+    },
+    {
+      "repository": "pipecat-ai/smart-turn-v3",
+      "revision": "f766f81d3cfdf7737ac64aad813d91bbfd56bf93",
+      "license": "bsd-2-clause",
+      "files": [
+        {
+          "path": "README.md",
+          "size": 1247,
+          "lfs": null,
+          "blobId": "a455b2455083072b2504f8521e9fb9fb159038ce"
+        },
+        {
+          "path": "benchmarks/smart-turn-v3.0.md",
+          "size": 5202,
+          "lfs": null,
+          "blobId": "9c2539017418417db5b2fe76a2cc70ade91c1b9a"
+        },
+        {
+          "path": "benchmarks/smart-turn-v3.1-cpu.md",
+          "size": 5206,
+          "lfs": null,
+          "blobId": "6f0a7d6732a43e41134507a87ed6b887b278549c"
+        },
+        {
+          "path": "benchmarks/smart-turn-v3.1-gpu.md",
+          "size": 5206,
+          "lfs": null,
+          "blobId": "4430e06ddd5e3b84ed13a9ee37ece56e4a387644"
+        },
+        {
+          "path": "benchmarks/smart-turn-v3.2-cpu.md",
+          "size": 5206,
+          "lfs": null,
+          "blobId": "bce77b53aa0914f980524d1efc07cd6aecf9e88b"
+        },
+        {
+          "path": "benchmarks/smart-turn-v3.2-gpu.md",
+          "size": 5206,
+          "lfs": null,
+          "blobId": "3fdfcb672806fa3bb1cb3de0d349b38f6f7775c9"
+        },
+        {
+          "path": "smart-turn-v3.0.onnx",
+          "size": 8757193,
+          "lfs": {
+            "sha256": "07a133aba31e2d0b523f17f8c2e4e65efe6d8f685efd12ca4fe21ebf4e798991",
+            "size": 8757193,
+            "pointerSize": 132
+          },
+          "blobId": "10b2e4bb6495599be8df0a3eddae22edc43d5370"
+        },
+        {
+          "path": "smart-turn-v3.1-cpu.onnx",
+          "size": 8679180,
+          "lfs": {
+            "sha256": "fb68d55c2d542ce79e44b12013bfd571e90df8594ab096d757198e851b0c6594",
+            "size": 8679180,
+            "pointerSize": 132
+          },
+          "blobId": "3ae9d1f7f62f42720ef02b045f68ead567070107"
+        },
+        {
+          "path": "smart-turn-v3.1-gpu.onnx",
+          "size": 32411198,
+          "lfs": {
+            "sha256": "a32f7445d5076029472b6c9f7a71005df576ea19d5f929021200f535b962af84",
+            "size": 32411198,
+            "pointerSize": 133
+          },
+          "blobId": "69322e87b003cf88827cc16a0da34fd60b40fb4f"
+        },
+        {
+          "path": "smart-turn-v3.2-cpu.onnx",
+          "size": 8679182,
+          "lfs": {
+            "sha256": "2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f",
+            "size": 8679182,
+            "pointerSize": 132
+          },
+          "blobId": "fb8232b387c2062359083ab8d3d43bb9aaa6b0d9"
+        },
+        {
+          "path": "smart-turn-v3.2-gpu.onnx",
+          "size": 32411198,
+          "lfs": {
+            "sha256": "ab8dc64b88713f90b571c15b714bd1330e6c883cad8763dacf65c9376dc539be",
+            "size": 32411198,
+            "pointerSize": 133
+          },
+          "blobId": "d2cf53e179fb930fdac812f9cf9799206d74f733"
+        }
+      ]
+    }
+  ],
+  "voxlock_source": {
+    "repository": "arbazsiddiqui/voxlock",
+    "commit_date": "2026-10-15T14:59:28Z",
+    "commit": "08ed37cbb79f449ca6b499bc23fb14138b207bfd"
+  },
+  "voxlock_models": [
+    {
+      "repository": "arbazsiddiqui/voxlock",
+      "revision": "894e78845eca66a7691d330665c60a7c821b8e2d",
+      "files": [
+        {
+          "rfilename": "config.yaml",
+          "blobId": "7436f63f6eff473c3cea31d9ed3a6e3eb2424fe1",
+          "size": 2431
+        },
+        {
+          "rfilename": "model.safetensors",
+          "blobId": "955ee5b9acad0657e62f73db844ddb72ef3aef64",
+          "size": 109155616,
+          "lfs": {
+            "sha256": "c90815e7cdd1a859029d2a7e8e9b30616b23d3abb183cbd38e4f79daab98ac42",
+            "size": 109155616,
+            "pointerSize": 134
+          }
+        },
+        {
+          "rfilename": "onnx/chunk.onnx",
+          "blobId": "97d1fcc3ca27d95fc318df7750c2fbe633a04d28",
+          "size": 87391085,
+          "lfs": {
+            "sha256": "3c31444926cdf3d548935344e2f5f1c71538ded6c2c7d1bd22e2c2141ea0bc2a",
+            "size": 87391085,
+            "pointerSize": 133
+          }
+        },
+        {
+          "rfilename": "onnx/chunk_fp16.onnx",
+          "blobId": "bb602cfc7a6f11026b195c9b1be943fbef8b2297",
+          "size": 44304603,
+          "lfs": {
+            "sha256": "d6e931ea261d217d03bdad05aa8e1d6a11a41d4a421a90ea91622d8ec17f8e82",
+            "size": 44304603,
+            "pointerSize": 133
+          }
+        },
+        {
+          "rfilename": "onnx/chunk_int8.onnx",
+          "blobId": "eff5890fcdfedb698e070d7d4373695872043ffe",
+          "size": 66608213,
+          "lfs": {
+            "sha256": "f0d2b0aaf95affe8894ea008d0105be4f5f5354f7244835534c31b1a7dd4699a",
+            "size": 66608213,
+            "pointerSize": 133
+          }
+        },
+        {
+          "rfilename": "onnx/chunk_int8_full.onnx",
+          "blobId": "8b3444bd44fd0112df924078ae6f090947ae8128",
+          "size": 57739836,
+          "lfs": {
+            "sha256": "7b57c1bfd5acd5b33768a9dff09d9af487d45374b3ba0b991e541ff121eaa337",
+            "size": 57739836,
+            "pointerSize": 133
+          }
+        },
+        {
+          "rfilename": "onnx/enroll.onnx",
+          "blobId": "59532454280096e41c75f59b93ef240b139fb0b6",
+          "size": 12475387,
+          "lfs": {
+            "sha256": "86645cba23f207def0b31a6e74a615d3b7a813b4fdf957c53b3af2905ba2ffd3",
+            "size": 12475387,
+            "pointerSize": 133
+          }
+        },
+        {
+          "rfilename": "onnx/enroll_fp16.onnx",
+          "blobId": "e7fc5598610b6e98e604184695018a004353f89e",
+          "size": 6293911,
+          "lfs": {
+            "sha256": "5fd3bb3179a753e9acc8e1ffeda04fce8ccf5febcd2917956b2419fc71a62533",
+            "size": 6293911,
+            "pointerSize": 132
+          }
+        }
+      ]
+    },
+    {
+      "repository": "arbazsiddiqui/voxlock",
+      "revision": "a50f4e1d109301d4b6f61dec57ebb1a61e7d8f03",
+      "files": [
+        {
+          "rfilename": "config.yaml",
+          "blobId": "7436f63f6eff473c3cea31d9ed3a6e3eb2424fe1",
+          "size": 2431
+        },
+        {
+          "rfilename": "model.safetensors",
+          "blobId": "955ee5b9acad0657e62f73db844ddb72ef3aef64",
+          "size": 109155616,
+          "lfs": {
+            "sha256": "c90815e7cdd1a859029d2a7e8e9b30616b23d3abb183cbd38e4f79daab98ac42",
+            "size": 109155616,
+            "pointerSize": 134
+          }
+        },
+        {
+          "rfilename": "onnx/chunk.onnx",
+          "blobId": "97d1fcc3ca27d95fc318df7750c2fbe633a04d28",
+          "size": 87391085,
+          "lfs": {
+            "sha256": "3c31444926cdf3d548935344e2f5f1c71538ded6c2c7d1bd22e2c2141ea0bc2a",
+            "size": 87391085,
+            "pointerSize": 133
+          }
+        },
+        {
+          "rfilename": "onnx/chunk_fp16.onnx",
+          "blobId": "bb602cfc7a6f11026b195c9b1be943fbef8b2297",
+          "size": 44304603,
+          "lfs": {
+            "sha256": "d6e931ea261d217d03bdad05aa8e1d6a11a41d4a421a90ea91622d8ec17f8e82",
+            "size": 44304603,
+            "pointerSize": 133
+          }
+        },
+        {
+          "rfilename": "onnx/chunk_int8.onnx",
+          "blobId": "eff5890fcdfedb698e070d7d4373695872043ffe",
+          "size": 66608213,
+          "lfs": {
+            "sha256": "f0d2b0aaf95affe8894ea008d0105be4f5f5354f7244835534c31b1a7dd4699a",
+            "size": 66608213,
+            "pointerSize": 133
+          }
+        },
+        {
+          "rfilename": "onnx/chunk_int8_full.onnx",
+          "blobId": "8b3444bd44fd0112df924078ae6f090947ae8128",
+          "size": 57739836,
+          "lfs": {
+            "sha256": "7b57c1bfd5acd5b33768a9dff09d9af487d45374b3ba0b991e541ff121eaa337",
+            "size": 57739836,
+            "pointerSize": 133
+          }
+        },
+        {
+          "rfilename": "onnx/enroll.onnx",
+          "blobId": "59532454280096e41c75f59b93ef240b139fb0b6",
+          "size": 12475387,
+          "lfs": {
+            "sha256": "86645cba23f207def0b31a6e74a615d3b7a813b4fdf957c53b3af2905ba2ffd3",
+            "size": 12475387,
+            "pointerSize": 133
+          }
+        },
+        {
+          "rfilename": "onnx/enroll_fp16.onnx",
+          "blobId": "e7fc5598610b6e98e604184695018a004353f89e",
+          "size": 6293911,
+          "lfs": {
+            "sha256": "5fd3bb3179a753e9acc8e1ffeda04fce8ccf5febcd2917956b2419fc71a62533",
+            "size": 6293911,
+            "pointerSize": 132
+          }
+        }
+      ]
+    }
+  ],
+  "installed_reference_packages": {
+    "nnnoiseless": {
+      "version": "0.5.2",
+      "vcs": "924a2dd143ccad7bce9e5bda061b60ca32911a67"
+    },
+    "rubato": {
+      "version": "5.0.1",
+      "vcs": "eb9190855133fd40d54b17f8d17065ef98ab4db0"
+    }
+  },
+  "paired_app_source_sha256": {
+    "src-tauri/src/audio_toolkit/audio/resampler.rs": "de3143d711dc402e591702f0e2168b497c029b95bc747fe8d5cacf1c54b8b8d5",
+    "src-tauri/src/audio_toolkit/audio/denoise.rs": "09205f409a5c0471c3c8c478ed08764f0a40ac3780fa9f39e2a9531edfd351db",
+    "src-tauri/src/audio_toolkit/audio/recorder.rs": "70e9bf1e4e4a95b30e31cfd36b4c43218abbb0e391d8050b7eb315bb30683679",
+    "src-tauri/src/managers/transcription.rs": "c5e2d7aec9bbc0f90a64399d4b097a4d56373ae97495be48c7fba4f00db5b71c"
+  },
+  "framing_probe": {
+    "scope": "synthetic collection and impulse alignment, not compute latency or ASR quality",
+    "cargo_lock_sha256": "d828c4f6f99f9865e74925e7239e7d948947196ffacf188e59de523dca0e0500",
+    "provenance": {
+      "kind": "synthetic framing and impulse alignment; not compute latency or WER",
+      "host": "Windows-11-10.0.26300-SP0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+      "source_root": "C:\\Users\\Z\\Downloads\\PROJECTS\\Handy_V2\\src-tauri\\src\\audio_toolkit\\audio",
+      "source_sha256": {
+        "resampler.rs": "de3143d711dc402e591702f0e2168b497c029b95bc747fe8d5cacf1c54b8b8d5",
+        "denoise.rs": "09205f409a5c0471c3c8c478ed08764f0a40ac3780fa9f39e2a9531edfd351db"
+      },
+      "cargo_lock_sha256": "d828c4f6f99f9865e74925e7239e7d948947196ffacf188e59de523dca0e0500",
+      "input": "2 seconds, 0.5 impulse at 100 ms, synthetic 10 ms deliveries",
+      "denoise": "strength=0, probability gate=0; network still runs"
+    },
+    "results_csv": "geometry,input_hz,output_hz,requested_chunk,input_next,output_next,output_delay\ngeometry,16000,48000,256,256,768,384\ngeometry,16000,48000,512,512,1536,384\ngeometry,16000,48000,1024,1024,3072,384\ngeometry,44100,48000,256,256,0,160\ngeometry,44100,48000,512,512,320,160\ngeometry,44100,48000,1024,1024,960,160\ngeometry,48000,16000,256,256,0,43\ngeometry,48000,16000,512,512,86,43\ngeometry,48000,16000,1024,1024,258,43\ngeometry,44100,16000,256,256,0,80\ngeometry,44100,16000,512,512,160,80\ngeometry,44100,16000,1024,1024,320,80\npipeline,input_hz,first_emit_source_ms,output_samples,impulse_peak_output_sample,impulse_extra_ms\ndirect,16000,20.000,32000,1600,0.000\ndenoise_strength_zero,16000,70.000,33024,1931,20.688\ndirect,44100,30.000,32512,1680,5.000\ndenoise_strength_zero,44100,50.000,32768,1856,16.000\ndirect,48000,30.000,32256,1643,2.688\ndenoise_strength_zero,48000,30.000,32512,1803,12.688\n"
+  },
+  "voxlock_wrapper_probe": {
+    "scope": "wrapper bookkeeping only; identity stub and forced switch; no neural inference",
+    "numpy_version": "2.5.3",
+    "source_sha256": "28049a0904482472a7892e1a357350d31418c3009fd2209f78007f73dc2afaca",
+    "rows": [
+      {
+        "input": 0,
+        "push_output": 0,
+        "flush_output": 0,
+        "total_output": 0,
+        "second_flush_output": 0
+      },
+      {
+        "input": 1,
+        "push_output": 0,
+        "flush_output": 0,
+        "total_output": 0,
+        "second_flush_output": 0
+      },
+      {
+        "input": 127,
+        "push_output": 0,
+        "flush_output": 0,
+        "total_output": 0,
+        "second_flush_output": 0
+      },
+      {
+        "input": 128,
+        "push_output": 0,
+        "flush_output": 0,
+        "total_output": 0,
+        "second_flush_output": 0
+      },
+      {
+        "input": 255,
+        "push_output": 0,
+        "flush_output": 0,
+        "total_output": 0,
+        "second_flush_output": 0
+      },
+      {
+        "input": 256,
+        "push_output": 0,
+        "flush_output": 0,
+        "total_output": 0,
+        "second_flush_output": 0
+      },
+      {
+        "input": 257,
+        "push_output": 0,
+        "flush_output": 640,
+        "total_output": 640,
+        "second_flush_output": 0,
+        "trimmed_max_error": 2.9802322387695312e-08
+      },
+      {
+        "input": 511,
+        "push_output": 0,
+        "flush_output": 768,
+        "total_output": 768,
+        "second_flush_output": 0,
+        "trimmed_max_error": 2.9802322387695312e-08
+      },
+      {
+        "input": 512,
+        "push_output": 128,
+        "flush_output": 768,
+        "total_output": 896,
+        "second_flush_output": 0,
+        "trimmed_max_error": 4.470348358154297e-08
+      },
+      {
+        "input": 513,
+        "push_output": 128,
+        "flush_output": 768,
+        "total_output": 896,
+        "second_flush_output": 0,
+        "trimmed_max_error": 4.470348358154297e-08
+      },
+      {
+        "input": 640,
+        "push_output": 256,
+        "flush_output": 768,
+        "total_output": 1024,
+        "second_flush_output": 0,
+        "trimmed_max_error": 4.470348358154297e-08
+      },
+      {
+        "input": 1600,
+        "push_output": 1152,
+        "flush_output": 768,
+        "total_output": 1920,
+        "second_flush_output": 0,
+        "trimmed_max_error": 4.470348358154297e-08
+      },
+      {
+        "input": 48000,
+        "push_output": 47616,
+        "flush_output": 768,
+        "total_output": 48384,
+        "second_flush_output": 0,
+        "trimmed_max_error": 4.470348358154297e-08
+      },
+      {
+        "input": 48001,
+        "push_output": 47616,
+        "flush_output": 768,
+        "total_output": 48384,
+        "second_flush_output": 0,
+        "trimmed_max_error": 4.470348358154297e-08
+      }
+    ],
+    "forced_switch": {
+      "input": 640,
+      "passthrough": 640,
+      "warm_samples_still_to_skip": 384,
+      "flush_output": 768
+    }
+  },
+  "additional_online_docs": [
+    {
+      "url": "https://onnxruntime.ai/docs/performance/tune-performance/threading.html",
+      "accessed": "2026-10-16"
+    },
+    {
+      "url": "https://onnxruntime.ai/docs/performance/model-optimizations/quantization.html",
+      "accessed": "2026-10-16"
+    }
+  ],
+  "additional_local_source_sha256": {
+    "engine/src/transcribe-vad.cpp": "de74b74aa3017350b405fddcdae7dd45170ebb63eb3908c1c669360235794662",
+    "engine/bindings/rust/transcribe-cpp/src/vad.rs": "782ab7ce69bd8d0ddbd8744eba94864b4c570c30414b566297d72c3f930bf334",
+    "engine/bindings/rust/transcribe-cpp/src/model.rs": "3b3ea3323cf2465a4add303aada51feb46124dd8f8076d08f5f1b3aa7ada8f02",
+    "engine/docs/roles.md": "621fa0d80c34a90513c8a5d4e8b0d164121ff76aa6940e98a6b1e7c7088cdd13",
+    "app/src-tauri/src/audio_toolkit/audio/recorder.rs": "70e9bf1e4e4a95b30e31cfd36b4c43218abbb0e391d8050b7eb315bb30683679",
+    "app/src-tauri/src/audio_toolkit/audio/chunk_tap.rs": "c850422f3457403634a8451044564c5ad5ec10c4ae836d336b9e7dfc9032456c",
+    "app/src-tauri/src/multi_stt_stream.rs": "705b75c6b15ec86fe19a3fb7044bd7254f9d228cd2203a1bd9bda7559e0622cd",
+    "app/docs/MULTI_STT_STREAMING.md": "1036f0a4e57895d5d643c9c4ef258ddacc42ba064e41a86aaf453304781185e9",
+    "app/src-tauri/tests/vad_speech_clock_probe.rs": "ea65d3ae1ae7c369ba1daec63b6b9c4ce7e25483bb8bd5794214df63fd468fcc"
+  },
+  "voxlock_wrapper_probe_script_sha256": "ec865ac1da2462f57cd9357da0b7c962103a7e2f64cb1a406e4e05621b983eac"
+}

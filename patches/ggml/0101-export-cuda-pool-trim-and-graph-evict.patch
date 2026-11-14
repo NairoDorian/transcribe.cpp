@@ -1,47 +1,3 @@
-0002 - export CUDA pool-trim and graph-evict hooks into the backend registry.
-
-This is a FEATURE patch, not a fix - the first of its kind in patches/ggml/ -
-so it carries its own rationale here rather than in a commit message.
-
-ggml 0.23.0's CUDA registry exports six procs and no way to hand cached device
-memory back to the driver. A multi-model process (Handy's four models on an
-8 GB card) therefore has no way to make room for the next model's weights short
-of tearing a whole backend down. This adds two registry hooks, mirroring what
-audio.cpp's vendored CUDA backend added for the same reason
-(docs/learnings-from-siblings.md, T2.5):
-
-  ggml_backend_cuda_trim_pools   Clear every device/stream pool of the context,
-                                 returning idle buffers to the driver.
-                                 ggml_cuda_pool_leg already does exactly this
-                                 for its OWN allocation on OOM; this makes the
-                                 same reclaim callable for someone else's
-                                 context, which is the case that matters when
-                                 the memory in the way belongs to another model.
-                                 Implemented for both pool classes: the legacy
-                                 free-list pool (free the cached buffers) and
-                                 the VMM pool (unmap the mapped-but-unused tail
-                                 of the reservation - free() only rewinds the
-                                 bump pointer, so its high-water mark is
-                                 otherwise resident until teardown).
-
-  ggml_backend_cuda_clear_graph  Targeted eviction of one cgraph's cached
-                                 compiled-graph state. The context already has a
-                                 time-based eviction sweep (cuda_graph() sweeps
-                                 every 5 s and drops entries unused for >= 10 s),
-                                 so this is not the only way the memory comes
-                                 back - it is the way to get it back NOW. On an
-                                 allocation-failure path the caller has already
-                                 failed; waiting out the sweep is not an option,
-                                 and the key it erases is exactly the one that
-                                 sweep would have used (ggml_cuda_graph_get_key
-                                 returns cgraph->nodes[0], the same expression).
-
-The sibling's third hook, set_stream_priority, is deliberately NOT ported:
-0.23.0's CUDA context has no stream-priority member and never creates a
-prioritized stream, so the hook would write a field nothing reads.
-
-Applied by scripts/sync-ggml.sh in filename order, after 0001.
-
 diff --git a/include/ggml-cuda.h b/include/ggml-cuda.h
 index 1cd81ee..977df7f 100644
 --- a/include/ggml-cuda.h
@@ -65,10 +21,10 @@ index 1cd81ee..977df7f 100644
  
  #ifdef  __cplusplus
 diff --git a/src/ggml-cuda/common.cuh b/src/ggml-cuda/common.cuh
-index 7d14ce9..a1b05af 100644
+index 4141773..fd54a05 100644
 --- a/src/ggml-cuda/common.cuh
 +++ b/src/ggml-cuda/common.cuh
-@@ -1203,6 +1203,13 @@ struct ggml_cuda_pool {
+@@ -1286,6 +1286,13 @@ struct ggml_cuda_pool {
  
      virtual void * alloc(size_t size, size_t * actual_size) = 0;
      virtual void free(void * ptr, size_t size) = 0;
@@ -83,24 +39,28 @@ index 7d14ce9..a1b05af 100644
  
  template<typename T>
 diff --git a/src/ggml-cuda/ggml-cuda.cu b/src/ggml-cuda/ggml-cuda.cu
-index 5ae3b8d..c1f1919 100644
+index fed14dd..63c11dc 100644
 --- a/src/ggml-cuda/ggml-cuda.cu
 +++ b/src/ggml-cuda/ggml-cuda.cu
-@@ -449,6 +449,13 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
-         }
+@@ -497,6 +497,17 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
+ #endif // USE_CUDA_GRAPH
      }
  
 +    // Cached buffers come straight back to the driver (this pool's own OOM path
 +    // already does exactly this, for its own allocation; this makes it callable
-+    // from outside, for someone else's).
++    // from outside, for someone else's). As on that path, captured CUDA graphs
++    // may still reference the freed buffers, so they are dropped as well.
 +    void clear() override {
++        ggml_cuda_set_device(device);
++        CUDA_CHECK(cudaDeviceSynchronize());
 +        clear_pool();
++        invalidate_cuda_graphs();
 +    }
 +
      void * alloc(size_t size, size_t * actual_size) override {
  #ifdef DEBUG_CUDA_MALLOC
          int nnz = 0;
-@@ -678,6 +685,45 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
+@@ -738,6 +749,45 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
          // all deallocations must be in reverse order of the allocations
          GGML_ASSERT(ptr == (void *) ((char *)(pool_addr) + pool_used));
      }
@@ -146,7 +106,7 @@ index 5ae3b8d..c1f1919 100644
  };
  #endif // defined(GGML_USE_VMM)
  
-@@ -4789,6 +4835,38 @@ bool ggml_backend_is_cuda(ggml_backend_t backend) {
+@@ -5929,6 +5979,44 @@ bool ggml_backend_is_cuda(ggml_backend_t backend) {
      return backend != NULL && ggml_guid_matches(backend->guid, ggml_backend_cuda_guid());
  }
  
@@ -165,6 +125,12 @@ index 5ae3b8d..c1f1919 100644
 +            }
 +        }
 +    }
++#ifdef USE_CUDA_GRAPH
++    // A replayed graph skips the ops that would re-map the trimmed VMM tail,
++    // so any captured graph may now point at unmapped memory: drop them all
++    // (they are recaptured on next use), as the legacy pool's OOM path does.
++    cuda_ctx->cuda_graphs.clear();
++#endif
 +}
 +
 +void ggml_backend_cuda_clear_graph(ggml_backend_t backend, const ggml_cgraph * graph) {
@@ -185,7 +151,7 @@ index 5ae3b8d..c1f1919 100644
  int ggml_backend_cuda_get_device_count() {
      return ggml_cuda_info().device_count;
  }
-@@ -5687,6 +5765,12 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
+@@ -6873,6 +6961,12 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
      if (strcmp(name, "ggml_backend_get_features") == 0) {
          return (void *)ggml_backend_cuda_get_features;
      }

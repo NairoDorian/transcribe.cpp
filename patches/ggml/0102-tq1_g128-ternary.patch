@@ -1,23 +1,23 @@
 diff --git a/include/ggml.h b/include/ggml.h
-index 224bdef9..d63ba0a1 100644
+index 2341fa6..5fe35f5 100644
 --- a/include/ggml.h
 +++ b/include/ggml.h
-@@ -430,7 +430,12 @@ extern "C" {
-         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
+@@ -260,7 +260,12 @@ extern "C" {
          GGML_TYPE_Q1_0    = 41,
          GGML_TYPE_Q2_0    = 42,
--        GGML_TYPE_COUNT   = 43,
-+        // Downstream (transcribe.cpp, patches/ggml/0003): ternary codes with one
+         GGML_TYPE_F8_E4M3 = 43,
+-        GGML_TYPE_COUNT   = 44,
++        // Downstream (transcribe.cpp, patches/ggml/0102): ternary codes with one
 +        // fp16 scale per 128 weights. Parked at a high id so upstream type
 +        // additions (which take GGML_TYPE_COUNT) never collide with GGUFs that
-+        // already carry it; ids 43..95 are unassigned.
++        // already carry it; ids 44..95 are unassigned.
 +        GGML_TYPE_TQ1_G128 = 96,
 +        GGML_TYPE_COUNT   = 97,
      };
  
      // [TAG_GGML_PREC]
 diff --git a/src/ggml-common.h b/src/ggml-common.h
-index 1dbbe326..564557d3 100644
+index 1dbbe32..564557d 100644
 --- a/src/ggml-common.h
 +++ b/src/ggml-common.h
 @@ -287,6 +287,22 @@ typedef struct {
@@ -44,7 +44,7 @@ index 1dbbe326..564557d3 100644
  // Super-block quantization structures
  //
 diff --git a/src/ggml-cpu/arch-fallback.h b/src/ggml-cpu/arch-fallback.h
-index 4dbd1982..d1a9a144 100644
+index 4e59d0a..7a35028 100644
 --- a/src/ggml-cpu/arch-fallback.h
 +++ b/src/ggml-cpu/arch-fallback.h
 @@ -19,6 +19,7 @@
@@ -55,15 +55,7 @@ index 4dbd1982..d1a9a144 100644
  #define ggml_vec_dot_tq2_0_q8_K_generic ggml_vec_dot_tq2_0_q8_K
  #define ggml_vec_dot_q2_K_q8_K_generic ggml_vec_dot_q2_K_q8_K
  #define ggml_vec_dot_q3_K_q8_K_generic ggml_vec_dot_q3_K_q8_K
-@@ -87,7 +88,6 @@
- #define ggml_gemm_q2_K_8x8_q8_K_generic ggml_gemm_q2_K_8x8_q8_K
- #elif defined(__x86_64__) || defined(__i386__) || defined(_M_IX86) || defined(_M_X64)
- // quants.c
--#define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
- // repack.cpp
- #define ggml_quantize_mat_q8_0_4x4_generic ggml_quantize_mat_q8_0_4x4
- #define ggml_quantize_mat_q8_K_4x4_generic ggml_quantize_mat_q8_K_4x4
-@@ -125,6 +125,7 @@
+@@ -123,6 +124,7 @@
  #define ggml_vec_dot_q1_0_q8_0_generic ggml_vec_dot_q1_0_q8_0
  #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
  #define ggml_vec_dot_tq1_0_q8_K_generic ggml_vec_dot_tq1_0_q8_K
@@ -71,7 +63,7 @@ index 4dbd1982..d1a9a144 100644
  #define ggml_vec_dot_tq2_0_q8_K_generic ggml_vec_dot_tq2_0_q8_K
  #define ggml_vec_dot_iq1_m_q8_K_generic ggml_vec_dot_iq1_m_q8_K
  // repack.cpp
-@@ -172,6 +173,7 @@
+@@ -170,6 +172,7 @@
  // quants.c
  #define quantize_row_q8_K_generic quantize_row_q8_K
  #define ggml_vec_dot_tq1_0_q8_K_generic ggml_vec_dot_tq1_0_q8_K
@@ -79,7 +71,7 @@ index 4dbd1982..d1a9a144 100644
  #define ggml_vec_dot_tq2_0_q8_K_generic ggml_vec_dot_tq2_0_q8_K
  #define ggml_vec_dot_iq1_m_q8_K_generic ggml_vec_dot_iq1_m_q8_K
  #define ggml_vec_dot_mxfp4_q8_0_generic ggml_vec_dot_mxfp4_q8_0
-@@ -220,6 +222,7 @@
+@@ -218,6 +221,7 @@
  #define ggml_gemm_q8_0_4x4_q8_0_generic ggml_gemm_q8_0_4x4_q8_0
  #define ggml_gemm_q8_0_4x8_q8_0_generic ggml_gemm_q8_0_4x8_q8_0
  #elif defined(__riscv)
@@ -87,7 +79,7 @@ index 4dbd1982..d1a9a144 100644
  // quants.c
  #define ggml_vec_dot_nvfp4_q8_0_generic ggml_vec_dot_nvfp4_q8_0
  #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
-@@ -269,6 +272,7 @@
+@@ -267,6 +271,7 @@
  #define ggml_vec_dot_nvfp4_q8_0_generic ggml_vec_dot_nvfp4_q8_0
  #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
  #define ggml_vec_dot_tq1_0_q8_K_generic ggml_vec_dot_tq1_0_q8_K
@@ -95,7 +87,7 @@ index 4dbd1982..d1a9a144 100644
  #define ggml_vec_dot_tq2_0_q8_K_generic ggml_vec_dot_tq2_0_q8_K
  #define ggml_vec_dot_q2_K_q8_K_generic ggml_vec_dot_q2_K_q8_K
  #define ggml_vec_dot_iq2_xxs_q8_K_generic ggml_vec_dot_iq2_xxs_q8_K
-@@ -319,6 +323,7 @@
+@@ -317,6 +322,7 @@
  #elif defined(__wasm__)
  // quants.c
  #define ggml_vec_dot_tq1_0_q8_K_generic ggml_vec_dot_tq1_0_q8_K
@@ -104,10 +96,10 @@ index 4dbd1982..d1a9a144 100644
  #define ggml_vec_dot_iq2_xxs_q8_K_generic ggml_vec_dot_iq2_xxs_q8_K
  #define ggml_vec_dot_iq2_xs_q8_K_generic ggml_vec_dot_iq2_xs_q8_K
 diff --git a/src/ggml-cpu/arch/arm/quants.c b/src/ggml-cpu/arch/arm/quants.c
-index b988abf9..a270c7f6 100644
+index f16505b..0495e7a 100644
 --- a/src/ggml-cpu/arch/arm/quants.c
 +++ b/src/ggml-cpu/arch/arm/quants.c
-@@ -1394,6 +1394,75 @@ void ggml_vec_dot_q8_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
+@@ -1397,6 +1397,75 @@ void ggml_vec_dot_q8_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
      *s = sumf;
  }
  
@@ -184,63 +176,10 @@ index b988abf9..a270c7f6 100644
      assert(nrc == 1);
      UNUSED(nrc);
 diff --git a/src/ggml-cpu/arch/x86/quants.c b/src/ggml-cpu/arch/x86/quants.c
-index ea54cfe4..b992c168 100644
+index 21cd631..433f3a0 100644
 --- a/src/ggml-cpu/arch/x86/quants.c
 +++ b/src/ggml-cpu/arch/x86/quants.c
-@@ -698,6 +698,52 @@ void ggml_vec_dot_q1_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
- #endif
- }
- 
-+void ggml_vec_dot_q2_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
-+    const int qk = QK2_0;
-+    const int nb = n / qk;
-+
-+    assert(n % qk == 0);
-+    assert(nrc == 1);
-+    UNUSED(nrc);
-+    UNUSED(bx);
-+    UNUSED(by);
-+    UNUSED(bs);
-+
-+#if defined(__AVX2__)
-+    const block_q2_0 * GGML_RESTRICT x = vx;
-+    const block_q8_0 * GGML_RESTRICT y = vy;
-+
-+    const __m128i m3  = _mm_set1_epi8(3);
-+    const __m256i one = _mm256_set1_epi8(1);
-+
-+    __m256 acc = _mm256_setzero_ps();
-+
-+    for (int i = 0; i < nb; ++i) {
-+        // 16 bytes = 64 codes; code j = (qs[j/4] >> 2*(j%4)) & 3.
-+        const __m128i v  = _mm_loadu_si128((const __m128i *) x[i].qs);
-+        const __m128i c0 = _mm_and_si128(v, m3);                     // j = 4b + 0
-+        const __m128i c1 = _mm_and_si128(_mm_srli_epi16(v, 2), m3);  // j = 4b + 1
-+        const __m128i c2 = _mm_and_si128(_mm_srli_epi16(v, 4), m3);  // j = 4b + 2
-+        const __m128i c3 = _mm_and_si128(_mm_srli_epi16(v, 6), m3);  // j = 4b + 3
-+        // interleave back to natural element order
-+        const __m128i a_lo = _mm_unpacklo_epi8(c0, c1), b_lo = _mm_unpacklo_epi8(c2, c3);  // bytes 0..7
-+        const __m128i a_hi = _mm_unpackhi_epi8(c0, c1), b_hi = _mm_unpackhi_epi8(c2, c3);  // bytes 8..15
-+        const __m256i q0 = _mm256_set_m128i(_mm_unpackhi_epi16(a_lo, b_lo), _mm_unpacklo_epi16(a_lo, b_lo));  // elements 0..31
-+        const __m256i q1 = _mm256_set_m128i(_mm_unpackhi_epi16(a_hi, b_hi), _mm_unpacklo_epi16(a_hi, b_hi));  // elements 32..63
-+
-+        const float d0 = GGML_CPU_FP16_TO_FP32(x[i].d);
-+        const __m256 p0 = mul_sum_i8_pairs_float(_mm256_sub_epi8(q0, one), _mm256_loadu_si256((const __m256i *) y[2*i + 0].qs));
-+        const __m256 p1 = mul_sum_i8_pairs_float(_mm256_sub_epi8(q1, one), _mm256_loadu_si256((const __m256i *) y[2*i + 1].qs));
-+        acc = _mm256_fmadd_ps(_mm256_set1_ps(d0 * GGML_CPU_FP16_TO_FP32(y[2*i + 0].d)), p0, acc);
-+        acc = _mm256_fmadd_ps(_mm256_set1_ps(d0 * GGML_CPU_FP16_TO_FP32(y[2*i + 1].d)), p1, acc);
-+    }
-+
-+    *s = hsum_float_8(acc);
-+#else
-+    ggml_vec_dot_q2_0_q8_0_generic(n, s, bs, vx, bx, vy, by, nrc);
-+#endif
-+}
-+
- void ggml_vec_dot_q4_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
-     const int qk = QK8_0;
-     const int nb = n / qk;
-@@ -1373,6 +1419,86 @@ void ggml_vec_dot_q8_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
+@@ -1437,6 +1437,86 @@ void ggml_vec_dot_q8_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
      *s = sumf;
  }
  
@@ -328,10 +267,10 @@ index ea54cfe4..b992c168 100644
      assert(nrc == 1);
      UNUSED(nrc);
 diff --git a/src/ggml-cpu/ggml-cpu.c b/src/ggml-cpu/ggml-cpu.c
-index e8bfab1b..81e8cbf7 100644
+index 6122918..a0fb0ad 100644
 --- a/src/ggml-cpu/ggml-cpu.c
 +++ b/src/ggml-cpu/ggml-cpu.c
-@@ -410,6 +410,12 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
+@@ -419,6 +419,12 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
          .vec_dot_type             = GGML_TYPE_Q8_K,
          .nrows                    = 1,
      },
@@ -345,10 +284,10 @@ index e8bfab1b..81e8cbf7 100644
          .from_float               = (ggml_from_float_t) ggml_cpu_fp32_to_i32,
      },
 diff --git a/src/ggml-cpu/ops.cpp b/src/ggml-cpu/ops.cpp
-index ba00a0a7..89bf66ef 100644
+index eed5d69..8201521 100644
 --- a/src/ggml-cpu/ops.cpp
 +++ b/src/ggml-cpu/ops.cpp
-@@ -680,6 +680,7 @@ void ggml_compute_forward_add(
+@@ -690,6 +690,7 @@ void ggml_compute_forward_add(
          case GGML_TYPE_Q6_K:
          case GGML_TYPE_TQ1_0:
          case GGML_TYPE_TQ2_0:
@@ -356,7 +295,7 @@ index ba00a0a7..89bf66ef 100644
          case GGML_TYPE_IQ2_XXS:
          case GGML_TYPE_IQ2_XS:
          case GGML_TYPE_IQ3_XXS:
-@@ -1132,6 +1133,7 @@ void ggml_compute_forward_add1(
+@@ -1148,6 +1149,7 @@ void ggml_compute_forward_add1(
          case GGML_TYPE_Q6_K:
          case GGML_TYPE_TQ1_0:
          case GGML_TYPE_TQ2_0:
@@ -364,7 +303,7 @@ index ba00a0a7..89bf66ef 100644
          case GGML_TYPE_IQ2_XXS:
          case GGML_TYPE_IQ2_XS:
          case GGML_TYPE_IQ3_XXS:
-@@ -1263,6 +1265,7 @@ void ggml_compute_forward_acc(
+@@ -1280,6 +1282,7 @@ void ggml_compute_forward_acc(
          case GGML_TYPE_Q6_K:
          case GGML_TYPE_TQ1_0:
          case GGML_TYPE_TQ2_0:
@@ -372,7 +311,7 @@ index ba00a0a7..89bf66ef 100644
          case GGML_TYPE_IQ2_XXS:
          case GGML_TYPE_IQ2_XS:
          case GGML_TYPE_IQ3_XXS:
-@@ -4665,6 +4668,7 @@ void ggml_compute_forward_out_prod(
+@@ -4824,6 +4827,7 @@ void ggml_compute_forward_out_prod(
          case GGML_TYPE_Q6_K:
          case GGML_TYPE_TQ1_0:
          case GGML_TYPE_TQ2_0:
@@ -380,7 +319,7 @@ index ba00a0a7..89bf66ef 100644
          case GGML_TYPE_IQ2_XXS:
          case GGML_TYPE_IQ2_XS:
          case GGML_TYPE_IQ3_XXS:
-@@ -4942,6 +4946,7 @@ void ggml_compute_forward_set(
+@@ -5150,6 +5154,7 @@ void ggml_compute_forward_set(
          case GGML_TYPE_Q6_K:
          case GGML_TYPE_TQ1_0:
          case GGML_TYPE_TQ2_0:
@@ -388,7 +327,7 @@ index ba00a0a7..89bf66ef 100644
          case GGML_TYPE_IQ2_XXS:
          case GGML_TYPE_IQ2_XS:
          case GGML_TYPE_IQ3_XXS:
-@@ -5167,6 +5172,7 @@ void ggml_compute_forward_get_rows(
+@@ -5376,6 +5381,7 @@ void ggml_compute_forward_get_rows(
          case GGML_TYPE_Q6_K:
          case GGML_TYPE_TQ1_0:
          case GGML_TYPE_TQ2_0:
@@ -396,7 +335,7 @@ index ba00a0a7..89bf66ef 100644
          case GGML_TYPE_IQ2_XXS:
          case GGML_TYPE_IQ2_XS:
          case GGML_TYPE_IQ3_XXS:
-@@ -5924,6 +5930,7 @@ void ggml_compute_forward_clamp(
+@@ -6049,6 +6055,7 @@ void ggml_compute_forward_clamp(
          case GGML_TYPE_Q6_K:
          case GGML_TYPE_TQ1_0:
          case GGML_TYPE_TQ2_0:
@@ -405,10 +344,10 @@ index ba00a0a7..89bf66ef 100644
          case GGML_TYPE_IQ2_XS:
          case GGML_TYPE_IQ3_XXS:
 diff --git a/src/ggml-cpu/quants.c b/src/ggml-cpu/quants.c
-index 5e36459f..a315bc39 100644
+index 44ea9fa..e9965b3 100644
 --- a/src/ggml-cpu/quants.c
 +++ b/src/ggml-cpu/quants.c
-@@ -104,6 +104,12 @@ void quantize_row_q6_K(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, i
+@@ -109,6 +109,12 @@ void quantize_row_q6_K(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, i
  
  // ====================== Ternary (de)-quantization (BitNet b1.58 and TriLMs)
  
@@ -421,7 +360,7 @@ index 5e36459f..a315bc39 100644
  void quantize_row_tq1_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
      assert(k % QK_K == 0);
      block_tq1_0 * GGML_RESTRICT y = vy;
-@@ -530,6 +536,53 @@ void ggml_vec_dot_tq1_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs,
+@@ -578,6 +584,53 @@ void ggml_vec_dot_tq1_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs,
      *s = sumf;
  }
  
@@ -476,10 +415,10 @@ index 5e36459f..a315bc39 100644
      assert(nrc == 1);
      UNUSED(nrc);
 diff --git a/src/ggml-cpu/quants.h b/src/ggml-cpu/quants.h
-index 93ea7eef..e8d28428 100644
+index f04be52..fef025b 100644
 --- a/src/ggml-cpu/quants.h
 +++ b/src/ggml-cpu/quants.h
-@@ -32,6 +32,7 @@ void quantize_row_q6_K(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, in
+@@ -33,6 +33,7 @@ void quantize_row_q6_K(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, in
  void quantize_row_q8_K(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
  
  void quantize_row_tq1_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
@@ -487,7 +426,7 @@ index 93ea7eef..e8d28428 100644
  void quantize_row_tq2_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
  
  void quantize_row_iq4_nl (const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
-@@ -56,6 +57,7 @@ void ggml_vec_dot_q5_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
+@@ -58,6 +59,7 @@ void ggml_vec_dot_q5_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
  void ggml_vec_dot_q6_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
  
  void ggml_vec_dot_tq1_0_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
@@ -495,7 +434,7 @@ index 93ea7eef..e8d28428 100644
  void ggml_vec_dot_tq2_0_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
  
  void ggml_vec_dot_iq2_xxs_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
-@@ -84,6 +86,7 @@ void ggml_vec_dot_mxfp4_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs,
+@@ -86,6 +88,7 @@ void ggml_vec_dot_mxfp4_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs,
  void ggml_vec_dot_nvfp4_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
  
  void ggml_vec_dot_tq1_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
@@ -504,10 +443,10 @@ index 93ea7eef..e8d28428 100644
  
  void ggml_vec_dot_q2_K_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
 diff --git a/src/ggml-cuda/common.cuh b/src/ggml-cuda/common.cuh
-index d8b7f051..cbfb0467 100644
+index fd54a05..483881f 100644
 --- a/src/ggml-cuda/common.cuh
 +++ b/src/ggml-cuda/common.cuh
-@@ -1156,6 +1156,16 @@ struct ggml_cuda_type_traits<GGML_TYPE_IQ4_NL> {
+@@ -1231,6 +1231,16 @@ struct ggml_cuda_type_traits<GGML_TYPE_IQ4_NL> {
      static constexpr int bs = sizeof(block_iq4_nl);
  };
  
@@ -525,10 +464,10 @@ index d8b7f051..cbfb0467 100644
  struct ggml_cuda_type_traits<GGML_TYPE_IQ4_XS> {
      static constexpr int qk = QK_K;
 diff --git a/src/ggml-cuda/convert.cu b/src/ggml-cuda/convert.cu
-index 0619f476..a1108ba4 100644
+index a8f5047..7ca67e5 100644
 --- a/src/ggml-cuda/convert.cu
 +++ b/src/ggml-cuda/convert.cu
-@@ -270,6 +270,40 @@ static void dequantize_block_q8_0_f16_cuda(const void * __restrict__ vx, half *
+@@ -275,6 +275,40 @@ static void dequantize_block_q8_0_f16_cuda(const void * __restrict__ vx, half *
      }
  }
  
@@ -569,7 +508,7 @@ index 0619f476..a1108ba4 100644
  template<typename dst_t>
  static void dequantize_row_q2_K_cuda(const void * vx, dst_t * y, const int64_t k, cudaStream_t stream) {
      const int nb = k / QK_K;
-@@ -505,6 +539,8 @@ to_bf16_cuda_t ggml_get_to_bf16_cuda(ggml_type type) {
+@@ -511,6 +545,8 @@ to_bf16_cuda_t ggml_get_to_bf16_cuda(ggml_type type) {
              return dequantize_block_cont_cuda<QK8_0, QR8_0, dequantize_q8_0>;
          case GGML_TYPE_Q2_K:
              return dequantize_row_q2_K_cuda;
@@ -578,7 +517,7 @@ index 0619f476..a1108ba4 100644
          case GGML_TYPE_Q3_K:
              return dequantize_row_q3_K_cuda;
          case GGML_TYPE_Q4_K:
-@@ -565,6 +601,8 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
+@@ -573,6 +609,8 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
              return dequantize_block_cont_cuda<QK8_0, QR8_0, dequantize_q8_0>;
          case GGML_TYPE_Q2_K:
              return dequantize_row_q2_K_cuda;
@@ -587,7 +526,7 @@ index 0619f476..a1108ba4 100644
          case GGML_TYPE_Q3_K:
              return dequantize_row_q3_K_cuda;
          case GGML_TYPE_Q4_K:
-@@ -622,6 +660,8 @@ to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
+@@ -632,6 +670,8 @@ to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
              return dequantize_block_cont_cuda<QK8_0, QR8_0, dequantize_q8_0>;
          case GGML_TYPE_Q2_K:
              return dequantize_row_q2_K_cuda;
@@ -597,10 +536,10 @@ index 0619f476..a1108ba4 100644
              return dequantize_row_q3_K_cuda;
          case GGML_TYPE_Q4_K:
 diff --git a/src/ggml-cuda/ggml-cuda.cu b/src/ggml-cuda/ggml-cuda.cu
-index 29fe55f4..dad3b7cd 100644
+index 63c11dc..dda28cf 100644
 --- a/src/ggml-cuda/ggml-cuda.cu
 +++ b/src/ggml-cuda/ggml-cuda.cu
-@@ -5315,6 +5315,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
+@@ -6400,6 +6400,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                      case GGML_TYPE_Q5_K:
                      case GGML_TYPE_Q6_K:
                      case GGML_TYPE_Q8_K:
@@ -609,10 +548,10 @@ index 29fe55f4..dad3b7cd 100644
                      case GGML_TYPE_IQ1_S:
                      case GGML_TYPE_IQ2_S:
 diff --git a/src/ggml-cuda/mmvq.cu b/src/ggml-cuda/mmvq.cu
-index a8515536..cdc4fd0c 100644
+index c6d895d..187e08d 100644
 --- a/src/ggml-cuda/mmvq.cu
 +++ b/src/ggml-cuda/mmvq.cu
-@@ -62,6 +62,7 @@ static constexpr __device__ vec_dot_q_cuda_t get_vec_dot_q_cuda(ggml_type type)
+@@ -58,6 +58,7 @@ static constexpr __device__ vec_dot_q_cuda_t get_vec_dot_q_cuda(ggml_type type)
          case GGML_TYPE_IQ4_NL:  return vec_dot_iq4_nl_q8_1;
          case GGML_TYPE_IQ4_XS:  return vec_dot_iq4_xs_q8_1;
          case GGML_TYPE_IQ3_S:   return vec_dot_iq3_s_q8_1;
@@ -620,7 +559,7 @@ index a8515536..cdc4fd0c 100644
          default:                return nullptr;
      }
  }
-@@ -89,6 +90,7 @@ static constexpr __host__ __device__ int get_vdr_mmvq(ggml_type type) {
+@@ -85,6 +86,7 @@ static constexpr __host__ __device__ int get_vdr_mmvq(ggml_type type) {
          case GGML_TYPE_IQ3_S:   return VDR_IQ3_S_Q8_1_MMVQ;
          case GGML_TYPE_IQ4_NL:  return VDR_IQ4_NL_Q8_1_MMVQ;
          case GGML_TYPE_IQ4_XS:  return VDR_IQ4_XS_Q8_1_MMVQ;
@@ -628,7 +567,7 @@ index a8515536..cdc4fd0c 100644
          default:                return 1;
      }
  }
-@@ -1412,6 +1414,12 @@ static void mul_mat_vec_q_switch_type(
+@@ -1444,6 +1446,12 @@ static void mul_mat_vec_q_switch_type(
                   nchannels_x, nchannels_y, nchannels_dst, stride_channel_x, stride_channel_y, stride_channel_dst,
                   nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride, stream);
              break;
@@ -640,12 +579,12 @@ index a8515536..cdc4fd0c 100644
 +            break;
          default:
              GGML_ABORT("fatal error");
-             break;
+     }
 diff --git a/src/ggml-cuda/vecdotq.cuh b/src/ggml-cuda/vecdotq.cuh
-index f2a6f200..f79f898e 100644
+index d5ff93b..a9583df 100644
 --- a/src/ggml-cuda/vecdotq.cuh
 +++ b/src/ggml-cuda/vecdotq.cuh
-@@ -1351,6 +1351,51 @@ static __device__ __forceinline__ float vec_dot_iq4_nl_q8_1(
+@@ -1414,6 +1414,51 @@ static __device__ __forceinline__ float vec_dot_iq4_nl_q8_1(
      return d * sumi;
  }
  
@@ -698,10 +637,10 @@ index f2a6f200..f79f898e 100644
  #define VDR_IQ4_XS_Q8_1_MMQ  4
  
 diff --git a/src/ggml-quants.c b/src/ggml-quants.c
-index 55db802c..c51d5c8d 100644
+index 3586f67..f34cefb 100644
 --- a/src/ggml-quants.c
 +++ b/src/ggml-quants.c
-@@ -2411,6 +2411,155 @@ void quantize_row_tq2_0_ref(const float * GGML_RESTRICT x, block_tq2_0 * GGML_RE
+@@ -2427,6 +2427,155 @@ void quantize_row_tq2_0_ref(const float * GGML_RESTRICT x, block_tq2_0 * GGML_RE
      }
  }
  
@@ -857,7 +796,7 @@ index 55db802c..c51d5c8d 100644
  size_t quantize_tq1_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
      (void)quant_weights; // not used
      const size_t row_size = ggml_row_size(GGML_TYPE_TQ1_0, n_per_row);
-@@ -5575,6 +5724,17 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
+@@ -5602,6 +5751,17 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
              {
                  VALIDATE_ROW_DATA_D_F16_IMPL(block_tq2_0, data, nb);
              } break;
@@ -876,10 +815,10 @@ index 55db802c..c51d5c8d 100644
              {
                  VALIDATE_ROW_DATA_D_F16_IMPL(block_iq1_s, data, nb);
 diff --git a/src/ggml-quants.h b/src/ggml-quants.h
-index 75188f1a..9dd6a7e7 100644
+index ca36d13..f449d85 100644
 --- a/src/ggml-quants.h
 +++ b/src/ggml-quants.h
-@@ -34,6 +34,7 @@ GGML_API void quantize_row_q6_K_ref(const float * GGML_RESTRICT x, block_q6_K *
+@@ -35,6 +35,7 @@ GGML_API void quantize_row_q6_K_ref(const float * GGML_RESTRICT x, block_q6_K *
  GGML_API void quantize_row_q8_K_ref(const float * GGML_RESTRICT x, block_q8_K * GGML_RESTRICT y, int64_t k);
  
  GGML_API void quantize_row_tq1_0_ref(const float * GGML_RESTRICT x, block_tq1_0 * GGML_RESTRICT y, int64_t k);
@@ -887,7 +826,7 @@ index 75188f1a..9dd6a7e7 100644
  GGML_API void quantize_row_tq2_0_ref(const float * GGML_RESTRICT x, block_tq2_0 * GGML_RESTRICT y, int64_t k);
  
  GGML_API void quantize_row_iq3_xxs_ref(const float * GGML_RESTRICT x, block_iq3_xxs * GGML_RESTRICT y, int64_t k);
-@@ -63,6 +64,7 @@ GGML_API void dequantize_row_q6_K(const block_q6_K * GGML_RESTRICT x, float * GG
+@@ -65,6 +66,7 @@ GGML_API void dequantize_row_q6_K(const block_q6_K * GGML_RESTRICT x, float * GG
  GGML_API void dequantize_row_q8_K(const block_q8_K * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
  
  GGML_API void dequantize_row_tq1_0(const block_tq1_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
@@ -895,7 +834,7 @@ index 75188f1a..9dd6a7e7 100644
  GGML_API void dequantize_row_tq2_0(const block_tq2_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
  
  GGML_API void dequantize_row_iq2_xxs(const block_iq2_xxs * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
-@@ -87,6 +89,14 @@ GGML_API size_t quantize_iq4_xs (const float * GGML_RESTRICT src, void * GGML_RE
+@@ -89,6 +91,14 @@ GGML_API size_t quantize_iq4_xs (const float * GGML_RESTRICT src, void * GGML_RE
  GGML_API size_t quantize_iq3_s  (const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
  
  GGML_API size_t quantize_tq1_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
@@ -911,10 +850,10 @@ index 75188f1a..9dd6a7e7 100644
  
  GGML_API size_t quantize_q2_K(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
 diff --git a/src/ggml-vulkan/ggml-vulkan.cpp b/src/ggml-vulkan/ggml-vulkan.cpp
-index ded65419..d9f2c1e0 100644
+index 22641f5..1a0b7c3 100644
 --- a/src/ggml-vulkan/ggml-vulkan.cpp
 +++ b/src/ggml-vulkan/ggml-vulkan.cpp
-@@ -2062,6 +2062,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+@@ -2383,6 +2383,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
      static const ggml_type non_lut_quant_types[] = {
          GGML_TYPE_Q1_0, GGML_TYPE_Q2_0, GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1, GGML_TYPE_Q8_0,
          GGML_TYPE_Q2_K, GGML_TYPE_Q3_K, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q6_K, GGML_TYPE_TQ1_0, GGML_TYPE_TQ2_0,
@@ -922,7 +861,7 @@ index ded65419..d9f2c1e0 100644
      };
  
  #define FOR_EACH_LUT_TYPE_NONFP4(X) \
-@@ -2180,7 +2181,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+@@ -2501,7 +2502,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
              if (type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q5_K) {
                  continue;
              }
@@ -931,7 +870,7 @@ index ded65419..d9f2c1e0 100644
              spec_fn_t qs = [&, type](const std::vector<uint32_t>& wt, bool a) { return ggml_vk_mul_mm_cm2_spec(wt, a, (uint32_t)type); };
              create_mm_pipelines({type, GGML_TYPE_F16, false, true},  tc, "matmul_quant_f16_f16acc", matmul_quant_f16_f16acc_cm2_len, matmul_quant_f16_f16acc_cm2_data, sizeof(vk_mat_mat_push_constants), 3, qs, true);
              create_mm_pipelines({type, GGML_TYPE_F16, false, false}, tc, "matmul_quant_f16",        matmul_quant_f16_cm2_len,        matmul_quant_f16_cm2_data,        sizeof(vk_mat_mat_push_constants), 3, qs, true);
-@@ -2769,6 +2770,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+@@ -3150,6 +3151,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f32_f32[w][GGML_TYPE_Q5_K][i], "mul_mat_vec_q5_k_f32_f32", arr_dmmv_q5_k_f32_f32_len[reduc16], arr_dmmv_q5_k_f32_f32_data[reduc16], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f32_f32[w][GGML_TYPE_Q6_K][i], "mul_mat_vec_q6_k_f32_f32", arr_dmmv_q6_k_f32_f32_len[reduc16], arr_dmmv_q6_k_f32_f32_data[reduc16], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f32_f32[w][GGML_TYPE_TQ1_0][i], "mul_mat_vec_tq1_0_f32_f32", arr_dmmv_tq1_0_f32_f32_len[reduc16], arr_dmmv_tq1_0_f32_f32_data[reduc16], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
@@ -939,7 +878,7 @@ index ded65419..d9f2c1e0 100644
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f32_f32[w][GGML_TYPE_TQ2_0][i], "mul_mat_vec_tq2_0_f32_f32", arr_dmmv_tq2_0_f32_f32_len[reduc16], arr_dmmv_tq2_0_f32_f32_data[reduc16], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f32_f32[w][GGML_TYPE_IQ1_S][i],   "mul_mat_vec_iq1_s_f32_f32",   arr_dmmv_iq1_s_f32_f32_len[reduc16],   arr_dmmv_iq1_s_f32_f32_data[reduc16],   "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_iq, 1, 1}, {wg_size_subgroup16, rm_iq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f32_f32[w][GGML_TYPE_IQ1_M][i],   "mul_mat_vec_iq1_m_f32_f32",   arr_dmmv_iq1_m_f32_f32_len[reduc16],   arr_dmmv_iq1_m_f32_f32_data[reduc16],   "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_iq, 1, 1}, {wg_size_subgroup16, rm_iq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
-@@ -2798,6 +2800,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+@@ -3179,6 +3181,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f16_f32[w][GGML_TYPE_Q5_K][i], "mul_mat_vec_q5_k_f16_f32", arr_dmmv_q5_k_f16_f32_len[reduc16], arr_dmmv_q5_k_f16_f32_data[reduc16], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f16_f32[w][GGML_TYPE_Q6_K][i], "mul_mat_vec_q6_k_f16_f32", arr_dmmv_q6_k_f16_f32_len[reduc16], arr_dmmv_q6_k_f16_f32_data[reduc16], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f16_f32[w][GGML_TYPE_TQ1_0][i], "mul_mat_vec_tq1_0_f16_f32", arr_dmmv_tq1_0_f16_f32_len[reduc16], arr_dmmv_tq1_0_f16_f32_data[reduc16], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
@@ -947,7 +886,7 @@ index ded65419..d9f2c1e0 100644
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f16_f32[w][GGML_TYPE_TQ2_0][i], "mul_mat_vec_tq2_0_f16_f32", arr_dmmv_tq2_0_f16_f32_len[reduc16], arr_dmmv_tq2_0_f16_f32_data[reduc16], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f16_f32[w][GGML_TYPE_IQ1_S][i],   "mul_mat_vec_iq1_s_f16_f32",   arr_dmmv_iq1_s_f16_f32_len[reduc16],   arr_dmmv_iq1_s_f16_f32_data[reduc16],   "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_iq, 1, 1}, {wg_size_subgroup16, rm_iq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f16_f32[w][GGML_TYPE_IQ1_M][i],   "mul_mat_vec_iq1_m_f16_f32",   arr_dmmv_iq1_m_f16_f32_len[reduc16],   arr_dmmv_iq1_m_f16_f32_data[reduc16],   "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_iq, 1, 1}, {wg_size_subgroup16, rm_iq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
-@@ -2855,6 +2858,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+@@ -3236,6 +3239,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
          ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_f32[w][GGML_TYPE_Q5_K], "mul_mat_vec_id_q5_k_f32",       arr_dmmv_id_q5_k_f32_f32_len[reduc16],    arr_dmmv_id_q5_k_f32_f32_data[reduc16],    "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq}, 1, true, use_subgroups16, force_subgroup_size16);
          ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_f32[w][GGML_TYPE_Q6_K], "mul_mat_vec_id_q6_k_f32",       arr_dmmv_id_q6_k_f32_f32_len[reduc16],    arr_dmmv_id_q6_k_f32_f32_data[reduc16],    "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq}, 1, true, use_subgroups16, force_subgroup_size16);
          ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_f32[w][GGML_TYPE_TQ1_0], "mul_mat_vec_id_tq1_0_f32",     arr_dmmv_id_tq1_0_f32_f32_len[reduc16],   arr_dmmv_id_tq1_0_f32_f32_data[reduc16],   "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq}, 1, true, use_subgroups16, force_subgroup_size16);
@@ -955,7 +894,7 @@ index ded65419..d9f2c1e0 100644
          ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_f32[w][GGML_TYPE_TQ2_0], "mul_mat_vec_id_tq2_0_f32",     arr_dmmv_id_tq2_0_f32_f32_len[reduc16],   arr_dmmv_id_tq2_0_f32_f32_data[reduc16],   "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq}, 1, true, use_subgroups16, force_subgroup_size16);
          ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_f32[w][GGML_TYPE_IQ1_S],   "mul_mat_vec_id_iq1_s_f32",   arr_dmmv_id_iq1_s_f32_f32_len[reduc16],   arr_dmmv_id_iq1_s_f32_f32_data[reduc16],   "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {rm_iq, 1, 1}, {wg_size_subgroup16, rm_iq}, 1, true, use_subgroups16, force_subgroup_size16);
          ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_f32[w][GGML_TYPE_IQ1_M],   "mul_mat_vec_id_iq1_m_f32",   arr_dmmv_id_iq1_m_f32_f32_len[reduc16],   arr_dmmv_id_iq1_m_f32_f32_data[reduc16],   "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {rm_iq, 1, 1}, {wg_size_subgroup16, rm_iq}, 1, true, use_subgroups16, force_subgroup_size16);
-@@ -2923,6 +2927,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+@@ -3304,6 +3308,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
      ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_Q5_K], "dequant_q5_k", dequant_q5_k_len, dequant_q5_k_data, "main", 2, 5 * sizeof(uint32_t), {256 * 64, 1, 1}, {}, 1);
      ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_Q6_K], "dequant_q6_k", dequant_q6_k_len, dequant_q6_k_data, "main", 2, 5 * sizeof(uint32_t), {256 * 64, 1, 1}, {}, 1);
      ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_TQ1_0], "dequant_tq1_0", dequant_tq1_0_len, dequant_tq1_0_data, "main", 2, 5 * sizeof(uint32_t), {256 * 4, 1, 1}, {}, 1);
@@ -963,7 +902,7 @@ index ded65419..d9f2c1e0 100644
      ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_TQ2_0], "dequant_tq2_0", dequant_tq2_0_len, dequant_tq2_0_data, "main", 2, 5 * sizeof(uint32_t), {256 * 64, 1, 1}, {}, 1);
      ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_IQ1_S],   "dequant_iq1_s",   dequant_iq1_s_len,   dequant_iq1_s_data,   "main", 2, 5 * sizeof(uint32_t), {256 * 32, 1, 1}, {}, 1);
      ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_IQ1_M],   "dequant_iq1_m",   dequant_iq1_m_len,   dequant_iq1_m_data,   "main", 2, 5 * sizeof(uint32_t), {256 * 32, 1, 1}, {}, 1);
-@@ -2953,6 +2958,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+@@ -3334,6 +3339,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
      ggml_vk_create_pipeline(device, device->pipeline_get_rows[GGML_TYPE_Q5_K], "get_rows_q5_k", get_rows_q5_k_len, get_rows_q5_k_data, "main", 3, sizeof(vk_op_binary_push_constants), {1024, 1, 1}, {}, 1);
      ggml_vk_create_pipeline(device, device->pipeline_get_rows[GGML_TYPE_Q6_K], "get_rows_q6_k", get_rows_q6_k_len, get_rows_q6_k_data, "main", 3, sizeof(vk_op_binary_push_constants), {1024, 1, 1}, {}, 1);
      ggml_vk_create_pipeline(device, device->pipeline_get_rows[GGML_TYPE_TQ1_0], "get_rows_tq1_0", get_rows_tq1_0_len, get_rows_tq1_0_data, "main", 3, sizeof(vk_op_binary_push_constants), {1024, 1, 1}, {}, 1);
@@ -971,7 +910,7 @@ index ded65419..d9f2c1e0 100644
      ggml_vk_create_pipeline(device, device->pipeline_get_rows[GGML_TYPE_TQ2_0], "get_rows_tq2_0", get_rows_tq2_0_len, get_rows_tq2_0_data, "main", 3, sizeof(vk_op_binary_push_constants), {1024, 1, 1}, {}, 1);
      ggml_vk_create_pipeline(device, device->pipeline_get_rows[GGML_TYPE_IQ1_S],   "get_rows_iq1_s",   get_rows_iq1_s_len,   get_rows_iq1_s_data,   "main", 3, sizeof(vk_op_binary_push_constants), {1024, 1, 1}, {}, 1);
      ggml_vk_create_pipeline(device, device->pipeline_get_rows[GGML_TYPE_IQ1_M],   "get_rows_iq1_m",   get_rows_iq1_m_len,   get_rows_iq1_m_data,   "main", 3, sizeof(vk_op_binary_push_constants), {1024, 1, 1}, {}, 1);
-@@ -2983,6 +2989,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+@@ -3364,6 +3370,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
      ggml_vk_create_pipeline(device, device->pipeline_get_rows_f32[GGML_TYPE_Q5_K], "get_rows_q5_k_f32", get_rows_q5_k_f32_len, get_rows_q5_k_f32_data, "main", 3, sizeof(vk_op_binary_push_constants), {1024, 1, 1}, {}, 1);
      ggml_vk_create_pipeline(device, device->pipeline_get_rows_f32[GGML_TYPE_Q6_K], "get_rows_q6_k_f32", get_rows_q6_k_f32_len, get_rows_q6_k_f32_data, "main", 3, sizeof(vk_op_binary_push_constants), {1024, 1, 1}, {}, 1);
      ggml_vk_create_pipeline(device, device->pipeline_get_rows_f32[GGML_TYPE_TQ1_0], "get_rows_tq1_0_f32", get_rows_tq1_0_f32_len, get_rows_tq1_0_f32_data, "main", 3, sizeof(vk_op_binary_push_constants), {1024, 1, 1}, {}, 1);
@@ -979,7 +918,7 @@ index ded65419..d9f2c1e0 100644
      ggml_vk_create_pipeline(device, device->pipeline_get_rows_f32[GGML_TYPE_TQ2_0], "get_rows_tq2_0_f32", get_rows_tq2_0_f32_len, get_rows_tq2_0_f32_data, "main", 3, sizeof(vk_op_binary_push_constants), {1024, 1, 1}, {}, 1);
      ggml_vk_create_pipeline(device, device->pipeline_get_rows_f32[GGML_TYPE_IQ1_S],   "get_rows_iq1_s_f32",   get_rows_iq1_s_f32_len,   get_rows_iq1_s_f32_data,   "main", 3, sizeof(vk_op_binary_push_constants), {1024, 1, 1}, {}, 1);
      ggml_vk_create_pipeline(device, device->pipeline_get_rows_f32[GGML_TYPE_IQ1_M],   "get_rows_iq1_m_f32",   get_rows_iq1_m_f32_len,   get_rows_iq1_m_f32_data,   "main", 3, sizeof(vk_op_binary_push_constants), {1024, 1, 1}, {}, 1);
-@@ -5307,6 +5314,7 @@ vk_pipeline ggml_vk_get_to_fp16(ggml_backend_vk_context * ctx, ggml_type type) {
+@@ -5820,6 +5827,7 @@ vk_pipeline ggml_vk_get_to_fp16(ggml_backend_vk_context * ctx, ggml_type type) {
          case GGML_TYPE_NVFP4:
          case GGML_TYPE_TQ1_0:
          case GGML_TYPE_TQ2_0:
@@ -987,7 +926,7 @@ index ded65419..d9f2c1e0 100644
              break;
          default:
              return nullptr;
-@@ -5372,6 +5380,7 @@ static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec(ggml_backend_vk_context *
+@@ -5885,6 +5893,7 @@ static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec(ggml_backend_vk_context *
          case GGML_TYPE_NVFP4:
          case GGML_TYPE_TQ1_0:
          case GGML_TYPE_TQ2_0:
@@ -995,7 +934,7 @@ index ded65419..d9f2c1e0 100644
              break;
          default:
              return nullptr;
-@@ -5460,6 +5469,7 @@ static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec_id(ggml_backend_vk_context
+@@ -5973,6 +5982,7 @@ static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec_id(ggml_backend_vk_context
          case GGML_TYPE_NVFP4:
          case GGML_TYPE_TQ1_0:
          case GGML_TYPE_TQ2_0:
@@ -1003,7 +942,7 @@ index ded65419..d9f2c1e0 100644
              break;
          default:
              return nullptr;
-@@ -15162,6 +15172,7 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
+@@ -16019,6 +16029,7 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                      case GGML_TYPE_NVFP4:
                      case GGML_TYPE_TQ1_0:
                      case GGML_TYPE_TQ2_0:
@@ -1011,7 +950,7 @@ index ded65419..d9f2c1e0 100644
                          break;
                      default:
                          return false;
-@@ -15269,6 +15280,7 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
+@@ -16126,6 +16137,7 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                      case GGML_TYPE_NVFP4:
                      case GGML_TYPE_TQ1_0:
                      case GGML_TYPE_TQ2_0:
@@ -1020,10 +959,10 @@ index ded65419..d9f2c1e0 100644
                          return true;
                      default:
 diff --git a/src/ggml-vulkan/vulkan-shaders/dequant_funcs.glsl b/src/ggml-vulkan/vulkan-shaders/dequant_funcs.glsl
-index 9df66cb4..31844d29 100644
+index 911ceac..b125a48 100644
 --- a/src/ggml-vulkan/vulkan-shaders/dequant_funcs.glsl
 +++ b/src/ggml-vulkan/vulkan-shaders/dequant_funcs.glsl
-@@ -608,6 +608,27 @@ vec2 get_dm(uint ib, uint a_offset) {
+@@ -609,6 +609,27 @@ vec2 get_dm(uint ib, uint a_offset) {
  }
  #endif
  
@@ -1052,7 +991,7 @@ index 9df66cb4..31844d29 100644
  float tq1_0_val(uint ib, uint e, uint a_offset) {
      const uint bidx = tq1_0_byte_of(e);
 diff --git a/src/ggml-vulkan/vulkan-shaders/dequant_funcs_cm2.glsl b/src/ggml-vulkan/vulkan-shaders/dequant_funcs_cm2.glsl
-index cc6e242a..0da229e5 100644
+index ecea266..af58ea7 100644
 --- a/src/ggml-vulkan/vulkan-shaders/dequant_funcs_cm2.glsl
 +++ b/src/ggml-vulkan/vulkan-shaders/dequant_funcs_cm2.glsl
 @@ -274,6 +274,33 @@ f16vec4 dequantFuncTQ1_0_v(const in decodeBufTQ1_0 bl, const in uint blockCoords
@@ -1060,7 +999,7 @@ index cc6e242a..0da229e5 100644
  }
  
 +layout(buffer_reference, std430, buffer_reference_align = 2) buffer decodeBufTQ1_G128 {
-+   block_tq1_g128 block;
++   readonly block_tq1_g128 block;
 +};
 +
 +float16_t dequantFuncTQ1_G128(const in decodeBufTQ1_G128 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
@@ -1087,7 +1026,7 @@ index cc6e242a..0da229e5 100644
 +}
 +
  layout(buffer_reference, std430, buffer_reference_align = 2) buffer decodeBufTQ2_0 {
-    block_tq2_0 block;
+    readonly block_tq2_0 block;
  };
 @@ -1435,6 +1462,9 @@ f16vec4 dequantFuncNVFP4_v(const in decodeBufNVFP4 bl, const in uint blockCoords
  #define dequantFuncA_v dequantFuncQ8_0_v
@@ -1101,7 +1040,7 @@ index cc6e242a..0da229e5 100644
  #define dequantFuncA_v dequantFuncTQ2_0_v
 diff --git a/src/ggml-vulkan/vulkan-shaders/dequant_tq1_g128.comp b/src/ggml-vulkan/vulkan-shaders/dequant_tq1_g128.comp
 new file mode 100644
-index 00000000..ef14e492
+index 0000000..ef14e49
 --- /dev/null
 +++ b/src/ggml-vulkan/vulkan-shaders/dequant_tq1_g128.comp
 @@ -0,0 +1,27 @@
@@ -1133,7 +1072,7 @@ index 00000000..ef14e492
 +    }
 +}
 diff --git a/src/ggml-vulkan/vulkan-shaders/ggml_type_ids.glsl b/src/ggml-vulkan/vulkan-shaders/ggml_type_ids.glsl
-index 0f10c733..3c6ae355 100644
+index 0f10c73..3c6ae35 100644
 --- a/src/ggml-vulkan/vulkan-shaders/ggml_type_ids.glsl
 +++ b/src/ggml-vulkan/vulkan-shaders/ggml_type_ids.glsl
 @@ -25,6 +25,7 @@
@@ -1146,7 +1085,7 @@ index 0f10c733..3c6ae355 100644
  #define GGML_TYPE_NVFP4   40u
 diff --git a/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_tq1_g128.comp b/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_tq1_g128.comp
 new file mode 100644
-index 00000000..263c51dd
+index 0000000..263c51d
 --- /dev/null
 +++ b/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_tq1_g128.comp
 @@ -0,0 +1,85 @@
@@ -1236,7 +1175,7 @@ index 00000000..263c51dd
 +    }
 +}
 diff --git a/src/ggml-vulkan/vulkan-shaders/mul_mm.comp b/src/ggml-vulkan/vulkan-shaders/mul_mm.comp
-index 11098ee7..9cae6b28 100644
+index 19d3787..17ebd0f 100644
 --- a/src/ggml-vulkan/vulkan-shaders/mul_mm.comp
 +++ b/src/ggml-vulkan/vulkan-shaders/mul_mm.comp
 @@ -103,6 +103,7 @@ layout (binding = 0) readonly buffer BUF_Q4_K     { block_q4_K data[];     } a_q
@@ -1248,10 +1187,10 @@ index 11098ee7..9cae6b28 100644
  // Packed16 aliases
  layout (binding = 0) readonly buffer BUF_Q4_0_P16   { block_q4_0_packed16 data[];   } a_q4_0_p16;
 diff --git a/src/ggml-vulkan/vulkan-shaders/mul_mm_cm2.comp b/src/ggml-vulkan/vulkan-shaders/mul_mm_cm2.comp
-index 9b59e8bc..e868eecf 100644
+index 10dda77..60f3466 100644
 --- a/src/ggml-vulkan/vulkan-shaders/mul_mm_cm2.comp
 +++ b/src/ggml-vulkan/vulkan-shaders/mul_mm_cm2.comp
-@@ -135,6 +135,7 @@ float16_t mmDecodeA(const in decodeBufA bl_in, const in uint blockCoords[2], con
+@@ -131,6 +131,7 @@ float16_t mmDecodeA(const in decodeBufA bl_in, const in uint blockCoords[2], con
      case GGML_TYPE_Q3_K:  return dequantFuncQ3_K (decodeBufQ3_K (bl_in), blockCoords, coordInBlock);
      case GGML_TYPE_Q6_K:  return dequantFuncQ6_K (decodeBufQ6_K (bl_in), blockCoords, coordInBlock);
      case GGML_TYPE_TQ1_0: return dequantFuncTQ1_0(decodeBufTQ1_0(bl_in), blockCoords, coordInBlock);
@@ -1259,7 +1198,7 @@ index 9b59e8bc..e868eecf 100644
      case GGML_TYPE_TQ2_0: return dequantFuncTQ2_0(decodeBufTQ2_0(bl_in), blockCoords, coordInBlock);
      default:              return float16_t(0);
      }
-@@ -154,6 +155,7 @@ f16vec4 mmDecodeA_v(const in decodeBufA bl_in, const in uint blockCoords[2], con
+@@ -150,6 +151,7 @@ f16vec4 mmDecodeA_v(const in decodeBufA bl_in, const in uint blockCoords[2], con
      case GGML_TYPE_Q3_K:  return dequantFuncQ3_K_v (decodeBufQ3_K (bl_in), blockCoords, coordInBlock);
      case GGML_TYPE_Q6_K:  return dequantFuncQ6_K_v (decodeBufQ6_K (bl_in), blockCoords, coordInBlock);
      case GGML_TYPE_TQ1_0: return dequantFuncTQ1_0_v(decodeBufTQ1_0(bl_in), blockCoords, coordInBlock);
@@ -1268,7 +1207,7 @@ index 9b59e8bc..e868eecf 100644
      default:              return f16vec4(0);
      }
 diff --git a/src/ggml-vulkan/vulkan-shaders/mul_mm_funcs.glsl b/src/ggml-vulkan/vulkan-shaders/mul_mm_funcs.glsl
-index 588fb735..fcf55b98 100644
+index 588fb73..fcf55b9 100644
 --- a/src/ggml-vulkan/vulkan-shaders/mul_mm_funcs.glsl
 +++ b/src/ggml-vulkan/vulkan-shaders/mul_mm_funcs.glsl
 @@ -614,6 +614,24 @@ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uin
@@ -1297,10 +1236,10 @@ index 588fb735..fcf55b98 100644
          store_a(col, k_pair, FLOAT_TYPEV2(v.xy));
      } else if (MmTypeA == GGML_TYPE_TQ2_0) {
 diff --git a/src/ggml-vulkan/vulkan-shaders/types.glsl b/src/ggml-vulkan/vulkan-shaders/types.glsl
-index 7d62e92e..b23f4cd8 100644
+index 99ce145..ba7f4c4 100644
 --- a/src/ggml-vulkan/vulkan-shaders/types.glsl
 +++ b/src/ggml-vulkan/vulkan-shaders/types.glsl
-@@ -338,6 +338,41 @@ uint tq1_0_trit(uint qbyte, uint t) {
+@@ -339,6 +339,41 @@ uint tq1_0_trit(uint qbyte, uint t) {
  #define DATA_A_QUANT_K
  #endif
  
@@ -1343,7 +1282,7 @@ index 7d62e92e..b23f4cd8 100644
  
  // ternary (BitNet): 2-bit codes, w = (q - 1) * d; qs layout matches q2_K's
 diff --git a/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp b/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
-index 12f9b3f5..4ab3fa30 100644
+index 7ccccfa..56abc79 100644
 --- a/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
 +++ b/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
 @@ -73,6 +73,7 @@ const std::vector<std::string> type_names = {
@@ -1354,7 +1293,7 @@ index 12f9b3f5..4ab3fa30 100644
      "tq2_0",
      "bf16",
  };
-@@ -776,7 +777,7 @@ void process_shaders() {
+@@ -783,7 +784,7 @@ void process_shaders() {
      for (const auto& tname : type_names) {
          // mul mat vec
          std::string data_a_key = "DATA_A_" + to_uppercase(tname);
@@ -1364,10 +1303,10 @@ index 12f9b3f5..4ab3fa30 100644
          string_to_spv("mul_mat_vec_" + tname + "_f32_f32", shader, merge_maps(base_dict, {{data_a_key, "1"}, {"B_TYPE", "float"}, {"B_TYPEV2", "vec2"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}}));
          string_to_spv("mul_mat_vec_" + tname + "_f16_f32", shader, merge_maps(base_dict, {{data_a_key, "1"}, {"B_TYPE", "float16_t"}, {"B_TYPEV2", "f16vec2"}, {"B_TYPEV4", "f16vec4"}, {"D_TYPE", "float"}}));
 diff --git a/src/ggml.c b/src/ggml.c
-index cdc10a75..31f295aa 100644
+index 1fca258..baf172c 100644
 --- a/src/ggml.c
 +++ b/src/ggml.c
-@@ -925,6 +925,14 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
+@@ -940,6 +940,14 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
          .to_float                 = (ggml_to_float_t) dequantize_row_tq2_0,
          .from_float_ref           = (ggml_from_float_t) quantize_row_tq2_0_ref,
      },
@@ -1382,7 +1321,7 @@ index cdc10a75..31f295aa 100644
      [36] = { // GGML_TYPE_IQ4_NL_4_4
          .type_name                = "TYPE_IQ4_NL_4_4 REMOVED, use IQ4_NL with runtime repacking",
          .blck_size                = 0,
-@@ -1352,7 +1360,8 @@ double ggml_type_sizef(enum ggml_type type) {
+@@ -1357,7 +1365,8 @@ size_t ggml_row_size(enum ggml_type type, int64_t ne) {
  const char * ggml_type_name(enum ggml_type type) {
      assert(type >= 0);
      assert(type < GGML_TYPE_COUNT);
@@ -1392,7 +1331,7 @@ index cdc10a75..31f295aa 100644
  }
  
  bool ggml_is_quantized(enum ggml_type type) {
-@@ -8095,6 +8104,7 @@ size_t ggml_quantize_chunk(
+@@ -8043,6 +8052,7 @@ size_t ggml_quantize_chunk(
          case GGML_TYPE_Q6_K:    result = quantize_q6_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
          case GGML_TYPE_TQ1_0:   result = quantize_tq1_0  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
          case GGML_TYPE_TQ2_0:   result = quantize_tq2_0  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
@@ -1401,10 +1340,10 @@ index cdc10a75..31f295aa 100644
          case GGML_TYPE_IQ2_XS:  result = quantize_iq2_xs (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
          case GGML_TYPE_IQ3_XXS: result = quantize_iq3_xxs(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
 diff --git a/tests/test-backend-ops.cpp b/tests/test-backend-ops.cpp
-index e198d092..a927f379 100644
+index 3abdff5..2471d6e 100644
 --- a/tests/test-backend-ops.cpp
 +++ b/tests/test-backend-ops.cpp
-@@ -8961,6 +8961,7 @@ static const ggml_type all_types[] = {
+@@ -10499,6 +10499,7 @@ static const ggml_type all_types[] = {
      GGML_TYPE_Q6_K,
      GGML_TYPE_TQ2_0,
      GGML_TYPE_TQ1_0,
@@ -1412,17 +1351,17 @@ index e198d092..a927f379 100644
      GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_S,
      GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ1_S, GGML_TYPE_IQ1_M,
      GGML_TYPE_IQ4_NL, GGML_TYPE_IQ3_S, GGML_TYPE_IQ4_XS,
-@@ -8975,7 +8976,8 @@ static const ggml_type base_types[] = {
-     GGML_TYPE_Q4_1, // for I8MM tests
+@@ -10514,7 +10515,8 @@ static const ggml_type base_types[] = {
      GGML_TYPE_Q4_K,
      GGML_TYPE_MXFP4, GGML_TYPE_NVFP4, // TODO: or "other"
+     GGML_TYPE_F8_E4M3,
 -    GGML_TYPE_IQ2_XXS
 +    GGML_TYPE_IQ2_XXS,
 +    GGML_TYPE_TQ1_G128, // group-128 ternary: full mul_mat shape sweep
  };
  
  static const ggml_type other_types[] = {
-@@ -8989,6 +8991,7 @@ static const ggml_type other_types[] = {
+@@ -10528,6 +10530,7 @@ static const ggml_type other_types[] = {
      GGML_TYPE_Q6_K,
      GGML_TYPE_TQ2_0,
      GGML_TYPE_TQ1_0,

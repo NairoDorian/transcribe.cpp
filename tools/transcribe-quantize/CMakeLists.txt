@@ -15,3 +15,4 @@ target_link_libraries(transcribe-quantize
 )
 
 transcribe_apply_warnings(transcribe-quantize)
+transcribe_use_utf8_codepage(transcribe-quantize)

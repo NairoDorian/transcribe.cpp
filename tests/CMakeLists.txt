@@ -755,6 +755,7 @@ if(TRANSCRIBE_UV)
         "TRANSCRIBE_TEST_FIXTURES_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures\"")
 
     transcribe_apply_warnings(transcribe_utf8_path_unit)
+    transcribe_use_utf8_codepage(transcribe_utf8_path_unit)
 
     add_dependencies(transcribe_utf8_path_unit fixtures)
 

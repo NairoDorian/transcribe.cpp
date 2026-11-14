@@ -14,6 +14,7 @@ target_link_libraries(transcribe-bench
 )
 
 transcribe_apply_warnings(transcribe-bench)
+transcribe_use_utf8_codepage(transcribe-bench)
 
 set_target_properties(transcribe-bench PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"

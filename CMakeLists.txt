@@ -366,6 +366,17 @@ function(transcribe_apply_warnings tgt)
     endif()
 endfunction()
 
+# Windows decodes narrow strings - argv, file paths, console output - with the
+# process code page, and the default is a legacy ANSI code page: a path holding
+# non-ASCII characters then names a file that cannot be opened, or converts to
+# a mangled path. This manifest asks the process for UTF-8 instead (Windows 10
+# 1903 and later), matching the UTF-8 path contract across the transcribe API.
+function(transcribe_use_utf8_codepage tgt)
+    if(MSVC)
+        target_sources(${tgt} PRIVATE "${CMAKE_SOURCE_DIR}/cmake/transcribe_utf8.manifest")
+    endif()
+endfunction()
+
 # Sanitizers must be applied to every target in the build (including ggml)
 # so the resulting binary is consistent. add_compile_options /
 # add_link_options is the right scope for this.

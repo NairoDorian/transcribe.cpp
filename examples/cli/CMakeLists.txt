@@ -23,4 +23,5 @@ if(TRANSCRIBE_ARCH_DL AND TARGET transcribe-plugins)
 endif()
 
 transcribe_apply_warnings(transcribe-cli)
+transcribe_use_utf8_codepage(transcribe-cli)
 

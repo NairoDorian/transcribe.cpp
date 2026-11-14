@@ -9,9 +9,27 @@ Silero uses a loaded VAD model and a `transcribe_vad_session` / Rust `VadSession
 
 Neither loading a VAD model nor calling its streaming API inserts it into an
 ASR session or changes ZER0's capture ownership. ZER0 still filters with Rust
-Earshot and inherits the embedded engine VAD default on native streams. RNNoise
-is still app-side. See the [paired-project contract](zer0-engine-integration.md)
-and [VAD/RNNoise roadmap](plans/2026-10-three-tier-super-vad-and-firered-architecture-plan.md).
+Earshot and inherits the embedded engine VAD default on native streams. See the
+[paired-project contract](zer0-engine-integration.md) and the
+[master plan](plans/2026-11-fork-master-plan.md) §B.
+
+## Capture frontend (embedded, nothing to load)
+
+For an app that owns its microphone, `include/transcribe.h` has the pieces of
+a capture chain, all with bundled weights:
+
+| API | Rust | What it does |
+|---|---|---|
+| `transcribe_vad_init` / `_predict_frame` / `_process_frame` | `VoiceActivityDetector` | Earshot score per 256-sample (16 ms) frame at 16 kHz, plus a hysteresis flag. SIMD kernels picked by cpuid (`TRANSCRIBE_EARSHOT_ISA` caps them). |
+| `transcribe_vad_score_frames` | `score_frames` | The same scores for a whole clip, batched over threads. |
+| `transcribe_vad_gate_*` | `VadGate` | Feed 16 kHz audio of any length, get back the speech: hysteresis, onset debounce, pre-roll (never released twice), hangover, a speech clock and an end-of-recording tail report. Thresholds and hangover change live. |
+| `transcribe_denoise_*` | `Denoiser` | RNNoise (classic model) on 480-sample frames of 48 kHz audio, output one frame behind: wet/dry `strength`, an optional gate on RNNoise's own speech probability (`vad_threshold`, `vad_grace_ms`). |
+
+A typical chain: microphone → 48 kHz frames → `Denoiser` → 16 kHz →
+`VadGate` → the ASR stream. Resampling is the caller's. These are ports of
+ZER0's Rust stack (`earshot` crate + `SmoothedVad` + `SpeechClock`,
+`nnnoiseless` + its gate) with matching behaviour; the master plan §B.9 has
+the parity and speed figures.
 
 The full model composite includes `silero_vad`; custom/minimal composites expose
 it only when explicitly selected. Architecture plugins must be rebuilt for

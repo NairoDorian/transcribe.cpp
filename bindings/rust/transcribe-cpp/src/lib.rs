@@ -62,6 +62,7 @@ pub use transcribe_cpp_sys as sys;
 mod arch;
 mod backend;
 mod cancel;
+mod denoise;
 mod diarize;
 mod earshot;
 mod error;
@@ -83,6 +84,9 @@ pub use backend::{
     init_backends_default, init_backends_with, BackendMask, Device, DeviceType,
 };
 pub use cancel::CancelToken;
+pub use denoise::{
+    DenoiseParams, Denoiser, DENOISE_FRAME_SAMPLES, DENOISE_MAX_GRACE_MS, DENOISE_SAMPLE_RATE,
+};
 pub use diarize::{DiarizeInfo, DiarizeOptions, DiarizeSession, DiarizeSessionOptions};
 pub use earshot::{
     score_frames, VadGate, VadGateParams, VadGateTail, VadGateUpdate, VoiceActivityDetector,

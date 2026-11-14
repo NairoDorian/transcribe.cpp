@@ -13,7 +13,7 @@ import ctypes as _c
 # Stable digest of the ABI surface below (structs, enums, macros, layout,
 # prototypes). A native provider package echoes this back so the API
 # package can reject an ABI-mismatched provider before dlopen.
-PUBLIC_HEADER_HASH = "e5426dbe4a029358"
+PUBLIC_HEADER_HASH = "0c46a78d4d6646a7"
 
 # === enum constants ===
 TRANSCRIBE_OK = 0
@@ -147,6 +147,9 @@ TRANSCRIBE_BACKEND_MASK_METAL = 2
 TRANSCRIBE_BACKEND_MASK_OTHER = 2147483648
 TRANSCRIBE_BACKEND_MASK_ROCM = 16
 TRANSCRIBE_BACKEND_MASK_VULKAN = 4
+TRANSCRIBE_DENOISE_FRAME_SAMPLES = 480
+TRANSCRIBE_DENOISE_MAX_GRACE_MS = 5000
+TRANSCRIBE_DENOISE_SAMPLE_RATE = 48000
 TRANSCRIBE_EXT_KIND_MOONSHINE_STREAMING_STREAM = 1414746957
 TRANSCRIBE_EXT_KIND_PARAKEET_BUFFERED_STREAM = 1396853584
 TRANSCRIBE_EXT_KIND_PARAKEET_STREAM = 1414744912
@@ -183,6 +186,8 @@ class transcribe_vad_gate_params(_c.Structure):
 class transcribe_vad_gate_update(_c.Structure):
     pass
 class transcribe_vad_gate_tail(_c.Structure):
+    pass
+class transcribe_denoise_params(_c.Structure):
     pass
 class transcribe_timings(_c.Structure):
     pass
@@ -251,6 +256,7 @@ transcribe_stream_text._fields_ = [("struct_size", _c.c_uint64), ("full_text", _
 transcribe_vad_gate_params._fields_ = [("struct_size", _c.c_uint64), ("threshold", _c.c_float), ("exit_threshold", _c.c_float), ("onset_ms", _c.c_uint32), ("preroll_ms", _c.c_uint32), ("hangover_ms", _c.c_uint32), ("speech_hold_ms", _c.c_uint32)]
 transcribe_vad_gate_update._fields_ = [("struct_size", _c.c_uint64), ("n_frames", _c.c_int32), ("speech", _c.c_bool), ("voiced", _c.c_bool), ("speech_started", _c.c_bool), ("speech_ended", _c.c_bool), ("clock_speaking", _c.c_bool), ("last_score", _c.c_float), ("level_dbfs", _c.c_float), ("speech_ms", _c.c_uint64), ("audio", _c.POINTER(_c.c_float)), ("n_audio", _c.c_int64)]
 transcribe_vad_gate_tail._fields_ = [("struct_size", _c.c_uint64), ("withheld_frames", _c.c_int32), ("withheld_voiced_frames", _c.c_int32), ("speech", _c.c_bool), ("onset_counter", _c.c_int32), ("hangover_counter", _c.c_int32)]
+transcribe_denoise_params._fields_ = [("struct_size", _c.c_uint64), ("strength", _c.c_float), ("vad_threshold", _c.c_float), ("vad_grace_ms", _c.c_uint32)]
 transcribe_timings._fields_ = [("struct_size", _c.c_uint64), ("load_ms", _c.c_float), ("mel_ms", _c.c_float), ("encode_ms", _c.c_float), ("decode_ms", _c.c_float)]
 transcribe_segment._fields_ = [("struct_size", _c.c_uint64), ("t0_ms", _c.c_int64), ("t1_ms", _c.c_int64), ("first_word", _c.c_int), ("n_words", _c.c_int), ("first_token", _c.c_int), ("n_tokens", _c.c_int), ("text", _c.c_char_p), ("speaker_id", _c.c_int32)]
 transcribe_word._fields_ = [("struct_size", _c.c_uint64), ("t0_ms", _c.c_int64), ("t1_ms", _c.c_int64), ("seg_index", _c.c_int), ("first_token", _c.c_int), ("n_tokens", _c.c_int), ("text", _c.c_char_p)]
@@ -328,6 +334,7 @@ STRUCT_LAYOUT = {
     'transcribe_vad_gate_params': {'size': 32, 'align': 8, 'offsets': {'struct_size': 0, 'threshold': 8, 'exit_threshold': 12, 'onset_ms': 16, 'preroll_ms': 20, 'hangover_ms': 24, 'speech_hold_ms': 28}},
     'transcribe_vad_gate_update': {'size': 56, 'align': 8, 'offsets': {'struct_size': 0, 'n_frames': 8, 'speech': 12, 'voiced': 13, 'speech_started': 14, 'speech_ended': 15, 'clock_speaking': 16, 'last_score': 20, 'level_dbfs': 24, 'speech_ms': 32, 'audio': 40, 'n_audio': 48}},
     'transcribe_vad_gate_tail': {'size': 32, 'align': 8, 'offsets': {'struct_size': 0, 'withheld_frames': 8, 'withheld_voiced_frames': 12, 'speech': 16, 'onset_counter': 20, 'hangover_counter': 24}},
+    'transcribe_denoise_params': {'size': 24, 'align': 8, 'offsets': {'struct_size': 0, 'strength': 8, 'vad_threshold': 12, 'vad_grace_ms': 16}},
     'transcribe_timings': {'size': 24, 'align': 8, 'offsets': {'struct_size': 0, 'load_ms': 8, 'mel_ms': 12, 'encode_ms': 16, 'decode_ms': 20}},
     'transcribe_segment': {'size': 56, 'align': 8, 'offsets': {'struct_size': 0, 't0_ms': 8, 't1_ms': 16, 'first_word': 24, 'n_words': 28, 'first_token': 32, 'n_tokens': 36, 'text': 40, 'speaker_id': 48}},
     'transcribe_word': {'size': 48, 'align': 8, 'offsets': {'struct_size': 0, 't0_ms': 8, 't1_ms': 16, 'seg_index': 24, 'first_token': 28, 'n_tokens': 32, 'text': 40}},
@@ -405,6 +412,20 @@ def configure(lib):
     lib.transcribe_capabilities_init.argtypes = [_c.POINTER(transcribe_capabilities)]
     lib.transcribe_close.restype = None
     lib.transcribe_close.argtypes = [_c.c_void_p]
+    lib.transcribe_denoise_flush.restype = _c.c_int
+    lib.transcribe_denoise_flush.argtypes = [_c.c_void_p, _c.POINTER(_c.c_float), _c.POINTER(_c.c_float)]
+    lib.transcribe_denoise_free.restype = None
+    lib.transcribe_denoise_free.argtypes = [_c.c_void_p]
+    lib.transcribe_denoise_init.restype = _c.c_int
+    lib.transcribe_denoise_init.argtypes = [_c.POINTER(transcribe_denoise_params), _c.POINTER(_c.c_void_p)]
+    lib.transcribe_denoise_params_init.restype = None
+    lib.transcribe_denoise_params_init.argtypes = [_c.POINTER(transcribe_denoise_params)]
+    lib.transcribe_denoise_process_frame.restype = _c.c_int
+    lib.transcribe_denoise_process_frame.argtypes = [_c.c_void_p, _c.POINTER(_c.c_float), _c.POINTER(_c.c_float), _c.POINTER(_c.c_float)]
+    lib.transcribe_denoise_reset.restype = None
+    lib.transcribe_denoise_reset.argtypes = [_c.c_void_p]
+    lib.transcribe_denoise_set_params.restype = _c.c_int
+    lib.transcribe_denoise_set_params.argtypes = [_c.c_void_p, _c.POINTER(transcribe_denoise_params)]
     lib.transcribe_detected_language.restype = _c.c_char_p
     lib.transcribe_detected_language.argtypes = [_c.c_void_p]
     lib.transcribe_device_count.restype = _c.c_int

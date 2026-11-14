@@ -11,7 +11,7 @@
 // Stable digest of the ABI surface (structs, enums, macros, layout,
 // prototypes), computed by the Python oracle and pinned here so a header
 // ABI change turns this binding's drift check red for conscious review.
-export const PUBLIC_HEADER_HASH = "e5426dbe4a029358";
+export const PUBLIC_HEADER_HASH = "0c46a78d4d6646a7";
 
 // === enum constants ===
 export const TRANSCRIBE_OK = 0;
@@ -145,6 +145,9 @@ export const TRANSCRIBE_BACKEND_MASK_METAL = 2;
 export const TRANSCRIBE_BACKEND_MASK_OTHER = 2147483648;
 export const TRANSCRIBE_BACKEND_MASK_ROCM = 16;
 export const TRANSCRIBE_BACKEND_MASK_VULKAN = 4;
+export const TRANSCRIBE_DENOISE_FRAME_SAMPLES = 480;
+export const TRANSCRIBE_DENOISE_MAX_GRACE_MS = 5000;
+export const TRANSCRIBE_DENOISE_SAMPLE_RATE = 48000;
 export const TRANSCRIBE_EXT_KIND_MOONSHINE_STREAMING_STREAM = 1414746957;
 export const TRANSCRIBE_EXT_KIND_PARAKEET_BUFFERED_STREAM = 1396853584;
 export const TRANSCRIBE_EXT_KIND_PARAKEET_STREAM = 1414744912;
@@ -169,6 +172,7 @@ export const STRUCT_LAYOUT: Record<string, StructLayout> = {
   'transcribe_vad_gate_params': { size: 32, align: 8, offsets: {'struct_size': 0, 'threshold': 8, 'exit_threshold': 12, 'onset_ms': 16, 'preroll_ms': 20, 'hangover_ms': 24, 'speech_hold_ms': 28} },
   'transcribe_vad_gate_update': { size: 56, align: 8, offsets: {'struct_size': 0, 'n_frames': 8, 'speech': 12, 'voiced': 13, 'speech_started': 14, 'speech_ended': 15, 'clock_speaking': 16, 'last_score': 20, 'level_dbfs': 24, 'speech_ms': 32, 'audio': 40, 'n_audio': 48} },
   'transcribe_vad_gate_tail': { size: 32, align: 8, offsets: {'struct_size': 0, 'withheld_frames': 8, 'withheld_voiced_frames': 12, 'speech': 16, 'onset_counter': 20, 'hangover_counter': 24} },
+  'transcribe_denoise_params': { size: 24, align: 8, offsets: {'struct_size': 0, 'strength': 8, 'vad_threshold': 12, 'vad_grace_ms': 16} },
   'transcribe_timings': { size: 24, align: 8, offsets: {'struct_size': 0, 'load_ms': 8, 'mel_ms': 12, 'encode_ms': 16, 'decode_ms': 20} },
   'transcribe_segment': { size: 56, align: 8, offsets: {'struct_size': 0, 't0_ms': 8, 't1_ms': 16, 'first_word': 24, 'n_words': 28, 'first_token': 32, 'n_tokens': 36, 'text': 40, 'speaker_id': 48} },
   'transcribe_word': { size: 48, align: 8, offsets: {'struct_size': 0, 't0_ms': 8, 't1_ms': 16, 'seg_index': 24, 'first_token': 28, 'n_tokens': 32, 'text': 40} },
@@ -246,6 +250,7 @@ export function defineTypes(koffi: any): Record<string, any> {
   T['transcribe_vad_gate_params'] = koffi.struct({ struct_size: 'uint64_t', threshold: 'float', exit_threshold: 'float', onset_ms: 'uint32_t', preroll_ms: 'uint32_t', hangover_ms: 'uint32_t', speech_hold_ms: 'uint32_t' });
   T['transcribe_vad_gate_update'] = koffi.struct({ struct_size: 'uint64_t', n_frames: 'int32_t', speech: 'bool', voiced: 'bool', speech_started: 'bool', speech_ended: 'bool', clock_speaking: 'bool', last_score: 'float', level_dbfs: 'float', speech_ms: 'uint64_t', audio: 'void *', n_audio: 'int64_t' });
   T['transcribe_vad_gate_tail'] = koffi.struct({ struct_size: 'uint64_t', withheld_frames: 'int32_t', withheld_voiced_frames: 'int32_t', speech: 'bool', onset_counter: 'int32_t', hangover_counter: 'int32_t' });
+  T['transcribe_denoise_params'] = koffi.struct({ struct_size: 'uint64_t', strength: 'float', vad_threshold: 'float', vad_grace_ms: 'uint32_t' });
   T['transcribe_timings'] = koffi.struct({ struct_size: 'uint64_t', load_ms: 'float', mel_ms: 'float', encode_ms: 'float', decode_ms: 'float' });
   T['transcribe_segment'] = koffi.struct({ struct_size: 'uint64_t', t0_ms: 'int64_t', t1_ms: 'int64_t', first_word: 'int', n_words: 'int', first_token: 'int', n_tokens: 'int', text: 'char *', speaker_id: 'int32_t' });
   T['transcribe_word'] = koffi.struct({ struct_size: 'uint64_t', t0_ms: 'int64_t', t1_ms: 'int64_t', seg_index: 'int', first_token: 'int', n_tokens: 'int', text: 'char *' });
@@ -300,6 +305,13 @@ export const FUNCTION_SIGNATURES: Record<string, FnSig> = {
   'transcribe_build_id': { ret: 'const char *', args: [] },
   'transcribe_capabilities_init': { ret: 'void', args: ['struct transcribe_capabilities *'] },
   'transcribe_close': { ret: 'void', args: ['struct transcribe_session *'] },
+  'transcribe_denoise_flush': { ret: 'transcribe_status', args: ['struct transcribe_denoise *', 'float *', 'float *'] },
+  'transcribe_denoise_free': { ret: 'void', args: ['struct transcribe_denoise *'] },
+  'transcribe_denoise_init': { ret: 'transcribe_status', args: ['const struct transcribe_denoise_params *', 'struct transcribe_denoise **'] },
+  'transcribe_denoise_params_init': { ret: 'void', args: ['struct transcribe_denoise_params *'] },
+  'transcribe_denoise_process_frame': { ret: 'transcribe_status', args: ['struct transcribe_denoise *', 'const float *', 'float *', 'float *'] },
+  'transcribe_denoise_reset': { ret: 'void', args: ['struct transcribe_denoise *'] },
+  'transcribe_denoise_set_params': { ret: 'transcribe_status', args: ['struct transcribe_denoise *', 'const struct transcribe_denoise_params *'] },
   'transcribe_detected_language': { ret: 'const char *', args: ['const struct transcribe_session *'] },
   'transcribe_device_count': { ret: 'int', args: [] },
   'transcribe_device_get': { ret: 'transcribe_device_t', args: ['int'] },

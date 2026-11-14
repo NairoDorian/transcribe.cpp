@@ -427,6 +427,17 @@ migrates (§F.3).
 Reported: 3–5× faster single-thread, 7–8× threaded; NEON baseline ~10,600×
 real time single-thread. This is the Android battery item (§E.3).
 
+**Landed 2026-11-14** (branch `feat/vad-frontend`, `c4463aec`):
+`src/transcribe-earshot-engine.*` is audio.cpp's runtime (d38518a0) adapted to
+the fork: baseline / AVX2 / AVX-512 kernel sets picked by cpuid
+(`TRANSCRIBE_EARSHOT_ISA=baseline|avx2` caps it), bundled weights, batch
+scoring over threads. Every frame now goes through the network (the old
+−45 dBFS pre-gate is gone; it was the cause of B.7). Measured on 10 min of
+audio (Ryzen, AVX2, no AVX-512): max score diff vs upstream Rust 2.1e-5,
+baseline and AVX2 bit-identical, batch == stream at 1–8 threads; 6.86 →
+1.32 µs per frame live (5.2×), 0.44 µs batched on 8 threads (15.5×); ZER0's
+Rust crate takes 5.33 µs.
+
 ### B.4 Any VAD family for long-form chunking (audio.cpp #1096)
 
 `src/transcribe-chunking.*` plans long-audio chunks at silences. Let the chunk
@@ -477,6 +488,34 @@ Smart Turn v3.2, the lexical trailing guard and the adaptive hangover curve
 remain as written in the October plan, after B.1–B.3. The paired-project
 contract (`docs/plans/2026-10-audio-frontend-contract.md`) and the VoxLock
 review stay authoritative for frontend ordering.
+
+### B.9 ZER0's capture frontend in the engine (landed 2026-11-14)
+
+So ZER0 can drop its Rust VAD and denoise layers (§F.3), the engine now has
+both, state machine for state machine, on branch `feat/vad-frontend`:
+
+- **Speech gate** `transcribe_vad_gate_*` (`a50b3bf7`): Earshot + two-threshold
+  hysteresis + onset debounce + pre-roll ring + hangover + speech clock — the
+  port of ZER0's `EarshotVad` / `SmoothedVad` / `SpeechClock`, minus the
+  −45 dBFS shortcut. 10 min parity: identical to a Rust re-creation of the
+  chain without the shortcut on all 37,500 frames; 0.5 % of frames differ from
+  the chain as shipped, all from the shortcut. Plus
+  `transcribe_vad_score_frames` (batch scores for history re-analysis).
+  Rust: `VadGate`, `VadGateParams`, `score_frames`.
+- **Noise suppression** `transcribe_denoise_*`: classic RNNoise ported from
+  the `nnnoiseless` 0.5.2 crate ZER0 runs (`src/transcribe-rnnoise.*`, bundled
+  int8 model, 87 KB) plus ZER0's `denoise_frame` around it (int16 scaling,
+  wet/dry mix with the dry side delayed a frame, probability gate with slew
+  and grace). Output vs the crate: 96.6 dB SNR, at most 1 int16 step, speech
+  probability within 4e-6. Speed: 25.9 vs 36.6 µs per 10 ms frame (1.41×) —
+  a 480-point split-format Stockham FFT, the GRU / dense layers and the pitch
+  correlation in 4-wide SIMD (SSE2 / NEON) with 8-wide AVX2 kernels picked at
+  run time; each output keeps the crate's summation order, so 4- and 8-wide
+  are bit-identical. Resampling to and from 48 kHz stays with the caller.
+  Rust: `Denoiser`, `DenoiseParams` (with ZER0's `normalized()`).
+
+audio.cpp's RNNoise is the newer v0.2 model through ggml (11 MB weights); it
+is not ported — the classic model is what ZER0 ships and was trained for.
 
 ---
 
@@ -639,8 +678,13 @@ languages keeps every switch.
 ### F.3 One VAD owner
 
 Today the Rust `earshot` crate gates audio and the engine never sees silence.
-Once B.1–B.2 are bit-identical to the crate, move gating into the engine
-(as the October plan intends) so desktop and Android share one state machine.
+The engine side is ready (§B.3, §B.9): ZER0 swaps its capture chain for
+`VadGate` (replaces `EarshotVad` + `SmoothedVad` + `SpeechClock`),
+`score_frames` (history re-analysis) and `Denoiser` (replaces `nnnoiseless` +
+`Gate` + `denoise_frame`), then drops the `earshot` and `nnnoiseless`
+crates. With capture gating in place its native streams should pass
+`enable_vad = false` so one detector, not two in series, decides (§B.7).
+The app-side recipe is in ZER0's `docs/2026-11-transcribe-fork-handoff.md`.
 
 ---
 

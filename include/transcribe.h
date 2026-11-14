@@ -2610,6 +2610,66 @@ TRANSCRIBE_API transcribe_status transcribe_vad_gate_finish(struct transcribe_va
 TRANSCRIBE_API transcribe_status transcribe_vad_gate_get_tail(const struct transcribe_vad_gate * gate,
                                                               struct transcribe_vad_gate_tail *  out);
 
+/* ----------------------------------------------------------------------- */
+/* Noise suppression: RNNoise on 10 ms frames of 48 kHz mono audio           */
+/* ----------------------------------------------------------------------- */
+
+/*
+ * Classic RNNoise (xiph/rnnoise) with its bundled model, nothing to load:
+ * the algorithm of nnnoiseless 0.5.2, output within one int16 step of it,
+ * about 1.4x faster on x86-64. Each call takes one 480-sample frame in
+ * [-1, 1] and returns one; the output is one frame behind the input
+ * (overlap-add synthesis), so a stream ends with transcribe_denoise_flush.
+ *
+ * Around the network, per frame (ZER0's capture chain):
+ *   - strength: wet/dry mix of the suppressed and the input frame, the dry
+ *     side delayed one frame to stay aligned (0 = input untouched, late);
+ *   - vad_threshold: RNNoise's own speech probability below which the frame
+ *     is muted, 0 = no gate; the gain slews (half the distance per frame,
+ *     snapping within 1e-3) instead of cutting;
+ *   - vad_grace_ms: audio keeps passing this long (in whole 10 ms frames)
+ *     after the last frame at or above the threshold.
+ * Output is clamped to [-1, 1]. Defaults: strength 1, vad_threshold 0,
+ * vad_grace_ms 200. Not thread-safe; one instance per audio source.
+ */
+#define TRANSCRIBE_DENOISE_SAMPLE_RATE   48000
+#define TRANSCRIBE_DENOISE_FRAME_SAMPLES 480
+#define TRANSCRIBE_DENOISE_MAX_GRACE_MS  5000
+
+struct transcribe_denoise;
+
+struct transcribe_denoise_params {
+    uint64_t struct_size;
+    float    strength;      /* 0 .. 1 */
+    float    vad_threshold; /* 0 .. 1; 0 = gate off */
+    uint32_t vad_grace_ms;  /* 0 .. TRANSCRIBE_DENOISE_MAX_GRACE_MS */
+};
+
+TRANSCRIBE_API void              transcribe_denoise_params_init(struct transcribe_denoise_params * params);
+/* NULL params = defaults. INVALID_ARG on a non-finite or out-of-range field. */
+TRANSCRIBE_API transcribe_status transcribe_denoise_init(const struct transcribe_denoise_params * params,
+                                                         struct transcribe_denoise **             out_denoise);
+TRANSCRIBE_API void              transcribe_denoise_free(struct transcribe_denoise * denoise);
+/* Start a new recording: network state, dry delay and gate; keeps params. */
+TRANSCRIBE_API void              transcribe_denoise_reset(struct transcribe_denoise * denoise);
+/* Takes effect on the next frame, mid-recording included; state is kept. */
+TRANSCRIBE_API transcribe_status transcribe_denoise_set_params(struct transcribe_denoise *              denoise,
+                                                               const struct transcribe_denoise_params * params);
+/*
+ * One frame: in / out are TRANSCRIBE_DENOISE_FRAME_SAMPLES samples and may be
+ * the same buffer. out_speech_prob (may be NULL) gets RNNoise's speech
+ * probability for `in` (0 when its 20 ms analysis window is near silent).
+ * INVALID_ARG on a non-finite sample (nothing is consumed).
+ */
+TRANSCRIBE_API transcribe_status transcribe_denoise_process_frame(struct transcribe_denoise * denoise,
+                                                                  const float *               in,
+                                                                  float *                     out,
+                                                                  float *                     out_speech_prob);
+/* End of input: pushes the last frame out (process_frame with silence). */
+TRANSCRIBE_API transcribe_status transcribe_denoise_flush(struct transcribe_denoise * denoise,
+                                                          float *                     out,
+                                                          float *                     out_speech_prob);
+
 /*
  * Current stream lifecycle state. Returns TRANSCRIBE_STREAM_IDLE if
  * session is NULL.

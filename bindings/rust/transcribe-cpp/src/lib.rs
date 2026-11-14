@@ -100,8 +100,8 @@ pub use result::{Segment, SpeakerSegment, Timings, Token, Transcript, Word};
 pub use session::{RunOptions, Session, Stream};
 pub use streaming::{StreamOptions, StreamText, StreamUpdate};
 pub use types::{
-    AbiStruct, Backend, CommitPolicy, Diarize, ExtSlot, Feature, Itn, KvType, Pnc, Role, Roles,
-    StreamState, Task, TimestampKind,
+    AbiStruct, AllowlistLetters, Backend, CommitPolicy, Diarize, ExtSlot, Feature, Itn, KvType,
+    Pnc, Role, Roles, StreamState, Task, TimestampKind,
 };
 pub use vad::{VadInfo, VadOptions, VadResult, VadSegment, VadSession, VadSessionOptions};
 pub use version::{

@@ -660,6 +660,8 @@ transcribe_status prepare_language_constraint(const transcribe::Tokenizer & tok,
         key += transcribe::lang::normalize(code);
         key += ',';
     }
+    const bool letters = transcribe::lang::letters_restricted(params);
+    key += letters ? "" : "|any-letters";
     if (!lc.key.empty() && lc.key == key) {
         return TRANSCRIBE_OK;  // same list as the previous run: reuse
     }
@@ -744,7 +746,7 @@ transcribe_status prepare_language_constraint(const transcribe::Tokenizer & tok,
     bool                                   alphabet_usable = false;
     const transcribe::lang::AlphabetFilter alphabet =
         transcribe::lang::build_alphabet_filter(requested, alphabet_usable, unknown);
-    if (alphabet_usable && vocab > 0) {
+    if (alphabet_usable && letters && vocab > 0) {
         out.bias.assign(static_cast<size_t>(vocab), 0.0f);
         const int n_tok    = std::min(tok.n_tokens(), vocab);
         int       n_banned = 0;

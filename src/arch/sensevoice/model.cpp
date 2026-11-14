@@ -281,10 +281,10 @@ static transcribe_status sensevoice_language_mask(const SenseVoiceModel *       
             mask[static_cast<size_t>(id)] = 1;
         }
     }
-    bool                                   usable   = false;
+    bool                                   usable = false;
     const transcribe::lang::AlphabetFilter alphabet =
         transcribe::lang::build_alphabet_filter(requested, usable, unknown);
-    if (usable) {
+    if (usable && transcribe::lang::letters_restricted(params)) {
         for (int id = 0; id < tok.n_tokens(); ++id) {
             if (mask[static_cast<size_t>(id)] != 0 || tok.is_control(id)) {
                 continue;

@@ -92,6 +92,8 @@ void print_usage(const char * argv0) {
                  "  --allow CODES         comma-separated languages to choose from: the label set\n"
                  "                        for language ID models, and the automatic-detection\n"
                  "                        allowlist for ASR models (e.g. --allow fr,en)\n"
+                 "  --allow-any-letters   (ASR) the allowlist restricts the detected language\n"
+                 "                        only, not the letters: a foreign name keeps its spelling\n"
                  "  --top N               (language ID) print only the best N ranked\n"
                  "                        candidates (0 = all; default)\n"
                  "  --vad-threshold P     (VAD) speech probability threshold in [0, 1]\n"
@@ -464,6 +466,8 @@ bool parse_args(int argc, char ** argv, cli_args & out) {
                 std::fprintf(stderr, "error: --allow needs at least one label\n");
                 return false;
             }
+        } else if (a == "--allow-any-letters") {
+            out.allow_any_letters = true;
         } else if (a == "--top") {
             const char * v = take_value(a.c_str());
             if (!v) {

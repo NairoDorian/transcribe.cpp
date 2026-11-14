@@ -555,6 +555,24 @@ enum transcribe_pnc_mode {
 };
 
 /*
+ * How far a language allowlist reaches (transcribe_run_params::
+ * allowlist_letters). Only read when a list is active.
+ *   DEFAULT: the list restricts the model's language decision AND the letters
+ *            it may write (no other script, no letter none of the listed
+ *            languages uses). Right when the speaker only ever speaks the
+ *            listed languages: it is what stops a short utterance coming out
+ *            in Cyrillic or Hangul.
+ *   ANY:     the list restricts the language decision only; any letter may be
+ *            written, so a foreign name or quote keeps its own spelling and
+ *            script. Families with no language decision (Parakeet TDT,
+ *            Granite) are then not constrained at all.
+ */
+enum transcribe_allowlist_letters {
+    TRANSCRIBE_ALLOWLIST_LETTERS_DEFAULT = 0,
+    TRANSCRIBE_ALLOWLIST_LETTERS_ANY     = 1,
+};
+
+/*
  * Inverse text normalization (ITN) toggle on the run params.
  *
  * Symmetric semantics to transcribe_pnc_mode but for ITN — the
@@ -1290,6 +1308,10 @@ TRANSCRIBE_API void transcribe_session_params_init(struct transcribe_session_par
  *              (probe transcribe_model_supports first). Borrowed for the
  *              call; transcribe_stream_begin copies it for the stream,
  *              which applies it at every decode step.
+ *
+ * allowlist_letters: whether the list also restricts the letters
+ *              (transcribe_allowlist_letters; DEFAULT = yes, ANY = the
+ *              language decision only). Ignored without a list.
  */
 struct transcribe_run_params {
     uint64_t struct_size;
@@ -1312,6 +1334,8 @@ struct transcribe_run_params {
 
     int32_t              n_allowed_languages;
     const char * const * allowed_languages;
+
+    enum transcribe_allowlist_letters allowlist_letters;
 };
 
 TRANSCRIBE_API void transcribe_run_params_init(struct transcribe_run_params * params);

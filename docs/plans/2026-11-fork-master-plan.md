@@ -310,7 +310,7 @@ Measured (CPU, this branch vs `main`):
   de→en, ru→en, fr→es→en, zh→en; `--allow` = the clip's languages): every
   family keeps every switch it makes in auto mode, offline and 320 ms
   streaming (Nemotron, R2T2). Gains: **Qwen3 en→fr recovers the French half
-  auto mode drops**. Unchanged limits: TDT Parakeet drops some second-language
+  auto mode drops** (CPU; on CUDA auto mode already keeps it). Unchanged limits: TDT Parakeet drops some second-language
   segments (v3 en→fr, zh→en), Granite has no Russian / Chinese, Qwen3 opens
   zh→en with `language English` and translates the Chinese in both modes;
 - **Ukrainian** (uk-short, uk-long, `uk,en`): Nemotron and the TDT models are
@@ -349,6 +349,18 @@ A softer alphabet (a finite logit penalty instead of a ban) would let
 confident out-of-list speech through at the cost of weaker correction on
 confusions; not done — the measured confusions above were all fixed by the
 ban, and out-of-list speech is outside the setting's contract.
+
+**Letters toggle** (`transcribe_run_params::allowlist_letters`, Rust
+`RunOptions::allowlist_letters`, CLI `--allow-any-letters`; ABI hash
+`0fa0d2838f92cca0`, plugin ABI 5). `DEFAULT` keeps both layers; `ANY` keeps
+only the language decision. Measured (CPU and CUDA): `ANY` gives out-of-list
+speech its own spelling back (`großer`, Russian in Cyrillic instead of `V razlin
+stach…` / an English translation on R2T2) and gives back every in-list
+correction above (Indonesian in Cyrillic / Hangul again, `ы` in Ukrainian).
+Qwen3's translation of out-of-list speech is label-driven and stays either way.
+No list: 21/21 transcripts unchanged. The default stays `DEFAULT`: a speaker
+who lists only languages they speak gains from the letters and never meets the
+cost.
 
 Still open in A: `allowed_mass` reporting, LangID-gated auto (A.3), Canary /
 Cohere (no detection: need a source language — A.3's detect-then-force, or a

@@ -876,14 +876,16 @@ static void test_vad_abi(void) {
     CHECK(raw_score >= 0.0f && raw_score <= 1.0f);
     CHECK(raw_score < 0.5f); /* Raw NN score on silence is below speech threshold */
 
-    /* process_frame has energy pre-gate: pure silence short-circuits to score 0.0f */
+    /* process_frame scores every frame with the network (no energy shortcut),
+     * so silence gets the same raw score predict_frame reports, below the
+     * threshold. */
     transcribe_vad_reset(vad);
-    float frame_score = 0.0f;
+    float frame_score = -1.0f;
     bool  speaking    = transcribe_vad_process_frame(vad, silence, &frame_score);
     CHECK(speaking == false);
-    CHECK(fabsf(frame_score) < 1e-5f); /* Pre-gate zeroed score */
+    CHECK(fabsf(frame_score - raw_score) < 1e-6f);
 
-    /* Non-silent audio (> -45 dBFS) tests neural net path through process_frame */
+    /* Audible audio through process_frame: same score as predict_frame. */
     float audio[256];
     for (int i = 0; i < 256; ++i) {
         audio[i] = 0.2f * sinf(2.0f * 3.14159265f * 440.0f * (float) i / 16000.0f);

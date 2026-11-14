@@ -170,6 +170,7 @@ set(TRANSCRIBE_SRCS
     transcribe-activity.cpp
     transcribe-chunking.cpp
     transcribe-earshot.cpp
+    transcribe-earshot-engine.cpp
 )
 
 # Per-family source definitions

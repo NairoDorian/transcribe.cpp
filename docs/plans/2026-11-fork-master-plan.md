@@ -211,6 +211,52 @@ outputs, WER not worse than the forced-language run; (d) out-of-set audio
 behaviour documented (it is forced into the nearest allowed language; hosts
 read `allowed_mass`).
 
+### A.5 Status — first slice landed (2026-11-14)
+
+Implemented on this branch:
+
+- **C ABI**: `n_allowed_languages` / `allowed_languages` appended to
+  `transcribe_run_params` (#168's names), `TRANSCRIBE_FEATURE_LANGUAGE_ALLOWLIST`
+  (= 11), dispatcher shape validation and feature gate
+  (`src/transcribe-asr.cpp`), library-owned copies for streams. ABI hash
+  `4fd2c80a9a49a7ea`; plugin ABI 3 → 4 (session base layout).
+- **A.1 matcher**: `src/transcribe-lang.h` (header-only, so arch plugins need
+  no new link dependency) with `tests/language_match_unit.cpp`.
+- **Nemotron (parakeet RNN-T)**: the 40 locale-tag tokens are collected at
+  load; the mask applies at the single argmax site shared by the serial joint
+  and the frame-batched window, and in both streaming decoders. The emitted
+  tag is now reported as `transcribe_detected_language()` (it was empty).
+  `tests/parakeet_language_mask_unit.cpp`.
+- **Whisper** (multilingual): detection argmax restricted in the single-run and
+  batch paths; early reject in the family validate hook.
+- **Rust**: `RunOptions::allowed_languages`, `Feature::LanguageAllowlist`,
+  two unit tests. **CLI**: `--allow LIST` now also drives ASR runs.
+
+Two deliberate differences from #168, both found by testing:
+
+1. **Intersection, not all-or-nothing.** #168 rejects the run if any code is
+   unknown to the model. With `--allow es,pt,it,ca` Nemotron (no Catalan) then
+   failed outright; one list cannot serve every model of a Multi-STT host
+   that way. Codes a model cannot detect are skipped with a WARN; only a list
+   with none it can detect is `UNSUPPORTED_LANGUAGE`.
+2. **Spelled-tag block.** With the spoken language excluded (German audio,
+   `--allow fr`), Nemotron routed around the mask by spelling a tag from
+   ordinary pieces (`<` `mt` `-` `MT` `>`), which leaked `<mt-MT>` into the
+   text. While a list is active the bare `<` piece is blocked too.
+
+Measured (CPU, Nemotron 3.5 Q8_0, offline and 160 ms streaming):
+- no list: 25/25 offline (5 models × 5 clips) and 4/4 streaming transcripts
+  byte-identical to `main`;
+- list containing the spoken language (`fr,es,it,pt`, `es,pt,it,ca`,
+  `de,nl,en`, `en,de,nl`, `ru,uk,bg`, `ja,zh,ko`, `zh,ja,ko`): correct
+  language tag and text identical to auto mode, offline and streaming;
+- list excluding the spoken language: an allowed tag is reported (or none)
+  and the text is still transcribed as heard — the list constrains the
+  language decision, it never translates.
+
+Still open in A: `allowed_mass` reporting, SenseVoice, LangID-gated auto
+(A.3), Qwen3/R2T2 constrained prefix, the ZER0 "languages I speak" setting.
+
 ---
 
 ## B. VAD
@@ -291,7 +337,19 @@ Extend `scripts/vad/bench.py` with the TEN VAD test-set frame-F1 table
 (10 ms resolution, defaults per model) so the fork reproduces audio.cpp's
 numbers, plus CPU-ms per hour of audio per ISA.
 
-### B.7 The rest of the three-tier plan
+### B.7 Finding: a clip the streaming path never decodes
+
+`transcribe-cli --stream-chunk-ms 160` on `samples/fleurs-fr.wav` (Nemotron
+3.5) returns an empty transcript with `encode=0 ms`, in every build tested —
+pre-merge `692350de`, the 0.4.2 merge and ggml 1.0 alike — while offline is
+correct. Nothing reaches the encoder, which points at the engine-native
+streaming activity gate (`transcribe_stream_params::enable_vad`, default
+on) never opening on this quieter clip. Reproduce with that command;
+confirm by disabling the gate (the CLI has no switch yet — add one), then
+decide whether the gate's default or its threshold is wrong. Check what
+ZER0 passes before changing the default.
+
+### B.8 The rest of the three-tier plan
 
 Smart Turn v3.2, the lexical trailing guard and the adaptive hangover curve
 remain as written in the October plan, after B.1–B.3. The paired-project
@@ -506,7 +564,7 @@ Once B.1–B.2 are bit-identical to the crate, move gating into the engine
 | | Contents | Exit gate |
 |---|---|---|
 | **M0** (done) | upstream 0.4.2 merge, ggml 1.0, deps | ctest, Rust, A/B transcripts |
-| **M1** | A.0, A.1, Nemotron allowlist, Rust/ZER0 setting | byte-identical with empty list; FLEURS allowlist gate |
+| **M1** (core done, §A.5) | A.0, A.1, Nemotron + Whisper allowlist, Rust, CLI; ZER0 setting pending | byte-identical with empty list ✓; FLEURS allowlist gate ✓ |
 | **M2** | B.1–B.3 Earshot fidelity, role API, per-ISA kernels | Rust-reference parity, kernel hash |
 | **M3** | C.1–C.3 CUDA residency + determinism test | split counts down, Multi-STT bytes stable |
 | **M4** | A for Whisper, SenseVoice, LangID-gated auto, Qwen3/R2T2 | per-family gates |

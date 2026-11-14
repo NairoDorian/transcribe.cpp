@@ -259,6 +259,8 @@ struct transcribe_session : transcribe::SessionCore {
     std::vector<std::string>  stream_vocabulary_owned;
     std::vector<const char *> stream_vocabulary_ptrs;
     std::string               stream_prompt_owned;
+    std::vector<std::string>  stream_allowed_languages_owned;
+    std::vector<const char *> stream_allowed_language_ptrs;
 
     // UI-facing streaming text state. `full_text` above remains the raw
     // model hypothesis. `stream_committed_text` is the append-only public

@@ -142,6 +142,28 @@ transcribe_status validate_run_params_common(const transcribe_session * session,
             return TRANSCRIBE_ERR_UNSUPPORTED_LANGUAGE;
         }
     }
+    // Language allowlist (automatic detection only; an explicit `language`
+    // wins and the list is not read). Shape is checked here; each family
+    // resolves the codes against what it can detect and rejects the ones it
+    // cannot with UNSUPPORTED_LANGUAGE. A family without the feature must
+    // not silently ignore a non-empty list.
+    if (params->language == nullptr && params->n_allowed_languages != 0) {
+        if (params->n_allowed_languages < 0 || params->allowed_languages == nullptr) {
+            return TRANSCRIBE_ERR_INVALID_ARG;
+        }
+        for (int32_t i = 0; i < params->n_allowed_languages; ++i) {
+            if (params->allowed_languages[i] == nullptr || params->allowed_languages[i][0] == '\0') {
+                return TRANSCRIBE_ERR_INVALID_ARG;
+            }
+        }
+        if (!transcribe::has_feature(session->model, TRANSCRIBE_FEATURE_LANGUAGE_ALLOWLIST)) {
+            transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
+                                "transcribe_run: this model cannot restrict automatic language detection "
+                                "(TRANSCRIBE_FEATURE_LANGUAGE_ALLOWLIST); pass `language` or an empty "
+                                "allowed_languages list");
+            return TRANSCRIBE_ERR_UNSUPPORTED_LANGUAGE;
+        }
+    }
     // Translation-target gate: for a TRANSLATE request naming a target
     // language, reject up front when the model advertises a target set
     // (n > 0) that does not include it. Mirrors the source-language check
@@ -1158,6 +1180,20 @@ static transcribe_status transcribe_stream_begin_impl(struct transcribe_session 
     run_params_owned.n_vocabulary = static_cast<int32_t>(session->stream_vocabulary_ptrs.size());
     run_params_owned.prompt       = run_params->prompt != nullptr ? session->stream_prompt_owned.c_str() : nullptr;
     run_params_owned.prefix       = nullptr;
+    // Language allowlist, same ownership rule (families re-read it per feed).
+    session->stream_allowed_languages_owned.clear();
+    session->stream_allowed_language_ptrs.clear();
+    if (run_params->language == nullptr) {
+        for (int32_t i = 0; i < run_params->n_allowed_languages; ++i) {
+            session->stream_allowed_languages_owned.emplace_back(run_params->allowed_languages[i]);
+        }
+    }
+    for (const std::string & code : session->stream_allowed_languages_owned) {
+        session->stream_allowed_language_ptrs.push_back(code.c_str());
+    }
+    run_params_owned.n_allowed_languages = static_cast<int32_t>(session->stream_allowed_language_ptrs.size());
+    run_params_owned.allowed_languages =
+        session->stream_allowed_language_ptrs.empty() ? nullptr : session->stream_allowed_language_ptrs.data();
 
     const transcribe_status st = call_stream_hook(
         session, [&] { return session->model->arch->stream_begin(session, &run_params_owned, stream_params); });

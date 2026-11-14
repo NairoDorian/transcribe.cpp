@@ -1259,6 +1259,25 @@ TRANSCRIBE_API void transcribe_session_params_init(struct transcribe_session_par
  *              (TRANSCRIPT_PREFIX). Results hold only the continuation,
  *              except raw_text. An error when unsupported, and under
  *              INSTRUCT, batch or streaming.
+ *
+ * n_allowed_languages / allowed_languages: optional language allowlist for
+ *              automatic detection (LANGUAGE_ALLOWLIST). The model may only
+ *              detect one of these languages; an empty list (0 / NULL)
+ *              leaves detection unrestricted. Ignored when `language` is
+ *              set. Codes are matched loosely: case, '_' vs '-', a bare
+ *              primary subtag ("fr" allows fr-FR and fr-CA) and the common
+ *              aliases (he/iw, id/in, jv/jw, nb/no, tl/fil). The list is
+ *              intersected with what the model can detect: codes it cannot
+ *              are skipped with a WARN, so one list can serve every model a
+ *              host runs; a list with none it can detect is
+ *              TRANSCRIBE_ERR_UNSUPPORTED_LANGUAGE. A negative count, a NULL
+ *              list with a positive count, or a NULL/empty element is
+ *              TRANSCRIBE_ERR_INVALID_ARG; a non-empty list on a model
+ *              without the feature is TRANSCRIBE_ERR_UNSUPPORTED_LANGUAGE.
+ *              The list constrains the language decision; speech in a
+ *              language outside it is still transcribed as heard. Borrowed
+ *              for the call; transcribe_stream_begin copies it for the
+ *              stream, which applies it at every decode step.
  */
 struct transcribe_run_params {
     uint64_t struct_size;
@@ -1278,6 +1297,9 @@ struct transcribe_run_params {
     int32_t              n_vocabulary;
     const char *         prompt;
     const char *         prefix;
+
+    int32_t              n_allowed_languages;
+    const char * const * allowed_languages;
 };
 
 TRANSCRIBE_API void transcribe_run_params_init(struct transcribe_run_params * params);
@@ -1548,6 +1570,9 @@ typedef enum {
     TRANSCRIBE_FEATURE_CONTEXT_PROMPT       = 8,
     TRANSCRIBE_FEATURE_INSTRUCT             = 9,
     TRANSCRIBE_FEATURE_TRANSCRIPT_PREFIX    = 10,
+    /* transcribe_run_params::allowed_languages restricts automatic language
+     * detection (see transcribe_run_params). */
+    TRANSCRIBE_FEATURE_LANGUAGE_ALLOWLIST   = 11,
 } transcribe_feature;
 
 TRANSCRIBE_API bool transcribe_model_supports(const struct transcribe_model * model, transcribe_feature feature);

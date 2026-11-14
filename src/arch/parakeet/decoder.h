@@ -230,12 +230,22 @@ transcribe_status decode_tdt_greedy(const HostDecoderWeights & w,
 // rule is "blank → advance one frame, non-blank → emit + stay, capped by
 // tdt_max_symbols". Per-emit duration_frames is fixed at 1. Same I/O
 // contract and TdtToken result type as decode_tdt_greedy.
-transcribe_status decode_rnnt_greedy(const HostDecoderWeights & w,
-                                     const float *              enc_out,
-                                     int                        T_enc,
-                                     int                        d_enc,
-                                     int                        n_threads,
-                                     std::vector<TdtToken> &    out_tokens);
+//
+// `blocked_tokens`, when non-null and non-empty, is indexed by token id: a
+// non-zero entry removes that token from every argmax (the language
+// allowlist: disallowed locale-tag tokens can never be emitted). Every other
+// score is untouched, so an empty mask is byte-identical to no mask.
+transcribe_status decode_rnnt_greedy(const HostDecoderWeights &   w,
+                                     const float *                enc_out,
+                                     int                          T_enc,
+                                     int                          d_enc,
+                                     int                          n_threads,
+                                     std::vector<TdtToken> &      out_tokens,
+                                     const std::vector<uint8_t> * blocked_tokens = nullptr);
+
+// Argmax over data[0, n) skipping ids whose blocked[] entry is non-zero.
+// Falls back to the plain argmax when `blocked` is null or empty.
+int argmax_range_masked(const float * data, int n, const std::vector<uint8_t> * blocked);
 
 // Opaque persistent decoder graph for streaming sessions (caches PredGraph and JointGraph
 // across feeds, avoiding per-chunk threadpool allocations and teardowns).
@@ -262,7 +272,8 @@ transcribe_status decode_rnnt_greedy_streaming(const HostDecoderWeights &      w
                                                int                             frame_offset,
                                                int                             n_threads,
                                                std::vector<TdtToken> &         out_tokens,
-                                               ParakeetStreamingDecoderGraph * dec_graph = nullptr);
+                                               ParakeetStreamingDecoderGraph * dec_graph      = nullptr,
+                                               const std::vector<uint8_t> *    blocked_tokens = nullptr);
 
 // Run CTC greedy decode end-to-end. Per-frame: logits = W @ enc[t] + b,
 // argmax; collapse rule "drop adjacent duplicates, then drop blanks"

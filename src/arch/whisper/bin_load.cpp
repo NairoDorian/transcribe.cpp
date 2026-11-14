@@ -480,6 +480,7 @@ void apply_caps_and_languages(WhisperModel & m, const transcribe::bin_loader::Wh
             m.lang_token_ids.push_back(static_cast<int32_t>(sp.sot + 1 + static_cast<int>(i)));
         }
     }
+    transcribe::set_feature(&m, TRANSCRIBE_FEATURE_LANGUAGE_ALLOWLIST, m.lang_token_ids.size() >= 2);
 
     // Publish to the capability surface so transcribe_get_model_capabilities()
     // ->languages/->n_languages matches the GGUF path.

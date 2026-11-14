@@ -141,6 +141,18 @@ struct ParakeetModel final : public transcribe_model {
     // without a per-run backend readback.
     HostDecoderWeights host_decoder;
 
+    // Locale-tag tokens ("<fr-FR>", …) the decoder can emit to mark the
+    // language (nemotron-3.5), as parallel arrays: token id and the tag's
+    // code without the brackets ("fr-FR"). Empty for models without tags.
+    // The language allowlist (transcribe_run_params::allowed_languages)
+    // resolves against lang_tag_codes and masks the disallowed ids.
+    std::vector<int>         lang_tag_ids;
+    std::vector<std::string> lang_tag_codes;
+    // Ordinary pieces that can open a spelled-out tag ("<", "▁<"). Blocked
+    // too while an allowlist is active: a decoder denied its tag tokens
+    // otherwise spells one ("<" "mt" "-" "MT" ">") straight into the text.
+    std::vector<int>         lang_tag_opener_ids;
+
     // Embedded Sortformer diarizer (multitalker bundle GGUFs). Present iff
     // stt.parakeet.diarizer.embedded = true in the GGUF. The weight slots
     // are borrowed views into this model's ctx_meta (resolved under the
@@ -366,6 +378,9 @@ struct ParakeetSession final : public transcribe_session {
     ParakeetStreamingCaches       stream_caches;
     ParakeetStreamingDecoderState stream_dec_state;
     ParakeetStreamingGraph        stream_graph;
+    // Language allowlist mask for this stream (token id -> blocked), resolved
+    // at stream_begin; empty = unrestricted.
+    std::vector<uint8_t>          stream_language_block_mask;
 
     // ---- Buffered streaming state (parakeet-unified-en-0.6b) ----
     //

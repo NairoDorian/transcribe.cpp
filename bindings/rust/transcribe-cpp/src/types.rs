@@ -234,6 +234,9 @@ pub enum Feature {
     Instruct,
     /// Honors `RunOptions::prefix` as forced decoder text.
     TranscriptPrefix,
+    /// Honors `RunOptions::allowed_languages` (restricted automatic
+    /// language detection).
+    LanguageAllowlist,
 }
 
 impl Feature {
@@ -251,6 +254,7 @@ impl Feature {
             Feature::ContextPrompt => F::TRANSCRIBE_FEATURE_CONTEXT_PROMPT,
             Feature::Instruct => F::TRANSCRIBE_FEATURE_INSTRUCT,
             Feature::TranscriptPrefix => F::TRANSCRIBE_FEATURE_TRANSCRIPT_PREFIX,
+            Feature::LanguageAllowlist => F::TRANSCRIBE_FEATURE_LANGUAGE_ALLOWLIST,
         }
     }
 }

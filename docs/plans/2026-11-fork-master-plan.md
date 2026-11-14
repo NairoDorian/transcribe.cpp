@@ -459,6 +459,18 @@ confirm by disabling the gate (the CLI has no switch yet — add one), then
 decide whether the gate's default or its threshold is wrong. Check what
 ZER0 passes before changing the default.
 
+**Confirmed 2026-11-14:** with `TRANSCRIBE_DISABLE_ACTIVITY_GATE=1` the same
+stream returns the correct French sentence. The clip is quiet (−62.1 dBFS RMS,
+peak −47.5 dBFS): the fast path skips a slice when the native Earshot is not
+speaking *and* energy is under the fixed −42 dBFS floor
+(`is_audio_active`, `src/transcribe-activity.h`), and Earshot never fires on
+this level, so no slice ever reaches the family. ZER0 inherits the gate on its
+native streams (`StreamOptions` default), behind its own Rust Earshot — two
+uncoordinated detectors in series. Options: ZER0 sets `enable_vad = false`
+(capture already gates — "CaptureOwned"), and/or the engine gate gets a
+level-relative floor or a minimum Earshot sensitivity for quiet input.
+Recorded for the app in ZER0's `docs/2026-11-transcribe-fork-handoff.md` §3.
+
 ### B.8 The rest of the three-tier plan
 
 Smart Turn v3.2, the lexical trailing guard and the adaptive hangover curve

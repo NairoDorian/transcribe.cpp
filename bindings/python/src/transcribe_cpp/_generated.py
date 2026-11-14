@@ -13,7 +13,7 @@ import ctypes as _c
 # Stable digest of the ABI surface below (structs, enums, macros, layout,
 # prototypes). A native provider package echoes this back so the API
 # package can reject an ABI-mismatched provider before dlopen.
-PUBLIC_HEADER_HASH = "4fd2c80a9a49a7ea"
+PUBLIC_HEADER_HASH = "0fa0d2838f92cca0"
 
 # === enum constants ===
 TRANSCRIBE_OK = 0
@@ -87,6 +87,8 @@ TRANSCRIBE_KV_TYPE_F16 = 2
 TRANSCRIBE_PNC_MODE_DEFAULT = 0
 TRANSCRIBE_PNC_MODE_OFF = 1
 TRANSCRIBE_PNC_MODE_ON = 2
+TRANSCRIBE_ALLOWLIST_LETTERS_DEFAULT = 0
+TRANSCRIBE_ALLOWLIST_LETTERS_ANY = 1
 TRANSCRIBE_ITN_MODE_DEFAULT = 0
 TRANSCRIBE_ITN_MODE_OFF = 1
 TRANSCRIBE_ITN_MODE_ON = 2
@@ -234,7 +236,7 @@ transcribe_backend_init_params._fields_ = [("struct_size", _c.c_uint64), ("artif
 transcribe_device_info._fields_ = [("struct_size", _c.c_uint64), ("name", _c.c_char_p), ("description", _c.c_char_p), ("kind", _c.c_char_p), ("device_id", _c.c_char_p), ("memory_total", _c.c_uint64), ("memory_free", _c.c_uint64), ("device_type", _c.c_int)]
 transcribe_model_load_params._fields_ = [("struct_size", _c.c_uint64), ("backend", _c.c_int), ("device", _c.c_void_p), ("no_mmap", _c.c_bool)]
 transcribe_session_params._fields_ = [("struct_size", _c.c_uint64), ("n_threads", _c.c_int), ("kv_type", _c.c_int), ("n_ctx", _c.c_int32)]
-transcribe_run_params._fields_ = [("struct_size", _c.c_uint64), ("task", _c.c_int), ("timestamps", _c.c_int), ("pnc", _c.c_int), ("itn", _c.c_int), ("diarize", _c.c_int), ("language", _c.c_char_p), ("target_language", _c.c_char_p), ("keep_special_tags", _c.c_bool), ("family", _c.POINTER(transcribe_ext)), ("spec_k_drafts", _c.c_int32), ("vocabulary", _c.POINTER(_c.c_char_p)), ("n_vocabulary", _c.c_int32), ("prompt", _c.c_char_p), ("prefix", _c.c_char_p), ("n_allowed_languages", _c.c_int32), ("allowed_languages", _c.POINTER(_c.c_char_p))]
+transcribe_run_params._fields_ = [("struct_size", _c.c_uint64), ("task", _c.c_int), ("timestamps", _c.c_int), ("pnc", _c.c_int), ("itn", _c.c_int), ("diarize", _c.c_int), ("language", _c.c_char_p), ("target_language", _c.c_char_p), ("keep_special_tags", _c.c_bool), ("family", _c.POINTER(transcribe_ext)), ("spec_k_drafts", _c.c_int32), ("vocabulary", _c.POINTER(_c.c_char_p)), ("n_vocabulary", _c.c_int32), ("prompt", _c.c_char_p), ("prefix", _c.c_char_p), ("n_allowed_languages", _c.c_int32), ("allowed_languages", _c.POINTER(_c.c_char_p)), ("allowlist_letters", _c.c_int)]
 transcribe_capabilities._fields_ = [("struct_size", _c.c_uint64), ("native_sample_rate", _c.c_int32), ("n_languages", _c.c_int), ("languages", _c.POINTER(_c.c_char_p)), ("max_timestamp_kind", _c.c_int), ("supports_language_detect", _c.c_bool), ("supports_translate", _c.c_bool), ("supports_streaming", _c.c_bool), ("supports_spec_decode", _c.c_bool), ("max_audio_ms", _c.c_int64), ("n_translate_target_languages", _c.c_int), ("translate_target_languages", _c.POINTER(_c.c_char_p))]
 transcribe_session_limits._fields_ = [("struct_size", _c.c_uint64), ("effective_n_ctx", _c.c_int32), ("effective_max_audio_ms", _c.c_int64), ("max_kv_bytes", _c.c_int64)]
 transcribe_stream_params._fields_ = [("struct_size", _c.c_uint64), ("family", _c.POINTER(transcribe_ext)), ("commit_policy", _c.c_int), ("stable_prefix_agreement_n", _c.c_uint32), ("enable_vad", _c.c_bool), ("vad_threshold", _c.c_float), ("vad_prefill_ms", _c.c_uint32), ("vad_hangover_ms", _c.c_uint32)]
@@ -308,7 +310,7 @@ STRUCT_LAYOUT = {
     'transcribe_device_info': {'size': 64, 'align': 8, 'offsets': {'struct_size': 0, 'name': 8, 'description': 16, 'kind': 24, 'device_id': 32, 'memory_total': 40, 'memory_free': 48, 'device_type': 56}},
     'transcribe_model_load_params': {'size': 32, 'align': 8, 'offsets': {'struct_size': 0, 'backend': 8, 'device': 16, 'no_mmap': 24}},
     'transcribe_session_params': {'size': 24, 'align': 8, 'offsets': {'struct_size': 0, 'n_threads': 8, 'kv_type': 12, 'n_ctx': 16}},
-    'transcribe_run_params': {'size': 120, 'align': 8, 'offsets': {'struct_size': 0, 'task': 8, 'timestamps': 12, 'pnc': 16, 'itn': 20, 'diarize': 24, 'language': 32, 'target_language': 40, 'keep_special_tags': 48, 'family': 56, 'spec_k_drafts': 64, 'vocabulary': 72, 'n_vocabulary': 80, 'prompt': 88, 'prefix': 96, 'n_allowed_languages': 104, 'allowed_languages': 112}},
+    'transcribe_run_params': {'size': 128, 'align': 8, 'offsets': {'struct_size': 0, 'task': 8, 'timestamps': 12, 'pnc': 16, 'itn': 20, 'diarize': 24, 'language': 32, 'target_language': 40, 'keep_special_tags': 48, 'family': 56, 'spec_k_drafts': 64, 'vocabulary': 72, 'n_vocabulary': 80, 'prompt': 88, 'prefix': 96, 'n_allowed_languages': 104, 'allowed_languages': 112, 'allowlist_letters': 120}},
     'transcribe_capabilities': {'size': 56, 'align': 8, 'offsets': {'struct_size': 0, 'native_sample_rate': 8, 'n_languages': 12, 'languages': 16, 'max_timestamp_kind': 24, 'supports_language_detect': 28, 'supports_translate': 29, 'supports_streaming': 30, 'supports_spec_decode': 31, 'max_audio_ms': 32, 'n_translate_target_languages': 40, 'translate_target_languages': 48}},
     'transcribe_session_limits': {'size': 32, 'align': 8, 'offsets': {'struct_size': 0, 'effective_n_ctx': 8, 'effective_max_audio_ms': 16, 'max_kv_bytes': 24}},
     'transcribe_stream_params': {'size': 40, 'align': 8, 'offsets': {'struct_size': 0, 'family': 8, 'commit_policy': 16, 'stable_prefix_agreement_n': 20, 'enable_vad': 24, 'vad_threshold': 28, 'vad_prefill_ms': 32, 'vad_hangover_ms': 36}},

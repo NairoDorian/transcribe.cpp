@@ -975,7 +975,7 @@ static transcribe_status resolve_language_block_mask(const ParakeetModel *      
     bool                                   alphabet_usable = false;
     const transcribe::lang::AlphabetFilter alphabet =
         transcribe::lang::build_alphabet_filter(requested, alphabet_usable, unknown);
-    if (alphabet_usable) {
+    if (alphabet_usable && transcribe::lang::letters_restricted(params)) {
         for (int id = 0; id < n_tok; ++id) {
             if (mask[static_cast<size_t>(id)] != 0 || pm->tok.is_strippable_special(id)) {
                 continue;  // specials (tags, <unk>, …) are not text

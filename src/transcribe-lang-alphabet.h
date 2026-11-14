@@ -20,6 +20,7 @@
 #pragma once
 
 #include "transcribe-lang.h"
+#include "transcribe.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -329,6 +330,13 @@ inline AlphabetFilter build_alphabet_filter(const std::vector<std::string> & cod
     std::sort(f.latin_extra.begin(), f.latin_extra.end());
     f.latin_extra.erase(std::unique(f.latin_extra.begin(), f.latin_extra.end()), f.latin_extra.end());
     return f;
+}
+
+// Whether a run's allowlist also restricts letters (transcribe_run_params::
+// allowlist_letters). Families get the dispatcher's full-size copy of the
+// params, so the trailing field is always readable.
+inline bool letters_restricted(const transcribe_run_params * params) {
+    return params == nullptr || params->allowlist_letters != TRANSCRIBE_ALLOWLIST_LETTERS_ANY;
 }
 
 }  // namespace transcribe::lang

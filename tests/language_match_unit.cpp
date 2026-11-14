@@ -152,6 +152,16 @@ void test_alphabet_cyrillic_letters() {
     CHECK(!ca_coarse.allows("\xD0\xB2"));         // but not another script
 }
 
+// transcribe_run_params::allowlist_letters: zero (the init default) keeps the
+// letter restriction; ANY turns it off.
+void test_letters_toggle() {
+    transcribe_run_params p{};
+    CHECK(transcribe::lang::letters_restricted(&p));
+    CHECK(transcribe::lang::letters_restricted(nullptr));
+    p.allowlist_letters = TRANSCRIBE_ALLOWLIST_LETTERS_ANY;
+    CHECK(!transcribe::lang::letters_restricted(&p));
+}
+
 // Fail open: a language with no alphabet entry would have its letters banned.
 void test_alphabet_unknown_language() {
     bool usable = true;
@@ -173,6 +183,7 @@ int main() {
     test_alphabet_partial_utf8();
     test_alphabet_cyrillic_letters();
     test_alphabet_unknown_language();
+    test_letters_toggle();
     if (g_failures == 0) {
         std::printf("language_match_unit: OK\n");
     }

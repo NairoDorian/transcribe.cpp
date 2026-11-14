@@ -328,6 +328,8 @@ int run_asr_batch(const cli_args & args, std::ofstream * output) {
     if (!allowed_ptrs.empty()) {
         rp.allowed_languages   = allowed_ptrs.data();
         rp.n_allowed_languages = static_cast<int32_t>(allowed_ptrs.size());
+        rp.allowlist_letters =
+            args.allow_any_letters ? TRANSCRIBE_ALLOWLIST_LETTERS_ANY : TRANSCRIBE_ALLOWLIST_LETTERS_DEFAULT;
     }
     if (!args.target_language.empty()) {
         rp.target_language = args.target_language.c_str();
@@ -751,6 +753,8 @@ int run_asr_file(const cli_args &           args,
     if (!allowed_ptrs.empty()) {
         rp.allowed_languages   = allowed_ptrs.data();
         rp.n_allowed_languages = static_cast<int32_t>(allowed_ptrs.size());
+        rp.allowlist_letters =
+            args.allow_any_letters ? TRANSCRIBE_ALLOWLIST_LETTERS_ANY : TRANSCRIBE_ALLOWLIST_LETTERS_DEFAULT;
     }
     if (!args.target_language.empty()) {
         rp.target_language = args.target_language.c_str();

@@ -125,7 +125,10 @@ struct cli_args {
     // these labels (codes or aliases); --top prints only the best N ranked
     // candidates (0 = all). The library always ranks every allowed label.
     std::vector<std::string> langid_allow;
-    int                      langid_top = 0;
+    int                      langid_top        = 0;
+    // --allow-any-letters: an ASR allowlist restricts the language decision
+    // only, not the letters (TRANSCRIBE_ALLOWLIST_LETTERS_ANY).
+    bool                     allow_any_letters = false;
 
     // VAD role. --vad-threshold overrides transcribe_vad_params::threshold
     // (< 0 = the library default).

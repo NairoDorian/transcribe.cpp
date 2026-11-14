@@ -99,6 +99,31 @@ impl KvType {
     }
 }
 
+/// How far `RunOptions::allowed_languages` reaches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum AllowlistLetters {
+    /// The list restricts the language the model detects AND the letters it
+    /// may write (no other script, no letter none of the listed languages
+    /// uses): what stops a short utterance coming out in Cyrillic or Hangul.
+    #[default]
+    Default,
+    /// The list restricts the detected language only; any letter may be
+    /// written, so a foreign name keeps its own spelling. Models without a
+    /// language decision (Parakeet TDT, Granite) are then unconstrained.
+    Any,
+}
+
+impl AllowlistLetters {
+    pub(crate) fn to_raw(self) -> sys::transcribe_allowlist_letters {
+        use sys::transcribe_allowlist_letters as A;
+        match self {
+            AllowlistLetters::Default => A::TRANSCRIBE_ALLOWLIST_LETTERS_DEFAULT,
+            AllowlistLetters::Any => A::TRANSCRIBE_ALLOWLIST_LETTERS_ANY,
+        }
+    }
+}
+
 /// Punctuation + capitalization runtime toggle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

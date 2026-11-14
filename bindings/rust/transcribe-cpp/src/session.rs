@@ -23,7 +23,7 @@ use crate::result::{
     owned_opt_str, owned_str, Segment, SpeakerSegment, Timings, Token, Transcript, Word,
 };
 use crate::streaming::{build_stream_params, StreamOptions, StreamText, StreamUpdate};
-use crate::types::{Diarize, Itn, Pnc, StreamState, Task, TimestampKind};
+use crate::types::{AllowlistLetters, Diarize, Itn, Pnc, StreamState, Task, TimestampKind};
 
 /// Per-run parameters.
 #[derive(Debug, Clone, PartialEq)]
@@ -68,6 +68,9 @@ pub struct RunOptions {
     /// cannot detect are skipped for its label but still widen the alphabet.
     /// A streaming run applies it to every step.
     pub allowed_languages: Vec<String>,
+    /// Whether `allowed_languages` also restricts the letters (default) or
+    /// only the detected language (`AllowlistLetters::Any`).
+    pub allowlist_letters: AllowlistLetters,
 }
 
 impl Default for RunOptions {
@@ -87,6 +90,7 @@ impl Default for RunOptions {
             prompt: None,
             prefix: None,
             allowed_languages: Vec::new(),
+            allowlist_letters: AllowlistLetters::Default,
         }
     }
 }
@@ -502,6 +506,7 @@ fn build_run_params(o: &RunOptions) -> Result<RunParamsBundle> {
     } else {
         allowed_ptrs.as_ptr()
     };
+    params.allowlist_letters = o.allowlist_letters.to_raw();
     let prompting = PromptingKeepalive {
         _terms: terms,
         _term_ptrs: term_ptrs,
@@ -718,6 +723,21 @@ mod tests {
         let (empty, ..) = build_run_params(&RunOptions::default()).unwrap();
         assert_eq!(empty.n_allowed_languages, 0);
         assert!(empty.allowed_languages.is_null());
+        assert_eq!(
+            empty.allowlist_letters,
+            sys::transcribe_allowlist_letters::TRANSCRIBE_ALLOWLIST_LETTERS_DEFAULT
+        );
+
+        let any = RunOptions {
+            allowed_languages: vec!["fr".into()],
+            allowlist_letters: AllowlistLetters::Any,
+            ..RunOptions::default()
+        };
+        let (any_params, ..) = build_run_params(&any).unwrap();
+        assert_eq!(
+            any_params.allowlist_letters,
+            sys::transcribe_allowlist_letters::TRANSCRIBE_ALLOWLIST_LETTERS_ANY
+        );
     }
 
     #[test]

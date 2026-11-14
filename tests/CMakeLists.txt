@@ -337,7 +337,7 @@ add_test(NAME transcribe_chunking_unit COMMAND transcribe_chunking_unit)
 
 # Language-code matching for the allowlist (header-only, no model).
 add_executable(transcribe_language_match_unit language_match_unit.cpp)
-target_include_directories(transcribe_language_match_unit PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(transcribe_language_match_unit PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
 transcribe_apply_warnings(transcribe_language_match_unit)
 add_test(NAME transcribe_language_match_unit COMMAND transcribe_language_match_unit)
 

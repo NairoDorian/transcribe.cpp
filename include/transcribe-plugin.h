@@ -10,9 +10,10 @@
 
 #include <stdint.h>
 
-// Session base gained the stream language-allowlist storage (ABI 4; ABI 3 added
-// the VAD ops table to Arch); rebuild modules from earlier layouts.
-#define TRANSCRIBE_ARCH_PLUGIN_ABI_VERSION 4
+// Run params gained allowlist_letters (ABI 5; ABI 4 added the stream
+// language-allowlist storage to the session base, ABI 3 the VAD ops table to
+// Arch); rebuild modules from earlier layouts.
+#define TRANSCRIBE_ARCH_PLUGIN_ABI_VERSION 5
 
 #if defined(_WIN32)
 #    define TRANSCRIBE_PLUGIN_EXPORT __declspec(dllexport)

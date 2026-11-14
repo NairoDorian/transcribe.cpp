@@ -999,7 +999,8 @@ transcribe_status whisper_allowed_languages(const WhisperModel &          cm,
 std::vector<int32_t> whisper_alphabet_banned(const WhisperModel & cm, const transcribe_run_params * params) {
     std::vector<int32_t> banned;
     if (params == nullptr || params->language != nullptr || params->n_allowed_languages <= 0 ||
-        params->allowed_languages == nullptr || params->task == TRANSCRIBE_TASK_TRANSLATE) {
+        params->allowed_languages == nullptr || params->task == TRANSCRIBE_TASK_TRANSLATE ||
+        !transcribe::lang::letters_restricted(params)) {
         return banned;
     }
     std::vector<std::string> codes;

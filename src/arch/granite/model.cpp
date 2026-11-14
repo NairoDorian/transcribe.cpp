@@ -899,6 +899,8 @@ static transcribe_status prepare_language_bias(GraniteSession *              cc,
         key += transcribe::lang::normalize(code);
         key += ',';
     }
+    const bool letters = transcribe::lang::letters_restricted(params);
+    key += letters ? "" : "|any-letters";
     if (!cc->lang_bias_key.empty() && cc->lang_bias_key == key) {
         return TRANSCRIBE_OK;
     }
@@ -928,13 +930,13 @@ static transcribe_status prepare_language_bias(GraniteSession *              cc,
         return TRANSCRIBE_ERR_UNSUPPORTED_LANGUAGE;
     }
     cc->lang_bias.clear();
-    bool                                   usable   = false;
+    bool                                   usable = false;
     // The whole list, known to this model or not: it is what the speaker may
     // say, and the alphabet only ever widens with it.
     const transcribe::lang::AlphabetFilter alphabet =
         transcribe::lang::build_alphabet_filter(requested, usable, unknown);
-    const int                              vocab    = cm->hparams.dec_vocab_size;
-    if (usable && vocab > 0) {
+    const int vocab = cm->hparams.dec_vocab_size;
+    if (usable && letters && vocab > 0) {
         cc->lang_bias.assign(static_cast<size_t>(vocab), 0.0f);
         const int n_tok    = std::min(cm->tok.n_tokens(), vocab);
         int       n_banned = 0;

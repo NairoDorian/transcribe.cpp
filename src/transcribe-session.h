@@ -10,8 +10,8 @@
 
 #pragma once
 
+#include "transcribe-earshot.h"
 #include "transcribe-session-core.h"
-#include "transcribe-vad.h"
 #include "transcribe.h"
 
 #include <cstddef>

@@ -67,6 +67,7 @@ set(_all_families
     granite_nar
     medasr
     ecapa_tdnn
+    silero_vad
 )
 
 if(TRANSCRIBE_MODEL_SET STREQUAL "minimal-multilingual")
@@ -99,6 +100,7 @@ set(TRANSCRIBE_SRCS
     transcribe-asr.cpp
     transcribe-diarize.cpp
     transcribe-langid.cpp
+    transcribe-vad.cpp
     transcribe-loader.cpp
     transcribe-arch.cpp
     transcribe-meta.cpp
@@ -120,7 +122,7 @@ set(TRANSCRIBE_SRCS
     transcribe-stubs.cpp
     transcribe-activity.cpp
     transcribe-chunking.cpp
-    transcribe-vad.cpp
+    transcribe-earshot.cpp
 )
 
 # Per-family source definitions
@@ -210,6 +212,13 @@ set(_srcs_ecapa_tdnn
     arch/ecapa_tdnn/graph.cpp
     arch/ecapa_tdnn/model.cpp
     arch/ecapa_tdnn/weights.cpp
+)
+
+set(_srcs_silero_vad
+    arch/silero_vad/decoder.cpp
+    arch/silero_vad/encoder.cpp
+    arch/silero_vad/model.cpp
+    arch/silero_vad/weights.cpp
 )
 
 set(_srcs_voxtral

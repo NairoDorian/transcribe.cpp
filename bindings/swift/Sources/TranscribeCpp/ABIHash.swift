@@ -13,7 +13,7 @@ import CTranscribe
 extension Transcribe {
     /// sha256/16 of the normalized public FFI surface, pinned to the value in
     /// include/transcribe.abihash at the time this binding was last reviewed.
-    public static let pinnedHeaderHash = "49f38ab90a9c8a02"
+    public static let pinnedHeaderHash = "0a075c496509af7a"
 
     /// The public-ABI digest this binding was reviewed against (16 hex chars).
     public static func headerHash() -> String { pinnedHeaderHash }

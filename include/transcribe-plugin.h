@@ -10,8 +10,8 @@
 
 #include <stdint.h>
 
-// The role split changes Arch and the session base layout; rebuild v1 modules.
-#define TRANSCRIBE_ARCH_PLUGIN_ABI_VERSION 2
+// Arch now includes the VAD ops table; rebuild modules from earlier layouts.
+#define TRANSCRIBE_ARCH_PLUGIN_ABI_VERSION 3
 
 #if defined(_WIN32)
 #    define TRANSCRIBE_PLUGIN_EXPORT __declspec(dllexport)

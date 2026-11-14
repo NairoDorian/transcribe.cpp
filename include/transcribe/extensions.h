@@ -20,6 +20,7 @@
 #include "transcribe/parakeet.h"
 #include "transcribe/r2t2.h"
 #include "transcribe/sortformer.h"
+#include "transcribe/vad.h"
 #include "transcribe/voxtral_realtime.h"
 #include "transcribe/whisper.h"
 

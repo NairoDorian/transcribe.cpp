@@ -1,9 +1,19 @@
 # Native Earshot VAD Implementation, Full-Stack C++23 Upgrade & Handy ZER0 Integration Plan
 
+> **Historical specification; status corrected 2026-10-16.** The native Earshot
+> kernel and the four Rust optimizations landed; full app-to-engine VAD ownership,
+> pre-roll and speech-clock parity did not. ZER0 filters with Rust Earshot and
+> also inherits enabled engine VAD in native StreamOptions defaults. The proposed
+> FFT sharing, performance figures and parity guarantees below are not evidence
+> that a shared preprocessing pipeline exists. Use the
+> [revised VAD/RNNoise plan](2026-10-three-tier-super-vad-and-firered-architecture-plan.md)
+> and [paired-project contract](../zer0-engine-integration.md) for new work.
+
+
 **Document Version**: 2.1.0  
 **Target Systems**: `transcribe.cpp` (C++23 Standalone ASR Engine, GGML C++23, CUDA C++20) & `Handy_V2` (ZER0 Tauri/Rust Desktop Dictation App)  
 **Date**: September 2026  
-**Status**: Ready for Engineering Execution  
+**Status**: Historical; superseded by the October revision
 
 ---
 
@@ -30,10 +40,10 @@ In the current Handy ZER0 dictation architecture, Voice Activity Detection (VAD)
 
 ---
 
-### 1.2 Guaranteeing 100% ZER0 UI Feature Parity
+### 1.2 Required ZER0 UI parity: acceptance goals
 A non-negotiable requirement of moving VAD into `transcribe.cpp` is that **every single feature, UI control, and telemetry metric in Handy ZER0 must remain 100% functional and backward-compatible**:
 
-| ZER0 App Feature | Current Implementation | Implementation with Engine-Native VAD | Parity Guarantee |
+| ZER0 App Feature | Current Implementation | Implementation with Engine-Native VAD | Acceptance Goal |
 |---|---|---|---|
 | **VAD Sensitivity Slider** (`Settings → Advanced`) | Modifies `vad_threshold_earshot` (0.05–0.95, default 0.50). | Sent to engine via `transcribe_stream_params::vad_threshold` and live setter `transcribe_stream_set_vad_threshold(session, val)`. | **100% Exact** (Dynamic runtime adjustment without restarting stream). |
 | **VAD Hotkey Shortcuts** | Calls `shortcut::change_vad_threshold_setting`. | Updates local state and propagates via `transcribe_stream_set_vad_threshold`. | **100% Exact**. |
@@ -46,8 +56,12 @@ A non-negotiable requirement of moving VAD into `transcribe.cpp` is that **every
 
 ## 2. Empirical Standard Analysis: C++23 for GGML and CUDA
 
+The September compiler observations below are archived context. Their full
+compiler/backend matrix was not re-run for the October VAD integration; do not
+interpret them as a new compatibility result or a requirement to raise standards.
+
 ### 2.1 Can GGML Get Onto C++23?
-**YES, 100% Confirmed.**
+Historical compiler observation; not a current toolchain-matrix verification.
 - **Empirical Test**: Compiling `ggml-cpu.cpp` directly with MSVC `/std:c++latest` (C++23) and `ggml.c` with `/std:clatest` succeeded with **0 warnings and 0 errors**.
 - **CMake Behavior**: Upstream `ggml/src/CMakeLists.txt` defines `target_compile_features(${target} PRIVATE c_std_11 cxx_std_17) # don't bump`. In CMake, `target_compile_features` specifies a *minimum floor*, not a ceiling. Setting the global `CMAKE_CXX_STANDARD 23` compiles all C++ files in GGML (`ggml-cpu.cpp`, `ggml-vulkan.cpp`, etc.) under C++23 without modifying upstream vendored code.
 
@@ -132,49 +146,39 @@ target_compile_features(transcribe PUBLIC cxx_std_23)
 
 ---
 
-## 4. General Performance Impact of `target-cpu=native` on ZER0 App
+## 4. Historical `target-cpu=native` proposal: evidence correction
 
-The user specifically asked:
-> *"would in general terms 'Adding RUSTFLAGS="-C target-cpu=native" in Handy_V2/.cargo/config.toml unlocks 256-bit AVX2 and FMA' would this improve zer0 app performance in general ? not even related to vad"*
+`-C target-cpu=native` allows Rust code generation to use the build host's CPU
+features. It does not prove that every loop vectorizes, that every dependency
+gets faster, or that the native C++ library inherits the same flags. Some
+libraries already select SIMD kernels through runtime dispatch.
 
-### 4.1 The Concrete Answer: **YES, Substantially Across Multiple Subsystems**
-By default, the Rust compiler targets the baseline `x86-64` architecture (SSE2 only, 128-bit wide registers, no FMA). Setting `RUSTFLAGS="-C target-cpu=native"` in `Handy_V2/.cargo/config.toml` (or configuring `rustflags = ["-C", "target-cpu=native"]` in `[build]`) unlocks modern 256-bit vector registers (AVX2), Fused Multiply-Add (FMA), and Bit Manipulation (BMI1/BMI2) across the **entire** Rust backend.
+Resampling, RNNoise and FFT processing are reasonable profiling candidates.
+Compare the actual capture path with the same hardware, compiler, dependency
+revisions and audio; record CPU time, allocation count, output parity and
+sustained overruns. A language standard or CPU flag alone is not a result.
 
-Here are the specific, non-VAD areas in Handy ZER0 that will experience immediate performance boosts:
+The former claims of a 2.5-3.2x resampler improvement, RNNoise dropping from
+18 to 7 microseconds, a 2.2x FFT improvement and >95% desktop CPU coverage had
+no reproducible supporting evidence in this audit. They are withdrawn. An
+AVX2 vector instruction is also not evidence of a fixed per-clock throughput.
 
-1. **Audio Sinc Resampling (`rubato` / FIR Filtering)**:
-   - ZER0 continuously resamples microphone audio from 44.1 kHz or 48 kHz down to 16 kHz for speech recognition.
-   - Sinc resampling is pure digital signal processing (DSP), consisting of long dot-product loops multiplying audio history against windowed sinc coefficients.
-   - Under SSE2, LLVM generates 128-bit instructions (`mulps` followed by `addps`, processing 4 floats at a time).
-   - Under AVX2 + FMA, LLVM autovectorizes this into 256-bit `vfmadd213ps` / `vfmadd231ps` instructions, computing **8 multiply-adds in a single CPU clock cycle**.
-   - **Measured Impact**: Resampler CPU consumption on the audio capture thread drops by **$2.5\times\text{--}3.2\times$**.
-
-2. **Noise Suppression (RNNoise / `nnnoiseless`)**:
-   - When the user enables Denoising in Settings (`denoise_enabled = true`), RNNoise evaluates a multi-layer neural network (dense feed-forward layers + GRU recurrent cells) every 10 ms at 48 kHz.
-   - Matrix-vector multiplications and tanh/sigmoid activations autovectorize to 256-bit AVX2/FMA registers.
-   - **Measured Impact**: Denoising latency per 10 ms chunk drops from $\approx 18\ \mu\text{s}$ to $\approx 7\ \mu\text{s}$.
-
-3. **Live Audio Spectrum / Level Metering & Live FFT**:
-   - The Live FFT page and live audio level meters compute peak sample levels, RMS dBFS, and frequency spectrum bins in real time.
-   - AVX2 processes 8 single-precision float samples per instruction, speeding up magnitude and FFT operations by $\approx 2.2\times$.
-
-4. **String Scanning & JSON Serialization (`serde_json` & `memchr`)**:
-   - Tauri command handlers and event dispatchers parse large JSON payloads for settings, history entries, and transcription results.
-   - Crates like `memchr` and `serde_json` contain hand-tuned AVX2 acceleration paths that are automatically enabled when compiling with AVX2 support. They scan 32 bytes per instruction instead of 16.
-
-5. **Release Distribution Recommendation**:
-   - For developer builds and user-compiled binaries: `-C target-cpu=native`.
-   - For universal binary releases distributed to end-users without crashing older CPUs: target `x86-64-v3` (`-C target-cpu=x86-64-v3` or `-C target-feature=+avx2,+fma,+bmi2`). `x86-64-v3` represents Haswell (2013+) and newer CPUs, covering >95% of active PC desktop hardware today.
+Keep release CPU requirements explicit: `x86-64-v3` is a restricted hardware
+target, not a universal x86-64 binary. Host-native development flags and
+distribution policy are separate decisions.
 
 ---
 
 ## 5. In-Engine Three-Tier Ingestion Pipeline
 
-When audio arrives at `transcribe_stream_feed` or `transcribe_run`, it passes through an optimized 3-tier cascade:
+The following is a historical target flow, not a verified description of every
+current feed/run path. The revised October plan defines the proposed ownership
+and optional cascade; inspect family-specific activity gates before changing
+retention or enabling another detector:
 
 ```mermaid
 flowchart TD
-    In["Incoming 16 kHz Mono PCM Chunk"] --> T0{"Tier 0: Sub-Microsecond Energy Gate<br/>(is_audio_active, RMS < -42 dBFS)"}
+    In["Incoming 16 kHz Mono PCM Chunk"] --> T0{"Tier 0: Proposed Energy Gate<br/>(is_audio_active, RMS < -42 dBFS)"}
     T0 -- Silence (< 0.2 µs) --> Drop0["Fast Exit: TRANSCRIBE_OK<br/>(Skip Neural Compute, Advance Stream Clock)"]
     T0 -- Energy Detected --> T1{"Tier 1: Native Earshot minGRU VAD<br/>(40-band filterbank + minGRU)"}
     T1 -- Noise / Non-Speech (3–5 µs) --> CheckHang{"Speech Hangover Active?"}
@@ -445,11 +449,13 @@ Add to `Handy_V2/.cargo/config.toml`:
 [build]
 rustflags = ["-C", "target-cpu=native"]
 ```
-- Instantly activates 256-bit SIMD across resamplers, RNNoise denoiser, FFT analysis, and Earshot minGRU.
+- Permits host CPU instructions where the compiler and dependency implementation
+  use them. Per-component speedups require measurements; see the corrected
+  evidence status in section 4.
 
 ---
 
-### Point D: Sub-Microsecond Energy Pre-Gating in Audio Capture
+### Point D: Energy pre-gating in audio capture
 In `Handy_V2/src-tauri/src/audio_toolkit/audio/recorder.rs`, insert an RMS pre-check before VAD processing:
 ```rust
 #[inline(always)]
@@ -462,7 +468,10 @@ fn is_frame_active(frame: &[f32], threshold_dbfs: f32) -> bool {
     10.0 * mean_sq.log10() >= threshold_dbfs
 }
 ```
-- Skips 75% of silence frames without running minGRU inference.
+- Skips Earshot prediction for frames below the energy threshold while the
+  detector is inactive. The skipped fraction and runtime savings were not
+  measured in this audit. RNNoise has already run when enabled; this gate does
+  not skip denoising. SmoothedVad pre-roll/hangover still determine retention.
 
 ---
 

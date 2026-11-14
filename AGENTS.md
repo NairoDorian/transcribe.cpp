@@ -4,6 +4,23 @@ Read `CONTRIBUTING.md` for contribution policy, review gates, and coding
 style. This file is only the local command/automation convention sheet for
 coding agents.
 
+## Paired development with ZER0
+
+This engine fork and the local ZER0 app (`Handy_V2`) are complementary projects.
+Before changing audio preprocessing, VAD, streaming defaults, model capabilities,
+bindings, or a behavior consumed by the app, read
+[`docs/zer0-engine-integration.md`](docs/zer0-engine-integration.md), locate the
+peer checkout/worktree, and read its `AGENTS.md` and
+`docs/TRANSCRIBE_CPP_INTEGRATION.md`. Inspect the real Rust call sites as well as
+the C++ implementation; a defaulted option can enable behavior implicitly.
+
+Usual peer path: `C:/Users/Z/Downloads/PROJECTS/Handy_V2`. Use `git worktree list`
+when a feature lives elsewhere. Check both branches/dirty states and the app's
+Cargo pin/native build identity. Preserve unrelated work. When moving ownership
+or changing a shared contract, update both integration notes and test both sides.
+The current VAD/RNNoise roadmap is
+[`docs/plans/2026-10-three-tier-super-vad-and-firered-architecture-plan.md`](docs/plans/2026-10-three-tier-super-vad-and-firered-architecture-plan.md).
+
 ## Python
 
 - ALWAYS use `uv run` for every Python invocation. Never bare `python`,

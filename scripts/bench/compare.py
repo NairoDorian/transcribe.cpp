@@ -33,7 +33,7 @@ under is recorded in the JSON.
 Usage:
     uv run --no-project scripts/bench/compare.py \
         --wav samples/jfk.wav --model <installed.gguf> --backend cpu \
-        --arm ref=../transcribe_benchmarks/build/bench-native/install/bin/transcribe.dll \
+        --arm ref=<upstream-checkout>/build/bench-native/install/bin/transcribe.dll \
         --arm fork=build/bench-native/install/bin/transcribe.dll
 
     # Runtime-gated feature: same library, one arm with the pass enabled.

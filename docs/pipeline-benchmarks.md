@@ -48,11 +48,28 @@ each repetition and rotates which arm starts:
 ```powershell
 uv run --no-project scripts/bench/compare.py `
   --wav samples/jfk.wav --model <installed.gguf> --backend cpu `
-  --arm ref=../transcribe_benchmarks/build/bench-native/install/bin/transcribe.dll `
+  --arm ref=<upstream-checkout>/build/bench-native/install/bin/transcribe.dll `
   --arm fork=build/bench-native/install/bin/transcribe.dll
 # Repeatable --arm; the first is the baseline. --reps (min 2), --stream-chunk-ms,
 # --att-right, --threads, --language, --backend, --output.
 ```
+
+`build-native.ps1` builds the checkout it sits in, and upstream does not carry
+it: copy it into `<upstream-checkout>/scripts/bench/` and run it there to get
+the `ref` arm. A plain upstream checkout at the merge base is the reference;
+the former `../transcribe_benchmarks` worktree (an older upstream with this
+tooling on top, branch `transcribe_benchmarks`) is retired.
+
+Without a shared build, the CLI gives the same comparison. Run one process per
+measurement with `-r 2`: the library's `timings:` line reports the last run.
+Interleave the arms and drop the first round. Two traps:
+
+- `--repeat` is refused with `--stream-chunk-ms`, so a streaming case is one
+  cold stream per process.
+- Families do not count the same things. Upstream's Granite `decode=` covers
+  the prefill only, the fork's covers prefill plus token loop. Where the
+  definitions differ, compare wall time per run instead:
+  `(wall(-r 5) - wall(-r 1)) / 4`, which cancels load and warm-up.
 
 This is not a convenience wrapper around the suite; it exists because a suite's
 cross-arm verdicts are not trustworthy. A suite runs one arm's cases back to

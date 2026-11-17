@@ -1,5 +1,13 @@
 # CUDA graphs and audio.cpp optimizer experiments
 
+> **Status: dated record (2026-09-20); its CUDA-graph decision is superseded.**
+> CUDA graphs have been **on by default** since `77895e09` (2026-09-26):
+> autoregressive decoders are launch-bound per token (+15 % R2T2 decode on the
+> RTX 4070) and Parakeet output was byte-identical with graphs on. The audio.cpp
+> pass and GGML's CUDA scheduling optimizer are still opt-in. The numbers below
+> predate the Parakeet GPU decoder and the step pipeline; current figures are in
+> [fork/audit-2026-11-17.md](fork/audit-2026-11-17.md).
+
 Measured 2026-09-20 on the RTX 4070 Laptop / i9-13900H with the 11-second JFK fixture. Every cell is the arithmetic mean of runs 2 and 3 of exactly three resident runs; run 1 is excluded. Each profile measured both CPU and CUDA. No weights were downloaded.
 
 All profiles use the same Release native/architecture binaries and the newly compiled GGML v0.24 CUDA module. The CPU module is the same feature-dispatched module used in the prior baseline. `GGML_CUDA_DISABLE_GRAPHS=1` disables capture in the graphs-capable binary; removing it enables capture. `TRANSCRIBE_GRAPH_OPTIMIZER=1` enables the compatible audio.cpp pass. `GGML_CUDA_GRAPH_OPT=1` enables GGML's separate CUDA scheduling optimizer. Those are distinct experiments, not interchangeable names for the same feature.

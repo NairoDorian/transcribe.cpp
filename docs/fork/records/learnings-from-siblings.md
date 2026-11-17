@@ -5,7 +5,7 @@ into an ASR-only library, with a prioritised adoption plan.
 
 Sources: `STT_BRAIN_TTS/audio.cpp` @ `78d4770` (upstream `5bea9c7`),
 `Unified_Audio.cpp/speech.cpp` @ `fbd84fed` (the fusion project), and this repo
-@ `f8e97c9`. Companion to `PASSOVER.md`, which is this fork's audit register for
+@ `f8e97c9`. Companion to `2026-08-20-optimization-audit.md`, which is this fork's audit register for
 the 2026-08 performance series.
 
 **Scope rule.** This repo is an ASR/diarization library. Nothing here proposes
@@ -136,7 +136,7 @@ this repo's contracts (`api_guard_*`, `safe_*` teardown, `struct_size`,
   were found across the two parents. Your `docs/input-limits.md` contract
   already encodes the fix; the risk is regressing it while touching streaming.
 - **L12 — measure the real flow, then read the code.** This is the same lesson
-  as your own `PASSOVER.md` §8, learned independently: the multi-STT serializer
+  as your own `2026-08-20-optimization-audit.md` §8, learned independently: the multi-STT serializer
   looked like a 55% win on a synthetic stand-in and was a 38–45% *regression* on
   the real dictation flow.
 - **L6 — specification beats inspection.** Their worked example is a unified mel
@@ -233,7 +233,7 @@ repo's design.
 ## 6. Prioritised plan
 
 Ordered by (value ÷ risk), with the verification each tier needs. Your
-`PASSOVER.md` rule applies throughout: **measure before and after; revert
+`2026-08-20-optimization-audit.md` rule applies throughout: **measure before and after; revert
 anything inside the noise floor.**
 
 ### Tier 0 — Documentation and metadata truth (no runtime effect)
@@ -280,7 +280,7 @@ written — `actions/checkout` is now `@v7` at all 36 sites, and `setup-node` /
 uniformly.
 
 A full dependency sweep followed this tier; its results, including which pins
-are deliberately *not* newest and why, are in **`docs/dependency-audit.md`**.
+are deliberately *not* newest and why, are in **`2026-09-12-dependency-audit.md`**.
 The short version: only the Node CI pin was behind, `bindgen` 0.73.x is broken
 upstream, and the per-family `transformers` pins are port oracles that must not
 be bumped.
@@ -514,7 +514,7 @@ anything smaller than a module.
 - `validate.py`, `preflight.py` and `compare_tensors.py` **cannot run without
   reference oracles**. Do not present a green build as numerical validation.
 - `cleanup_gpu()` (the end-of-run scheduler/KV free) is off-limits — ruled so
-  three times, per `PASSOVER.md`.
+  three times, per `2026-08-20-optimization-audit.md`.
 - The multi-STT serializer was reverted. Do not re-add it; do not set
   `TRANSCRIBE_MULTI_STT_SERIALIZE` in Handy (it is inert).
 
@@ -522,7 +522,7 @@ anything smaller than a module.
 
 ## 8. Verification protocol for anything above
 
-Per `PASSOVER.md` and the established method:
+Per `2026-08-20-optimization-audit.md` and the established method:
 
 1. Run 4 times, **drop the first** (warm-up), average the remaining 3.
 2. **Interleave** before/after arms within each round — total-runtime noise is

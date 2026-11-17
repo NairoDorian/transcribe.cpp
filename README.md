@@ -2,6 +2,26 @@
 
 C/C++ speech-to-text inference library. Runs diverse STT model families via [GGUF](https://github.com/ggerganov/gguf) models on the [ggml](https://github.com/ggml-org/ggml) runtime, with Metal, Vulkan, and CUDA backends for fast GPU inference plus a tinyBLAS-accelerated CPU path.
 
+> **This is the `NairoDorian` fork** of
+> [handy-computer/transcribe.cpp](https://github.com/handy-computer/transcribe.cpp),
+> tuned as a real-time dictation engine. It adds:
+>
+> - a model-free audio front end: Earshot VAD, a capture speech gate, RNNoise;
+> - GPU-resident decoding: the Parakeet decoder and pipelined LLM steps run on
+>   the GPU, and no op of the local models is left on the CPU;
+> - a "languages I speak" allowlist;
+> - parakeet-ultra / parakeet-redux (native ternary weights) and Confucius4-R2T2
+>   streaming;
+> - model-set and plugin builds, and a cached Rust build.
+>
+> Against upstream on the same machine it is 2.9-4x faster for Parakeet and
+> Nemotron on CUDA, and 1.6-1.9x for Granite, with identical transcripts. The
+> public C API is a strict superset of upstream's.
+>
+> - What differs, including defaults: [docs/fork/README.md](docs/fork/README.md)
+> - History: [docs/fork/changelog.md](docs/fork/changelog.md)
+> - Latest audit and benchmarks: [docs/fork/audit-2026-11-17.md](docs/fork/audit-2026-11-17.md)
+
 16 model families and 60+ variants, streaming and batch. Every transcription model we publish under [`handy-computer`](https://huggingface.co/handy-computer) is numerically verified and WER-tested against its reference implementation
 
 **Supported models:**
@@ -23,7 +43,7 @@ C/C++ speech-to-text inference library. Runs diverse STT model families via [GGU
 | Multitalker Parakeet Streaming 0.6B v1 | `multitalker-parakeet-streaming-0.6b-v1` | diarize, streaming, token timestamps | [docs/models/multitalker-parakeet-streaming-0.6b-v1.md](docs/models/multitalker-parakeet-streaming-0.6b-v1.md) |
 | Nemotron 3.5 ASR Streaming 0.6B | `nemotron-3.5-asr-streaming-0.6b` | streaming, token timestamps | [docs/models/nemotron-3.5-asr-streaming-0.6b.md](docs/models/nemotron-3.5-asr-streaming-0.6b.md) |
 | Nemotron Speech Streaming EN 0.6B | `nemotron-speech-streaming-en-0.6b` | streaming, token timestamps | [docs/models/nemotron-speech-streaming-en-0.6b.md](docs/models/nemotron-speech-streaming-en-0.6b.md) |
-| Parakeet | `parakeet-ctc-0.6b`, `parakeet-ctc-1.1b`, `parakeet-primeline`, `parakeet-redux-0.6b` (native ternary), `parakeet-rnnt-0.6b`, `parakeet-rnnt-1.1b`, `parakeet-tdt-0.6b-v2`, `parakeet-tdt-0.6b-v3`, `parakeet-tdt-1.1b`, `parakeet-tdt_ctc-1.1b`, `parakeet-tdt_ctc-110m`, `parakeet-ultra`, `parakeet-ultra-0.6b`, `parakeet-unified-en-0.6b`, `orukeet`, `phonon-2` | streaming, token timestamps | [docs/models/parakeet.md](docs/models/parakeet.md) |
+| Parakeet | `parakeet-ctc-0.6b`, `parakeet-ctc-1.1b`, `parakeet-primeline`, `parakeet-redux-0.6b`, `parakeet-rnnt-0.6b`, `parakeet-rnnt-1.1b`, `parakeet-tdt-0.6b-v2`, `parakeet-tdt-0.6b-v3`, `parakeet-tdt-1.1b`, `parakeet-tdt_ctc-1.1b`, `parakeet-tdt_ctc-110m`, `parakeet-ultra`, `parakeet-ultra-0.6b`, `parakeet-unified-en-0.6b`, `orukeet`, `phonon-2` | streaming, token timestamps | [docs/models/parakeet.md](docs/models/parakeet.md) |
 | Qwen3-ASR | `qwen3-asr-0.6b`, `qwen3-asr-1.7b` | - | [docs/models/qwen3-asr.md](docs/models/qwen3-asr.md) |
 | SenseVoice Small | `sensevoice-small` | - | [docs/models/sensevoice-small.md](docs/models/sensevoice-small.md) |
 | Voxtral (2507) | `voxtral-mini-3b-2507`, `voxtral-small-24b-2507` | translate | [docs/models/voxtral.md](docs/models/voxtral.md) |
@@ -142,6 +162,24 @@ be required explicitly with `--backend rocm`.
 
 tinyBLAS (Justine Tunney's `llamafile_sgemm` kernels) is on by default.
 
+CUDA builds turn on CUDA graphs by default (`GGML_CUDA_GRAPHS=ON`; set
+`GGML_CUDA_DISABLE_GRAPHS` at run time to compare). Fork build options:
+
+```bash
+# Only the families you ship (the C ABI of the others stays, as stubs)
+cmake -B build -DTRANSCRIBE_MODEL_SET=minimal-multilingual   # parakeet, granite, qwen3_asr
+cmake -B build -DTRANSCRIBE_MODEL_SET=custom -DTRANSCRIBE_MODELS="parakeet;whisper"
+
+# Model-free core + one loadable transcribe-arch-<arch> module per family
+cmake -B build -DTRANSCRIBE_BUILD_SHARED=ON -DTRANSCRIBE_ARCH_DL=ON
+```
+
+Plugins are found in directories registered with `transcribe_register_arch_dir`,
+then `TRANSCRIBE_ARCH_DIR`, then next to the library. Details:
+[docs/fork/README.md](docs/fork/README.md#build-and-packaging). On Windows,
+`scripts/build_windows.ps1` and the interactive `scripts/menu.ps1` wrap these
+options.
+
 To build the quantization tool:
 
 ```bash
@@ -196,6 +234,23 @@ Input must be 16 kHz mono WAV. Use `ffmpeg` or `sox` to convert other formats:
 ```bash
 ffmpeg -i input.mp3 -ar 16000 -ac 1 output.wav
 ```
+
+Streaming models can be driven through the streaming API from the CLI, which
+reports the wall time and the slowest single feed (what a live caption feels):
+
+```bash
+build/bin/transcribe-cli -m nemotron-3.5-asr-streaming-0.6b-Q4_K_M.gguf --stream-chunk-ms 160 samples/jfk.wav
+```
+
+For real-time capture, the library also exposes model-free building blocks:
+
+- `transcribe_vad_gate_*`: a speech gate with pre-roll and hangover;
+- `transcribe_denoise_*`: RNNoise at 48 kHz;
+- `transcribe_vad_score_frames`: batch Earshot scores.
+
+The stream VAD (`transcribe_stream_params::enable_vad`, on by default) skips
+silence the model holds nothing for. See [docs/vad.md](docs/vad.md) and
+[docs/fork/README.md](docs/fork/README.md#audio-front-end-no-model-to-load).
 
 On the CPU and on Metal (Apple silicon), model weights are memory-mapped from
 the GGUF file rather than copied into process memory: they live in the page
@@ -284,14 +339,16 @@ upon reaching out to Blacksmith they were able to provide runners for the projec
 ## Project layout
 
 ```
-include/transcribe.h       Public C API (single header)
-src/                       Library internals (C++17)
-src/arch/parakeet/         Parakeet family implementation
-src/arch/cohere/           Cohere Transcribe family implementation
+include/transcribe.h       Public C API (single header; extensions under include/transcribe/)
+src/                       Library internals (C++23)
+src/arch/<family>/         One directory per model family (parakeet, qwen3_asr, granite, ...)
+src/transcribe-earshot*    Earshot VAD engine (SIMD kernels, bundled weights)
+src/transcribe-rnnoise*    RNNoise noise suppression (bundled model)
 examples/cli/              CLI binary source
 tools/transcribe-quantize/ Quantization tool source
 bindings/                  Python, TypeScript, Rust, and Swift bindings
-docs/                      Porting and validation guidance
+docs/                      Porting and validation guidance; docs/fork/ for this fork
+licenses/                  License texts of components compiled into the library
 scripts/                   Python converter + test tooling
 ggml/                      Vendored ggml (see ggml/UPSTREAM for its recipe)
 patches/ggml/              Downstream patches applied by scripts/sync-ggml.sh
@@ -303,5 +360,13 @@ tests/                     Unit and smoke tests
 ## License
 
 transcribe.cpp is MIT-licensed. See [LICENSE](LICENSE) for details. Vendored
-third-party components (ggml, miniz — both MIT) are attributed in
-[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).
+third-party components are attributed in
+[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md):
+
+- ggml, miniz, Silero VAD and cJSON (MIT);
+- Earshot (MIT);
+- RNNoise via nnnoiseless (BSD-3-Clause);
+- code ported from audio.cpp (Apache-2.0).
+
+`cmake --install` places their texts under `share/licenses/transcribe/`; ship
+them with any binary.

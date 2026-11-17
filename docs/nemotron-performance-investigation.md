@@ -1,5 +1,13 @@
 # Nemotron / Parakeet performance investigation
 
+> **Status: dated record (2026-09-21).** The measurements and the method are
+> kept as they were; the code has moved since. The Parakeet/Nemotron
+> predictor and joint now run on the GPU, CUDA graphs are on by default, and
+> the old upstream arm (`../transcribe_benchmarks`, a worktree of the
+> `transcribe_benchmarks` branch) has been retired in favour of a plain
+> upstream checkout. Current fork-vs-upstream figures are in
+> [fork/audit-2026-11-17.md](fork/audit-2026-11-17.md).
+
 ## Scope and reproducibility
 
 Measured on an Intel Core i9-13900H / NVIDIA RTX 4070 Laptop GPU (8 GB),
@@ -107,7 +115,7 @@ reference folders and the audio.cpp checkout remain read-only.
 The fork already vendors GGML v0.24.0. The requested audio.cpp commits contain
 CUDA improvements for particular operation shapes, but do not establish a
 direct Nemotron Q6/Q8 gain. No speculative kernels or reduced precision were
-imported. See [the performance transfer assessment](audio-cpp-performance-review.md)
+imported. See [the performance transfer assessment](fork/records/2026-09-20-audio-cpp-performance-review.md)
 for the three commits, history review and prioritized experiments.
 
 ## Limits

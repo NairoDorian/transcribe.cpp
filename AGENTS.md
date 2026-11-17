@@ -18,7 +18,9 @@ Usual peer path: `C:/Users/Z/Downloads/PROJECTS/Handy_V2`. Use `git worktree lis
 when a feature lives elsewhere. Check both branches/dirty states and the app's
 Cargo pin/native build identity. Preserve unrelated work. When moving ownership
 or changing a shared contract, update both integration notes and test both sides.
-The overall roadmap is
+What this fork changes relative to upstream (defaults, added APIs, switches) is
+[`docs/fork/README.md`](docs/fork/README.md); dated records live in
+`docs/fork/records/`. The overall roadmap is
 [`docs/plans/2026-11-fork-master-plan.md`](docs/plans/2026-11-fork-master-plan.md);
 the VAD/RNNoise engineering contract is
 [`docs/plans/2026-10-three-tier-super-vad-and-firered-architecture-plan.md`](docs/plans/2026-10-three-tier-super-vad-and-firered-architecture-plan.md).

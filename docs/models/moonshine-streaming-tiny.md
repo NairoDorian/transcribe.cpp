@@ -5,9 +5,10 @@ Upstream: [`UsefulSensors/moonshine-streaming-tiny`](https://huggingface.co/Usef
 
 English speech-to-text in both one-shot and streaming modes. An
 encoder-decoder ASR model designed for streaming use (ergodic encoder +
-sliding-window attention, 50 Hz time-domain frontend). Takes a 16 kHz mono WAV
-and produces a transcript. No translation, no multilingual capability, no
-timestamps.
+sliding-window attention, 50 Hz time-domain frontend). Takes a 16 kHz mono
+WAV and produces a transcript. The 4096-row learned adapter position table
+limits each utterance to 81.92 seconds. No translation, no multilingual
+capability, no timestamps.
 <!-- /catalog -->
 
 ## What it's for

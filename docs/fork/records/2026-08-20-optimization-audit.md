@@ -1,4 +1,4 @@
-# PASSOVER — audit of the 2026-08-20 optimization series
+# Audit of the 2026-08-20 optimization series (formerly `PASSOVER.md`)
 
 **Status:** the audit requested by the previous passover is **done**. This file
 is now the record of what was checked, what was wrong, and what was changed.

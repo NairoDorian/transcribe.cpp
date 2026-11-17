@@ -37,8 +37,28 @@ of tests.
 | `TRANSCRIBE_CONV_DIRECT_PW` / `TRANSCRIBE_CONV_NO_DIRECT_PW` | Force the pointwise-conv dispatch to direct `mul_mat` / im2col, overriding the backend default. |
 | `TRANSCRIBE_NO_REPETITION_GUARD` | Turn off the stop for greedy decodes that start repeating themselves, and the trim of a repeating tail at a budget stop (see [`input-limits.md`](input-limits.md)). For byte-exact reference parity; a looping decode then runs to its budget and keeps its repeats. Read once per process. |
 | `TRANSCRIBE_EARSHOT_ISA=baseline\|avx2` | Cap the Earshot kernel set picked by cpuid (default: the widest the CPU runs, AVX-512 > AVX2 > baseline). Baseline and AVX2 give bit-identical scores (AVX-512 untested here); for benchmarks and tests. |
+| `TRANSCRIBE_DISABLE_ACTIVITY_GATE` | Streaming: never skip a slice through the silence fast path (`transcribe_stream_params::enable_vad` keeps the VAD telemetry either way). The fast path skips a slice only when the family holds nothing, the stream VAD is not speaking and no 16 ms window of the slice is above -42 dBFS; skipped time is mapped back into published timestamps. Read once per process. |
+| `TRANSCRIBE_ENCODER_FLASH=0\|1` | Encoder-only flash-attention override, applied after `TRANSCRIBE_NO_FLASH` / `TRANSCRIBE_FORCE_FLASH`. Qwen3-ASR / R2T2 keep encoder flash off by default because it moved 9/100 FLEURS transcripts on CUDA. |
+| `TRANSCRIBE_QKV_PACK` | Causal-LM decoders: fuse the Q, K and V projections into one packed matmul. About 2 % faster decode, but it rounds differently (3/100 FLEURS transcripts flipped), so it is opt-in. |
+| `TRANSCRIBE_SPEC_PRIOR_TEXT=<text>` | Qwen3-ASR (experimental): use another model's transcript of the same audio as a speculative-decode draft. Only this model's own argmax is committed, so it changes speed, not the token set; the multi-column verify graph is not bit-identical to plain stepping. Read as UTF-8 on Windows. |
+| `TRANSCRIBE_R2T2_NO_DRAFT` | R2T2 streaming: re-derive the held-back tail by plain steps instead of verifying last tick's tail as a draft. The A/B arm for text parity. |
+| `TRANSCRIBE_R2T2_NO_MEL_CACHE` / `_NO_ENC_CACHE` / `_NO_KV_REUSE` | R2T2 streaming: turn off the incremental mel, the encoder prefix cache or the KV-cache continuation (each makes a tick re-do that work in full). For A/B and bisecting. |
+| `TRANSCRIBE_R2T2_TRACE` | R2T2 streaming: log each tick's generated text and held-back tail (makes draft acceptance measurable). |
+| `TRANSCRIBE_QWEN3_ASR_ENC_NO_WINDOW` | Qwen3-ASR encoder: one full-attention block instead of windowed (`cu_seqlens`) attention. Diagnostic; the R2T2 encoder prefix cache needs the windowed form. |
+| `TRANSCRIBE_RNNT_BATCH_W=<n>` | Parakeet CPU decoder: frames per batched joint pass (`<= 1` forces the serial loop). Defaults: 16 for RNN-T, 1 for TDT. Ignored while tensor dumps are on. |
+| `TRANSCRIBE_RNNT_BATCH_CHECK` | Parakeet CPU decoder: cross-check every batched joint column against the serial n=1 GEMV and log mismatches. Debug; disables the GPU decoder. |
+| `TRANSCRIBE_CONV_DIRECT_CONV0` / `TRANSCRIBE_CONV_NO_DIRECT_CONV0` | Parakeet non-causal pre-encode: force conv0 to the direct `conv_2d` path / to im2col (default direct except on Metal). |
+| `TRANSCRIBE_DISABLE_STATIC_DECODE` | Cohere on a CPU primary: build a per-step decoder graph sized to the current KV length instead of the static step graph. Ignored on GPUs. |
+| `TRANSCRIBE_DISABLE_MEL_SIMD` | Compute the mel power spectrum with the scalar loop instead of the SIMD one (the SIMD path fuses a multiply-add, so features can differ in the last bit). For A/B. |
+| `TRANSCRIBE_NO_CPU_REPACK` | CPU primary: keep weights in their file layout instead of the CPU backend's repacked GEMM layout (e.g. `q4_K_8x8`). For A/B; repacking is several times faster on x86. |
+| `TRANSCRIBE_TERNARY_RUNTIME=q4_0\|q2_0\|native` | Layout TQ1_G128 ternary weights (parakeet-redux) run in. Defaults: `q2_0` on CUDA (fastest and least VRAM), `q4_0` elsewhere; `native` keeps TQ1_G128. |
+| `TRANSCRIBE_DISABLE_POOL_RECLAIM` | On a device allocation failure, fail at once instead of trimming this backend's idle CUDA pool and graph cache and retrying once. |
+| `TRANSCRIBE_GRAPH_OPTIMIZER` | Run the audio.cpp redundant-copy pass on inference graphs before allocation (opt-in: no consistent wall-time win, see [`cuda-graph-experiments.md`](cuda-graph-experiments.md)). Reports itself only when it changed a graph. |
+| `TRANSCRIBE_ARCH_DIR=<dir>` | Architecture-plugin builds (`TRANSCRIBE_ARCH_DL=ON`): a plugin directory searched after the ones registered with `transcribe_register_arch_dir`. Full order: registered dirs, this, the library's `arch/` then its own folder, then (opt-in) the model's folder. The current directory is never searched. |
+| `TRANSCRIBE_ARCH_SEARCH_MODEL_DIR` | Architecture-plugin builds: also search the model file's folder (and its `arch/`), last. Off by default because a plugin is native code and model files are often downloaded. |
+| `GGML_CUDA_DISABLE_GRAPHS` | ggml: turn off CUDA graph capture (on by default in this fork's builds). Any value disables it, `0` included (ggml checks presence, not the boolean convention above). |
 | `TRANSCRIBE_DUMP_DIR=<dir>` | Enable the per-stage tensor dumper; writes `<name>.f32` + `<name>.json` per dumped tensor into `<dir>`. The basis for the numerical-comparison harness (`scripts/compare_tensors.py`). |
-| `TRANSCRIBE_PERF_DEBUG` | Print a per-stage timing breakdown to stderr (DEBUG log) on the families that profile (`cohere`, `granite`, `canary`, `canary_qwen`, `moonshine`, `moonshine_streaming`, `moss`, `qwen3_asr`, `whisper`). For whisper, a value containing `cpu` or `all` additionally prints the CPU sub-section breakdown. |
+| `TRANSCRIBE_PERF_DEBUG` | Print a per-stage timing breakdown to stderr (DEBUG log) on the families that profile (`cohere`, `granite`, `canary`, `canary_qwen`, `moonshine`, `moonshine_streaming`, `moss`, `qwen3_asr`, `whisper`). For whisper, a value containing `cpu` or `all` additionally prints the CPU sub-section breakdown. A value containing `nodes` times every graph node of the first scheduler seen and prints per-op and per-node tables at exit (it defeats fusion, so read it as relative attribution). |
 | `TRANSCRIBE_VOXTRAL_REALTIME_STREAM_TIMING` | Print a per-component streaming wall-time breakdown at stream finalize (voxtral_realtime). |
 | `TRANSCRIBE_MOONSHINE_STREAMING_ENC_WINDOW=<frames>` | Encoder frames emitted per window by the moonshine_streaming one-shot / batch encoder (default 1024, ~20 s). Windowing bounds encoder memory; it is mathematically exact (each window carries the full sliding-window context) and float-level differences stay at the backend's reduction-order noise. Set small to exercise the windowed path on short clips. Read at each run. |
 | `TRANSCRIBE_TEST_DEV_INIT_THROW=<match>` | Fault injection: backend device init (`ggml_backend_dev_init`) throws for devices whose name contains `<match>` (`*` matches every device). Exercises throw → skip → CPU-fallback in backend probing; an explicit backend request fails with `TRANSCRIBE_ERR_BACKEND`. Used by `backend_init_throw_unit` and `scripts/ci/vulkan_degradation_check.py`. |
@@ -79,6 +99,24 @@ cmake --build build --clean-first --target transcribe-cli
 (`scripts/validate.py` guards against the OFF case: it hard-fails
 `--mel-from-ref` when `build/CMakeCache.txt` has the flag off. Longer term, a
 dedicated validation build directory would avoid the toggle entirely.)
+
+## Build time — Rust `transcribe-cpp-sys`
+
+Read by `bindings/rust/sys/build.rs` when Cargo builds the native library.
+Each one is a `rerun-if-env-changed` trigger.
+
+| Variable | Effect |
+| --- | --- |
+| `TRANSCRIBE_DIR` (alias `TRANSCRIBE_PREBUILT_DIR`) | Link an existing `cmake --install` prefix instead of building. Cargo features are then inert. |
+| `TRANSCRIBE_CMAKE_ARGS` / `CMAKE_ARGS` | Extra CMake configure arguments, applied after the feature-derived ones (a user `-D` wins). Part of the cache key. |
+| `TRANSCRIBE_MODEL_SET` | `full` (default), `minimal-multilingual`, `none` or `custom`. Part of the cache key. |
+| `TRANSCRIBE_MODELS` | Explicit family list for `custom` (e.g. `parakeet;granite`). Part of the cache key. |
+| `TRANSCRIBE_CUDA_ARCHITECTURES` / `CMAKE_CUDA_ARCHITECTURES` | CUDA targets: an explicit list, `auto` (probe this GPU with `nvidia-smi`) or `default` (the distribution set). Unset: `auto` for debug builds, the distribution set for release. |
+| `TRANSCRIBE_CACHE_DIR` | Root of the persistent native-build cache (default `%LOCALAPPDATA%\handy\transcribe_cpp_cache`, or `$XDG_CACHE_HOME`/`~/.cache` `/handy/transcribe_cpp_cache`). Give each build lane its own. |
+| `TRANSCRIBE_CACHE_KEEP=<n>` | Cache entries kept per root after a save, newest first (default 6). Only directories named like a cache key are removed. |
+| `TRANSCRIBE_FORCE_REBUILD` | Ignore a cache hit and build from source (the result is still cached). |
+| `TRANSCRIBE_NO_CCACHE` / `TRANSCRIBE_CCACHE_PATH` | Disable / point at ccache or sccache (otherwise found on `PATH` or in `~/.cargo/bin`). sccache never wraps `nvcc` on Windows. |
+| `TRANSCRIBE_NO_NINJA` / `TRANSCRIBE_NINJA_PATH` | Disable / point at Ninja (otherwise `PATH` or Visual Studio's bundled copy; the MSVC environment is bootstrapped from `vcvars64.bat` when `cl.exe` is not on `PATH`). |
 
 ## Test & tooling
 

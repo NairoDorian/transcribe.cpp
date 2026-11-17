@@ -58,6 +58,14 @@ GraniteModel::~GraniteModel() {
         safe_buffer_free(bn_fused_buffer);
         bn_fused_buffer = nullptr;
     }
+    if (query_f32_ctx != nullptr) {
+        ggml_free(query_f32_ctx);
+        query_f32_ctx = nullptr;
+    }
+    if (query_f32_buffer != nullptr) {
+        safe_buffer_free(query_f32_buffer);
+        query_f32_buffer = nullptr;
+    }
     packed_gate_up.free();
     if (ctx_meta != nullptr) {
         ggml_free(ctx_meta);
@@ -190,6 +198,41 @@ transcribe_status fuse_batch_norm(GraniteModel & m) {
     }
 
     return TRANSCRIBE_OK;
+}
+
+// The projector feeds proj.query to its layer norm as F32 and used to cast
+// it on every run. GPU backends cannot cast a K-quant, so with Q4_K_M /
+// Q5_K_M / Q6_K files that cast ran on the CPU (a graph split and two
+// transfers per run). Dequantize it once here with ggml's own to_float, the
+// routine that cast ran, onto the primary backend. A failure only leaves
+// the per-run cast in place.
+void prepare_query_f32(GraniteModel & m) {
+    ggml_tensor * q = m.weights.proj_top.query;
+    if (q == nullptr || q->type == GGML_TYPE_F32 || m.plan.scheduler_list.empty()) {
+        return;
+    }
+    const auto * tt = ggml_get_type_traits(q->type);
+    if (tt == nullptr || tt->to_float == nullptr) {
+        return;
+    }
+    ggml_init_params params = { 2 * ggml_tensor_overhead() + 256, nullptr, /*no_alloc=*/true };
+    m.query_f32_ctx         = ggml_init(params);
+    if (m.query_f32_ctx == nullptr) {
+        return;
+    }
+    ggml_tensor * f    = ggml_new_tensor(m.query_f32_ctx, GGML_TYPE_F32, GGML_MAX_DIMS, q->ne);
+    m.query_f32_buffer = ggml_backend_alloc_ctx_tensors(m.query_f32_ctx, m.plan.scheduler_list.front());
+    if (m.query_f32_buffer == nullptr) {
+        ggml_free(m.query_f32_ctx);
+        m.query_f32_ctx = nullptr;
+        return;
+    }
+    std::vector<uint8_t> raw(ggml_nbytes(q));
+    std::vector<float>   out(static_cast<size_t>(ggml_nelements(q)));
+    ggml_backend_tensor_get(q, raw.data(), 0, raw.size());
+    tt->to_float(raw.data(), out.data(), ggml_nelements(q));
+    ggml_backend_tensor_set(f, out.data(), 0, out.size() * sizeof(float));
+    m.weights.proj_top.query_f32 = f;
 }
 
 // Resolve chat-template pieces across both templates (bare-USER/ASSISTANT for
@@ -438,6 +481,7 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
     if (const transcribe_status st = fuse_batch_norm(*m); st != TRANSCRIBE_OK) {
         return st;
     }
+    prepare_query_f32(*m);
 
     // Gate+Up fusion: shared causal_lm packer. Drops one FFN mul_mat per
     // block and lets the graph use ggml_swiglu(gate_up) instead of
@@ -1365,7 +1409,7 @@ transcribe_status run(transcribe_session *          ctx_base,
         cleanup_gpu();
         return TRANSCRIBE_ERR_BACKEND;
     }
-    cc->t_decode_us = ggml_time_us() - t_dec_start;
+    const int64_t t_prefill_us = ggml_time_us() - t_dec_start;
 
     cc->kv.n    = T_prompt;
     cc->kv.head = T_prompt;
@@ -1431,8 +1475,12 @@ transcribe_status run(transcribe_session *          ctx_base,
             return TRANSCRIBE_ERR_OOM;
         }
     }
-    StepBuild step =
-        build_step_graph(step_ctx, cm->weights, cm->hparams, cc->kv, max_n_kv, cc->decoder_use_flash, use_logit_bias);
+    // Pipelined steps on a GPU (causal_lm::StepPipeline: the next step is
+    // launched while one runs; same tokens). Null pipe = the plain loop.
+    transcribe::causal_lm::StepPipeline pipe;
+    const bool piped = pipe.init(cm->plan.primary, max_n_kv, use_logit_bias ? cm->hparams.dec_vocab_size : 0);
+    StepBuild  step  = build_step_graph(step_ctx, cm->weights, cm->hparams, cc->kv, max_n_kv, cc->decoder_use_flash,
+                                        use_logit_bias, piped ? &pipe : nullptr);
     if (step.graph == nullptr) {
         ggml_free(step_ctx);
         cleanup_gpu();
@@ -1456,8 +1504,48 @@ transcribe_status run(transcribe_session *          ctx_base,
     // valid positions get zeroed per step.
     std::vector<uint16_t> step_mask(max_n_kv, 0xFC00);
 
-    bool repeating = false;
-    for (int step_i = 0; step_i < max_steps; ++step_i) {
+    const int64_t t_steps_start = ggml_time_us();
+    bool          repeating     = false;
+    if (piped) {
+        // Same loop and stops as the plain one below; only the step itself
+        // runs ahead. Step 0 sees [0, T_prompt]; each later step uncovers
+        // its own position.
+        std::fill(step_mask.begin(), step_mask.end(), static_cast<uint16_t>(0xFC00));
+        std::fill(step_mask.begin(), step_mask.begin() + T_prompt + 1, static_cast<uint16_t>(0x0000));
+        if (!pipe.begin(reinterpret_cast<const ggml_fp16_t *>(step_mask.data()),
+                        use_logit_bias ? cc->lang_bias.data() : nullptr, next_id)) {
+            ggml_free(step_ctx);
+            cleanup_gpu();
+            return TRANSCRIBE_ERR_BACKEND;
+        }
+        int launched = 0;
+        for (int step_i = 0; step_i < max_steps; ++step_i) {
+            if (next_id == eos_id) {
+                break;
+            }
+            gen_ids.push_back(next_id);
+            if (transcribe::stop_on_repetition(gen_ids, "granite run")) {
+                cc->mark_repetition_stop();
+                repeating = true;
+                break;
+            }
+            while (launched < max_steps && launched <= step_i + transcribe::causal_lm::StepPipeline::kAhead) {
+                if (pipe.launch(cc->sched, step.graph, step.out, launched, T_prompt + launched) != TRANSCRIBE_OK) {
+                    log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite run: step compute failed");
+                    pipe.free();
+                    ggml_free(step_ctx);
+                    cleanup_gpu();
+                    return TRANSCRIBE_ERR_BACKEND;
+                }
+                ++launched;
+            }
+            next_id     = pipe.wait(step_i);
+            cc->kv.n    = T_prompt + step_i + 1;
+            cc->kv.head = T_prompt + step_i + 1;
+        }
+        pipe.free();  // waits for a step launched past the stop
+    }
+    for (int step_i = 0; !piped && step_i < max_steps; ++step_i) {
         if (next_id == eos_id) {
             break;
         }
@@ -1505,6 +1593,21 @@ transcribe_status run(transcribe_session *          ctx_base,
     }
 
     ggml_free(step_ctx);
+
+    // Decode = prefill + the token loop, as in the other LLM families (this
+    // used to stop at the prefill, so timings and realtime figures left out
+    // most of the decode).
+    const int64_t t_end = ggml_time_us();
+    cc->t_decode_us     = t_end - t_dec_start;
+    if (transcribe::env::flag("TRANSCRIBE_PERF_DEBUG")) {
+        const int n_steps = static_cast<int>(gen_ids.size());
+        log_msg(TRANSCRIBE_LOG_LEVEL_DEBUG,
+                "granite run: T_prompt=%d max_n_kv=%d steps=%d  prefill=%.1fms  step_setup=%.1fms  "
+                "step_loop=%.1fms (%.2fms/step)",
+                T_prompt, max_n_kv, n_steps, t_prefill_us / 1000.0,
+                (t_steps_start - t_dec_start - t_prefill_us) / 1000.0, (t_end - t_steps_start) / 1000.0,
+                n_steps > 0 ? (t_end - t_steps_start) / 1000.0 / n_steps : 0.0);
+    }
 
     // The decode stopped either at EOS (complete) or at the generation
     // budget / context ceiling (truncated). Surface the latter via

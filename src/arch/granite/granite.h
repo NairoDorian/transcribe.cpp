@@ -83,6 +83,10 @@ struct GraniteModel final : public transcribe_model {
     ggml_context *        bn_fused_ctx    = nullptr;
     ggml_backend_buffer_t bn_fused_buffer = nullptr;
 
+    // Backing for weights.proj_top.query_f32.
+    ggml_context *        query_f32_ctx    = nullptr;
+    ggml_backend_buffer_t query_f32_buffer = nullptr;
+
     // Packed FFN gate+up: one mul_mat per block instead of two. Owned by
     // causal_lm::pack_gate_up; freed in ~GraniteModel().
     transcribe::causal_lm::PackedGateUpHandles packed_gate_up;

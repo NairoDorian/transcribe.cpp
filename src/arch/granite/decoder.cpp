@@ -632,13 +632,14 @@ PrefillBuild build_prefill_graph(ggml_context *                   ctx,
 
 // Step graph.
 
-StepBuild build_step_graph(ggml_context *                   ctx,
-                           const GraniteWeights &           weights,
-                           const GraniteHParams &           hp,
-                           transcribe::causal_lm::KvCache & kv_cache,
-                           int                              max_n_kv,
-                           bool                             use_flash,
-                           bool                             with_logit_bias) {
+StepBuild build_step_graph(ggml_context *                              ctx,
+                           const GraniteWeights &                      weights,
+                           const GraniteHParams &                      hp,
+                           transcribe::causal_lm::KvCache &            kv_cache,
+                           int                                         max_n_kv,
+                           bool                                        use_flash,
+                           bool                                        with_logit_bias,
+                           const transcribe::causal_lm::StepPipeline * pipe) {
     StepBuild sb{};
     sb.max_n_kv = max_n_kv;
 
@@ -664,21 +665,36 @@ StepBuild build_step_graph(ggml_context *                   ctx,
 
     const auto params = to_params(hp);
 
-    sb.input_id_in = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
-    ggml_set_name(sb.input_id_in, "step.input_id");
-    ggml_set_input(sb.input_id_in);
+    if (pipe != nullptr) {
+        // Pipelined loop: the inputs are the pipeline's device tensors
+        // (causal_lm::StepPipeline), and the argmax is copied back into its
+        // token below.
+        if (pipe->mask == nullptr || pipe->mask->ne[0] != max_n_kv ||
+            (with_logit_bias && pipe->logit_bias == nullptr)) {
+            log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "granite step: pipeline tensors do not match the graph");
+            return sb;
+        }
+        sb.input_id_in = pipe->token;
+        sb.position_in = pipe->position;
+        sb.kv_idx_in   = pipe->kv_idx;
+        sb.mask_in     = pipe->mask;
+    } else {
+        sb.input_id_in = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
+        ggml_set_name(sb.input_id_in, "step.input_id");
+        ggml_set_input(sb.input_id_in);
 
-    sb.position_in = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
-    ggml_set_name(sb.position_in, "step.position");
-    ggml_set_input(sb.position_in);
+        sb.position_in = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
+        ggml_set_name(sb.position_in, "step.position");
+        ggml_set_input(sb.position_in);
 
-    sb.kv_idx_in = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, 1);
-    ggml_set_name(sb.kv_idx_in, "step.kv_idx");
-    ggml_set_input(sb.kv_idx_in);
+        sb.kv_idx_in = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, 1);
+        ggml_set_name(sb.kv_idx_in, "step.kv_idx");
+        ggml_set_input(sb.kv_idx_in);
 
-    sb.mask_in = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, max_n_kv, 1);
-    ggml_set_name(sb.mask_in, "step.mask");
-    ggml_set_input(sb.mask_in);
+        sb.mask_in = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, max_n_kv, 1);
+        ggml_set_name(sb.mask_in, "step.mask");
+        ggml_set_input(sb.mask_in);
+    }
 
     ggml_cgraph * gf = ggml_new_graph_custom(ctx, /*size=*/8192, /*grads=*/false);
     if (gf == nullptr) {
@@ -705,9 +721,13 @@ StepBuild build_step_graph(ggml_context *                   ctx,
     logits               = ggml_scale(ctx, logits, inv_log);
     ggml_set_name(logits, "step.logits");
     if (with_logit_bias) {
-        sb.logit_bias_in = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, vocab);
-        ggml_set_name(sb.logit_bias_in, "step.logit_bias");
-        ggml_set_input(sb.logit_bias_in);
+        if (pipe != nullptr) {
+            sb.logit_bias_in = pipe->logit_bias;
+        } else {
+            sb.logit_bias_in = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, vocab);
+            ggml_set_name(sb.logit_bias_in, "step.logit_bias");
+            ggml_set_input(sb.logit_bias_in);
+        }
         logits = ggml_add(ctx, logits, sb.logit_bias_in);
     }
 
@@ -719,6 +739,10 @@ StepBuild build_step_graph(ggml_context *                   ctx,
 
     ggml_build_forward_expand(gf, sb.out);
     ggml_build_forward_expand(gf, logits);
+    if (pipe != nullptr) {
+        // The next step's token: written last, after every read of it.
+        ggml_build_forward_expand(gf, ggml_cpy(ctx, amax, pipe->token));
+    }
 
     return sb;
 }

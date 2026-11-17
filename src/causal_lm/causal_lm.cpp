@@ -1351,4 +1351,156 @@ transcribe_status run_batched_step_loop(transcribe_session *                sess
     return TRANSCRIBE_OK;
 }
 
+// --- StepPipeline -----------------------------------------------------------
+
+bool StepPipeline::init(ggml_backend_t be, int max_n_kv, int vocab_bias) {
+    free();
+    const char * env = transcribe::env::str("TRANSCRIBE_STEP_PIPELINE");
+    if (be == nullptr || max_n_kv <= 0 || vocab_bias < 0 || (env != nullptr && env[0] == '0')) {
+        return false;
+    }
+    ggml_backend_dev_t dev = ggml_backend_get_device(be);
+    if (dev == nullptr || ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+        return false;
+    }
+    ggml_backend_dev_props props{};
+    ggml_backend_dev_get_props(dev, &props);
+    ggml_backend_buffer_type_t pinned = ggml_backend_dev_host_buffer_type(dev);
+    if (!props.caps.async || !props.caps.events || pinned == nullptr) {
+        return false;
+    }
+    backend = be;
+
+    ggml_init_params ip{};
+    ip.mem_size = 8 * ggml_tensor_overhead();
+    ip.no_alloc = true;
+    ctx         = ggml_init(ip);
+    if (ctx == nullptr) {
+        free();
+        return false;
+    }
+    token    = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
+    position = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
+    kv_idx   = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, 1);
+    mask     = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, max_n_kv, 1);
+    ggml_set_name(token, "step.pipe.token");
+    ggml_set_name(position, "step.pipe.position");
+    ggml_set_name(kv_idx, "step.pipe.kv_idx");
+    ggml_set_name(mask, "step.pipe.mask");
+    {
+        // The step graph ends with ggml_cpy(argmax, token); a backend that
+        // cannot run that copy would put it on the CPU, splitting the graph
+        // and serializing the steps again.
+        ggml_init_params pp{};
+        pp.mem_size              = 4 * ggml_tensor_overhead();
+        pp.no_alloc              = true;
+        ggml_context * probe_ctx = ggml_init(pp);
+        bool           ok        = probe_ctx != nullptr;
+        if (ok) {
+            ggml_tensor * src = ggml_new_tensor_1d(probe_ctx, GGML_TYPE_I32, 1);
+            ggml_tensor * dst = ggml_new_tensor_1d(probe_ctx, GGML_TYPE_I32, 1);
+            ok                = ggml_backend_supports_op(be, ggml_cpy(probe_ctx, src, dst));
+            ggml_free(probe_ctx);
+        }
+        if (!ok) {
+            free();
+            return false;
+        }
+    }
+    if (vocab_bias > 0) {
+        logit_bias = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, vocab_bias);
+        ggml_set_name(logit_bias, "step.pipe.logit_bias");
+    }
+    dev_buf = ggml_backend_alloc_ctx_tensors(ctx, be);
+    pin_buf = ggml_backend_buft_alloc_buffer(pinned, kRing * sizeof(Slot));
+    if (dev_buf == nullptr || pin_buf == nullptr) {
+        free();
+        return false;
+    }
+    slots = static_cast<Slot *>(ggml_backend_buffer_get_base(pin_buf));
+    for (ggml_backend_event_t & e : events) {
+        e = ggml_backend_event_new(dev);
+        if (e == nullptr) {
+            free();
+            return false;
+        }
+    }
+    n_mask  = max_n_kv;
+    n_vocab = vocab_bias;
+    return true;
+}
+
+void StepPipeline::free() noexcept {
+    if (backend != nullptr) {
+        ggml_backend_synchronize(backend);  // launched steps still read and write these buffers
+    }
+    for (ggml_backend_event_t & e : events) {
+        if (e != nullptr) {
+            ggml_backend_event_free(e);
+            e = nullptr;
+        }
+    }
+    safe_buffer_free(pin_buf);
+    safe_buffer_free(dev_buf);
+    pin_buf = dev_buf = nullptr;
+    if (ctx != nullptr) {
+        ggml_free(ctx);
+        ctx = nullptr;
+    }
+    slots = nullptr;
+    token = position = kv_idx = mask = logit_bias = nullptr;
+    backend                                       = nullptr;
+    n_mask = n_vocab = 0;
+}
+
+bool StepPipeline::begin(const ggml_fp16_t * mask_full, const float * bias, int32_t first_token) {
+    if (backend == nullptr || mask_full == nullptr || (logit_bias != nullptr && bias == nullptr)) {
+        return false;
+    }
+    ggml_backend_tensor_set(mask, mask_full, 0, static_cast<size_t>(n_mask) * sizeof(ggml_fp16_t));
+    if (logit_bias != nullptr) {
+        ggml_backend_tensor_set(logit_bias, bias, 0, static_cast<size_t>(n_vocab) * sizeof(float));
+    }
+    ggml_backend_tensor_set(token, &first_token, 0, sizeof(int32_t));
+    return true;
+}
+
+transcribe_status StepPipeline::launch(ggml_backend_sched_t sched,
+                                       ggml_cgraph *        graph,
+                                       ggml_tensor *        argmax,
+                                       int                  i,
+                                       int                  pos) {
+    if (backend == nullptr || i < 0 || pos < 0 || pos >= n_mask) {
+        return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+    const int r = i % kRing;
+    if (i >= kRing) {
+        // The slot's previous step (i - kRing) and its copies are done.
+        ggml_backend_event_synchronize(events[r]);
+    }
+    Slot & s   = slots[r];
+    s.position = pos;
+    s.kv_idx   = pos;
+    s.mask_on  = ggml_fp32_to_fp16(0.0f);
+    // Queued on the step stream, so they land after step i-1 has run.
+    ggml_backend_tensor_set_async(backend, position, &s.position, 0, sizeof(int32_t));
+    ggml_backend_tensor_set_async(backend, kv_idx, &s.kv_idx, 0, sizeof(int64_t));
+    if (i > 0) {
+        ggml_backend_tensor_set_async(backend, mask, &s.mask_on, static_cast<size_t>(pos) * sizeof(ggml_fp16_t),
+                                      sizeof(ggml_fp16_t));
+    }
+    if (ggml_backend_sched_graph_compute_async(sched, graph) != GGML_STATUS_SUCCESS) {
+        return TRANSCRIBE_ERR_BACKEND;
+    }
+    ggml_backend_tensor_get_async(backend, argmax, &s.result, 0, sizeof(int32_t));
+    ggml_backend_event_record(events[r], backend);
+    return TRANSCRIBE_OK;
+}
+
+int32_t StepPipeline::wait(int i) {
+    const int r = i % kRing;
+    ggml_backend_event_synchronize(events[r]);
+    return slots[r].result;
+}
+
 }  // namespace transcribe::causal_lm

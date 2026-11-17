@@ -108,14 +108,17 @@ struct StepBuild {
 };
 
 // Build a static-shape single-token step graph reusable across every
-// autoregressive step. Topology depends only on max_n_kv.
-StepBuild build_step_graph(ggml_context *                   ctx,
-                           const GraniteWeights &           weights,
-                           const GraniteHParams &           hp,
-                           transcribe::causal_lm::KvCache & kv_cache,
-                           int                              max_n_kv,
-                           bool                             use_flash,
-                           bool                             with_logit_bias = false);
+// autoregressive step. Topology depends only on max_n_kv. With `pipe` the
+// graph reads its inputs from the pipeline's device tensors and feeds its
+// argmax back into pipe->token (causal_lm::StepPipeline).
+StepBuild build_step_graph(ggml_context *                              ctx,
+                           const GraniteWeights &                      weights,
+                           const GraniteHParams &                      hp,
+                           transcribe::causal_lm::KvCache &            kv_cache,
+                           int                                         max_n_kv,
+                           bool                                        use_flash,
+                           bool                                        with_logit_bias = false,
+                           const transcribe::causal_lm::StepPipeline * pipe            = nullptr);
 
 // Batched prefill / step (offline transcribe_run_batch).
 // Same recipe as the causal_lm families but with Granite block math (no Q/K

@@ -411,4 +411,74 @@ transcribe_status run_batched_step_loop(transcribe_session *                sess
                                         StepLoopStats *                     stats    = nullptr,
                                         std::vector<char> *                 stop_out = nullptr);
 
+// Pipelined single-sequence greedy step loop (GPU backends).
+//
+// A plain step loop uploads the token, position, KV row and mask, runs the
+// step graph, then reads the argmax back before it can start the next
+// step, so the GPU idles for every host round trip and graph launch
+// (~0.5-0.8 ms per step on CUDA under Windows, 10-20 % of a 1-2B decoder's
+// step). Here the step graph reads those inputs from the device tensors
+// below and copies its own argmax into `token`, so step i+1 can be launched
+// while step i runs; the host reads each argmax a step later and stops the
+// loop where the plain loop would have (steps launched past that point are
+// discarded). Every kernel computes what it did before, on the same values:
+// the tokens are the plain loop's, bit for bit.
+//
+// The family's step graph uses token / position / kv_idx / mask /
+// logit_bias in place of its own inputs and appends
+// ggml_cpy(argmax, token); a launch uploads only the new position, KV row
+// and the one mask entry that becomes visible, each from a pinned slot.
+// TRANSCRIBE_STEP_PIPELINE=0 turns it off (init() then fails and the caller
+// keeps its plain loop), as does a backend without events or pinned host
+// memory (the CPU).
+struct StepPipeline {
+    static constexpr int kRing  = 4;  // pinned slots / events in flight
+    static constexpr int kAhead = 1;  // steps launched beyond the one awaited
+
+    ggml_backend_t        backend = nullptr;
+    ggml_context *        ctx     = nullptr;
+    ggml_backend_buffer_t dev_buf = nullptr;
+    ggml_backend_buffer_t pin_buf = nullptr;
+    ggml_backend_event_t  events[kRing]{};
+
+    ggml_tensor * token      = nullptr;  // [1] i32: fed to the step, then its argmax
+    ggml_tensor * position   = nullptr;  // [1] i32
+    ggml_tensor * kv_idx     = nullptr;  // [1] i64
+    ggml_tensor * mask       = nullptr;  // [max_n_kv, 1] f16, 0 = attend, -inf = not
+    ggml_tensor * logit_bias = nullptr;  // [vocab] f32, only when asked for
+
+    StepPipeline()                                 = default;
+    StepPipeline(const StepPipeline &)             = delete;
+    StepPipeline & operator=(const StepPipeline &) = delete;
+
+    ~StepPipeline() { free(); }
+
+    // Allocates on `backend`'s device; vocab_bias > 0 adds logit_bias.
+    // False (with everything released) when the pipeline cannot run here.
+    bool init(ggml_backend_t backend, int max_n_kv, int vocab_bias);
+    // Waits for in-flight steps, then releases everything. Idempotent.
+    void free() noexcept;
+
+    // Before step 0: the full mask (max_n_kv entries), the bias if any, and
+    // the token step 0 consumes. Synchronous; returns false on a bad size.
+    bool              begin(const ggml_fp16_t * mask_full, const float * bias, int32_t first_token);
+    // Launch step i at RoPE position / KV row `pos`. For i > 0 the mask entry
+    // at `pos` becomes visible (step 0's mask came from begin()).
+    transcribe_status launch(ggml_backend_sched_t sched, ggml_cgraph * graph, ggml_tensor * argmax, int i, int pos);
+    // The argmax step i produced (blocks until it is ready).
+    int32_t           wait(int i);
+
+  private:
+    struct Slot {
+        int64_t     kv_idx;
+        int32_t     position;
+        int32_t     result;  // step i's argmax lands here
+        ggml_fp16_t mask_on;
+    };
+
+    Slot * slots   = nullptr;
+    int    n_mask  = 0;
+    int    n_vocab = 0;
+};
+
 }  // namespace transcribe::causal_lm

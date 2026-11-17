@@ -73,26 +73,29 @@ ggml_tensor * shaw_block_attn(ggml_context *          ctx,
     ggml_tensor * q  = ggml_mul_mat(ctx, w.attn_q_w, h);   // [inner_dim, T_pad]
     ggml_tensor * kv = ggml_mul_mat(ctx, w.attn_kv_w, h);  // [2*inner_dim, T_pad]
 
-    // Split kv into k, v along ne[0]. The mul_mat output is contiguous, so
-    // views with a strided ne[0] are safe. ne[2] carries the utterance batch
-    // (1 for single-shot, == B otherwise).
-    ggml_tensor * k = ggml_view_3d(ctx, kv, inner_dim, kv->ne[1], kv->ne[2], kv->nb[1], kv->nb[2], /*offset=*/0);
-    ggml_tensor * v =
-        ggml_view_3d(ctx, kv, inner_dim, kv->ne[1], kv->ne[2], kv->nb[1], kv->nb[2], inner_dim * ggml_element_size(kv));
-    k = ggml_cont(ctx, k);
-    v = ggml_cont(ctx, v);
-
-    // Reshape into block-local form. Target ne layout
-    // [head_dim, context_size, n_heads, num_blocks_eff] so that
-    // ggml_mul_mat(k, q) does per-(head, block, utterance) batched attention.
+    // Block-local form. Target ne layout [head_dim, context_size, n_heads,
+    // num_blocks_eff] so that ggml_mul_mat(k, q) does per-(head, block,
+    // utterance) batched attention. ne[2] of q/kv carries the utterance batch
+    // (1 for single-shot, == B otherwise); its [.., T_pad, B] memory order
+    // splits cleanly into (context_size, num_blocks_eff).
     auto reshape_qkv = [&](ggml_tensor * t) -> ggml_tensor * {
         ggml_tensor * r = ggml_reshape_4d(ctx, t, head_dim, n_heads, context_size, num_blocks_eff);
         r               = ggml_cont(ctx, ggml_permute(ctx, r, 0, 2, 1, 3));
         return r;
     };
-    q = reshape_qkv(q);
-    k = reshape_qkv(k);
-    v = reshape_qkv(v);
+    // k and v are read straight out of the fused kv rows ([2*inner_dim,
+    // T_pad, B], contiguous) as [head_dim, n_heads, context_size,
+    // num_blocks_eff] views, so each takes one copy into its final layout
+    // instead of a de-interleaving copy first (copies move values exactly).
+    auto kv_half = [&](size_t offset) -> ggml_tensor * {
+        return ggml_view_4d(ctx, kv, head_dim, n_heads, context_size, num_blocks_eff, head_dim * ggml_element_size(kv),
+                            kv->nb[1], context_size * kv->nb[1], offset);
+    };
+    q                 = reshape_qkv(q);
+    ggml_tensor * k   = ggml_cont(ctx, ggml_permute(ctx, kv_half(0), 0, 2, 1, 3));
+    // V is only ever used transposed: [context_size, head_dim, n_heads,
+    // num_blocks_eff], ne[0] = key position, for out = V^T @ attn below.
+    ggml_tensor * v_t = ggml_cont(ctx, ggml_permute(ctx, kv_half(inner_dim * ggml_element_size(kv)), 1, 2, 0, 3));
 
     // QK^T: ggml_mul_mat(K, Q), both [head_dim, context_size, n_heads,
     // num_blocks] -> [k=context_size, q=context_size, n_heads, num_blocks].
@@ -135,21 +138,17 @@ ggml_tensor * shaw_block_attn(ggml_context *          ctx,
         pos_attn = ggml_cont(ctx, ggml_permute(ctx, pos_attn, 0, 2, 1, 3));
     }
 
-    // scores = (kq + pos_attn) * scale + pad_mask
-    ggml_tensor * scores = ggml_add(ctx, kq, pos_attn);
-    scores               = ggml_scale(ctx, scores, scale);
-
-    // Broadcast the per-block additive mask across n_heads by giving it
-    // ne[2]=1 in a 4D view. pad_mask_3d is [ctx, ctx, num_blocks_eff] — the
-    // caller tiles the per-block pattern across the batch.
+    // softmax((kq + pos_attn) * scale + pad_mask) over the k axis (ne[0]).
+    // The mask is per block ([ctx, ctx, num_blocks_eff], tiled across the
+    // batch by the caller) and broadcasts across n_heads through ne[2] = 1.
+    // soft_max_ext applies the scale and the mask in the same order as a
+    // separate scale then add, and the mask holds only 0 and -inf, so the
+    // scores are the same even where a backend fuses the multiply-add.
+    ggml_tensor * scores      = ggml_add(ctx, kq, pos_attn);
     ggml_tensor * pad_mask_4d = ggml_reshape_4d(ctx, pad_mask_3d, context_size, context_size, 1, num_blocks_eff);
-    scores                    = ggml_add(ctx, scores, pad_mask_4d);
-
-    // Softmax over the k axis (ne[0]).
-    ggml_tensor * attn = ggml_soft_max(ctx, scores);
+    ggml_tensor * attn        = ggml_soft_max_ext(ctx, scores, pad_mask_4d, scale, 0.0f);
 
     // out = V^T @ attn → [head_dim, q, n_heads, num_blocks].
-    ggml_tensor * v_t = ggml_cont(ctx, ggml_permute(ctx, v, 1, 0, 2, 3));
     ggml_tensor * out = ggml_mul_mat(ctx, v_t, attn);
 
     // Reshape back to [inner_dim, T_pad, B].
@@ -159,10 +158,13 @@ ggml_tensor * shaw_block_attn(ggml_context *          ctx,
     // Slice off pad rows BEFORE out_proj. This mirrors the reference's
     // `out = self.to_out(out[:, :num_features, :])` order; it keeps
     // pad-row garbage from leaking through the post-attention depthwise
-    // conv.
+    // conv. With one utterance the leading rows are already contiguous, so
+    // the view feeds out_proj directly.
     if (T_pad > T_enc) {
         out = ggml_view_3d(ctx, out, inner_dim, T_enc, B, out->nb[1], out->nb[2], 0);
-        out = ggml_cont(ctx, out);
+        if (!ggml_is_contiguous(out)) {
+            out = ggml_cont(ctx, out);
+        }
     }
 
     // Final out_proj (with bias). Operates at T_enc.

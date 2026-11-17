@@ -129,13 +129,17 @@ struct StepBuild {
 //   kv_idx_in   [1]      — where to write K/V (via ggml_set_rows)
 //   mask_in     [max_n_kv, 1] — attention mask; positions > n_past hold -inf
 // Reuse avoids per-step rebuild + sched_alloc overhead (~0.4 ms/step).
-StepBuild build_step_graph(ggml_context *                   ctx,
-                           const QwenAsrWeights &           weights,
-                           const QwenAsrHParams &           hp,
-                           transcribe::causal_lm::KvCache & kv_cache,
-                           int                              max_n_kv,
-                           bool                             use_flash,
-                           bool                             with_logit_bias = false);
+// With `pipe` the four inputs (and the logit bias) are the pipeline's device
+// tensors and the argmax is fed back into pipe->token
+// (causal_lm::StepPipeline).
+StepBuild build_step_graph(ggml_context *                              ctx,
+                           const QwenAsrWeights &                      weights,
+                           const QwenAsrHParams &                      hp,
+                           transcribe::causal_lm::KvCache &            kv_cache,
+                           int                                         max_n_kv,
+                           bool                                        use_flash,
+                           bool                                        with_logit_bias = false,
+                           const transcribe::causal_lm::StepPipeline * pipe            = nullptr);
 
 // ---------- Verify graph (spec decode: T_verify positions in one pass) ----------
 

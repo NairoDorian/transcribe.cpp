@@ -64,6 +64,7 @@ GraniteNarModel::~GraniteNarModel() {
         safe_buffer_free(bn_fused_buffer);
         bn_fused_buffer = nullptr;
     }
+    query_f32.reset();
     if (ctx_meta != nullptr) {
         ggml_free(ctx_meta);
         ctx_meta = nullptr;
@@ -348,6 +349,9 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
     if (const transcribe_status st = fuse_batch_norm(*m); st != TRANSCRIBE_OK) {
         return st;
     }
+    // proj.query as F32 once, on the primary backend (load_common::F32Copy).
+    transcribe::load_common::make_f32_copy(m->weights.proj_top.query, m->plan.scheduler_list.front(), m->query_f32);
+    m->weights.proj_top.query_f32 = m->query_f32.tensor;
 
     m->t_load_us = ggml_time_us() - t_load_start;
     *out_model   = m.release();

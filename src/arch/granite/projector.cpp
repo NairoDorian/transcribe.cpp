@@ -213,9 +213,9 @@ ProjectorBuild build_projector_graph(ggml_context *         ctx,
     // post-attention activation and feeds the result into LayerNorm;
     // ggml_norm's internal centring-subtract expects matching dtypes
     // on both inputs, so we cast the query to F32 up front.
-    // A non-F32 query has an F32 copy made at load (prepare_query_f32 in
-    // model.cpp): same values, and no per-run cast (one a GPU backend cannot
-    // run for a K-quant).
+    // A non-F32 query has an F32 copy made at load
+    // (load_common::make_f32_copy): same values, and no per-run cast (one a
+    // GPU backend cannot run for a K-quant).
     ggml_tensor * query = weights.proj_top.query_f32 != nullptr ? weights.proj_top.query_f32 :
                                                                   ggml_cast(ctx, weights.proj_top.query, GGML_TYPE_F32);
 

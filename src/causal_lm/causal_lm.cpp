@@ -1430,6 +1430,21 @@ bool StepPipeline::init(ggml_backend_t be, int max_n_kv, int vocab_bias) {
     return true;
 }
 
+bool StepPipeline::ensure(ggml_backend_t be, int max_n_kv, int vocab_bias) {
+    const char * env = transcribe::env::str("TRANSCRIBE_STEP_PIPELINE");
+    if (backend != nullptr && backend == be && n_mask == max_n_kv && n_vocab == vocab_bias &&
+        !(env != nullptr && env[0] == '0')) {
+        return true;
+    }
+    return init(be, max_n_kv, vocab_bias);
+}
+
+void StepPipeline::drain() noexcept {
+    if (backend != nullptr) {
+        ggml_backend_synchronize(backend);
+    }
+}
+
 void StepPipeline::free() noexcept {
     if (backend != nullptr) {
         ggml_backend_synchronize(backend);  // launched steps still read and write these buffers
@@ -1492,7 +1507,14 @@ transcribe_status StepPipeline::launch(ggml_backend_sched_t sched,
     if (ggml_backend_sched_graph_compute_async(sched, graph) != GGML_STATUS_SUCCESS) {
         return TRANSCRIBE_ERR_BACKEND;
     }
-    ggml_backend_tensor_get_async(backend, argmax, &s.result, 0, sizeof(int32_t));
+    if (argmax->buffer != nullptr &&
+        ggml_backend_buffer_get_type(argmax->buffer) == ggml_backend_get_default_buffer_type(backend)) {
+        ggml_backend_tensor_get_async(backend, argmax, &s.result, 0, sizeof(int32_t));
+    } else {
+        // The scheduler placed the argmax elsewhere (the CPU, run before
+        // compute_async returned): a plain read, as the plain loop does.
+        ggml_backend_tensor_get(argmax, &s.result, 0, sizeof(int32_t));
+    }
     ggml_backend_event_record(events[r], backend);
     return TRANSCRIBE_OK;
 }

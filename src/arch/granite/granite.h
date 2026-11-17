@@ -84,8 +84,7 @@ struct GraniteModel final : public transcribe_model {
     ggml_backend_buffer_t bn_fused_buffer = nullptr;
 
     // Backing for weights.proj_top.query_f32.
-    ggml_context *        query_f32_ctx    = nullptr;
-    ggml_backend_buffer_t query_f32_buffer = nullptr;
+    transcribe::load_common::F32Copy query_f32;
 
     // Packed FFN gate+up: one mul_mat per block instead of two. Owned by
     // causal_lm::pack_gate_up; freed in ~GraniteModel().
@@ -109,6 +108,10 @@ struct GraniteModel final : public transcribe_model {
 };
 
 struct GraniteSession final : public transcribe_session {
+    // Pipelined greedy steps (causal_lm::StepPipeline), kept across runs so a
+    // run allocates nothing for it once the shape repeats.
+    transcribe::causal_lm::StepPipeline step_pipe;
+
     // Audio encoder output (post-projector) buffered between encode and
     // decode. Each row is one audio token in LM hidden space (2048).
     std::vector<float> mel_buf;

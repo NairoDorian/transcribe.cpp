@@ -39,6 +39,30 @@ namespace transcribe::load_common {
 
 using transcribe::alloc_ctx_tensors_with_reclaim;
 
+// A weight's values as an F32 tensor of the same shape on `backend`,
+// dequantized once at load with ggml's own to_float, the routine a per-run
+// ggml_cast(w, GGML_TYPE_F32) runs. A GPU backend cannot cast a K-quant, so
+// that cast otherwise lands on the CPU every run (a graph split and two
+// transfers). Owns its context and buffer.
+struct F32Copy {
+    ggml_context *        ctx    = nullptr;
+    ggml_backend_buffer_t buffer = nullptr;
+    ggml_tensor *         tensor = nullptr;
+
+    F32Copy()                            = default;
+    F32Copy(const F32Copy &)             = delete;
+    F32Copy & operator=(const F32Copy &) = delete;
+
+    ~F32Copy() { reset(); }
+
+    void reset() noexcept;
+};
+
+// Fills `out` (replacing what it held). Leaves it empty, which callers treat
+// as "keep the per-run cast", when `src` is null or already F32, its type has
+// no to_float, or an allocation fails.
+void make_f32_copy(const ggml_tensor * src, ggml_backend_t backend, F32Copy & out);
+
 // True when `dev` is a Metal device with no simdgroup matrix multiply (below
 // MTLGPUFamilyApple7), which silently produces garbage transcripts (Handy
 // issue #1608). `be` must be the initialized backend for `dev`. Honors the

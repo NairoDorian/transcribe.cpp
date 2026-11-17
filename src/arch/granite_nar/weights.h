@@ -197,6 +197,9 @@ struct GraniteNarProjTop {
     ggml_tensor * out_linear_b      = nullptr;
     ggml_tensor * query             = nullptr;  // [hidden, n_queries, 1]
     ggml_tensor * window_positions  = nullptr;  // [hidden, block_size, 1]
+    // `query` dequantized to F32 once at load, on the primary backend
+    // (load_common::make_f32_copy); null when it is F32 already.
+    ggml_tensor * query_f32         = nullptr;
 };
 
 struct GraniteNarProjBlock {

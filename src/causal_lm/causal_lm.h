@@ -431,9 +431,15 @@ transcribe_status run_batched_step_loop(transcribe_session *                sess
 // TRANSCRIBE_STEP_PIPELINE=0 turns it off (init() then fails and the caller
 // keeps its plain loop), as does a backend without events or pinned host
 // memory (the CPU).
+//
+// A step launched past the stop still runs: it writes the KV row after the
+// last committed one, inside the generated region that no later pass reads
+// before its prefill rewrites it. Sessions keep one pipeline (ensure() /
+// drain()), so a streaming tick allocates nothing.
 struct StepPipeline {
-    static constexpr int kRing  = 4;  // pinned slots / events in flight
-    static constexpr int kAhead = 1;  // steps launched beyond the one awaited
+    static constexpr int kAhead = 1;           // steps launched beyond the one awaited
+    static constexpr int kRing  = kAhead + 1;  // pinned slots / events in flight
+    static_assert(kRing > kAhead, "a slot is reused only after its step was awaited");
 
     ggml_backend_t        backend = nullptr;
     ggml_context *        ctx     = nullptr;
@@ -456,6 +462,10 @@ struct StepPipeline {
     // Allocates on `backend`'s device; vocab_bias > 0 adds logit_bias.
     // False (with everything released) when the pipeline cannot run here.
     bool init(ggml_backend_t backend, int max_n_kv, int vocab_bias);
+    // init() unless the pipeline already has exactly this shape.
+    bool ensure(ggml_backend_t backend, int max_n_kv, int vocab_bias);
+    // Waits for in-flight steps; keeps the buffers for the next pass.
+    void drain() noexcept;
     // Waits for in-flight steps, then releases everything. Idempotent.
     void free() noexcept;
 

@@ -423,6 +423,10 @@ struct QwenAsrModel final : public transcribe_model {
 struct QwenAsrSession final : public transcribe_session {
     transcribe::causal_lm::KvCache kv_cache;
 
+    // Pipelined greedy steps (causal_lm::StepPipeline), kept across decode
+    // passes: a streaming tick allocates nothing for it once the shape repeats.
+    transcribe::causal_lm::StepPipeline step_pipe;
+
     // Batched KV cache for offline transcribe_run_batch (n_batch slabs).
     // Allocated/resized lazily by run_batch; freed in the destructor.
     transcribe::causal_lm::KvCache kv_cache_batch;

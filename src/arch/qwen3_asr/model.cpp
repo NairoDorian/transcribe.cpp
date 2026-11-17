@@ -1605,12 +1605,12 @@ transcribe_status run_decode_pass(transcribe_session *          session,
             return TRANSCRIBE_ERR_OOM;
         }
     }
-    StepBuild                           sb{};
-    VerifyBuild                         vb{};
+    StepBuild                             sb{};
+    VerifyBuild                           vb{};
     // Plain steps on a GPU run pipelined (causal_lm::StepPipeline: the next
     // step is launched while one runs; same tokens). Null = the plain loop.
-    transcribe::causal_lm::StepPipeline pipe;
-    const bool piped = k_drafts == 0 && pipe.init(cm->plan.primary, max_n_kv, use_logit_bias ? vocab : 0);
+    transcribe::causal_lm::StepPipeline & pipe = cc->step_pipe;
+    const bool piped = k_drafts == 0 && pipe.ensure(cm->plan.primary, max_n_kv, use_logit_bias ? vocab : 0);
     if (k_drafts == 0) {
         sb = build_step_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache, max_n_kv,
                               /*use_flash=*/cc->decoder_use_flash, use_logit_bias, piped ? &pipe : nullptr);
@@ -1653,8 +1653,10 @@ transcribe_status run_decode_pass(transcribe_session *          session,
         // The plain loop below, with step i+1 launched before step i's token
         // is read. A step may run only where the plain loop's budget allows
         // it (generated count, KV window); EOS and the repetition guard are
-        // checked on each token as it arrives, exactly as there.
-        std::fill(step_mask.begin(), step_mask.begin() + cur_past + 1, mask_zero);
+        // checked on each token as it arrives, exactly as there. A prompt that
+        // fills the window leaves no step to run (budget_ok(0) is false): the
+        // fill is clamped to the mask.
+        std::fill(step_mask.begin(), step_mask.begin() + std::min(cur_past + 1, max_n_kv), mask_zero);
         if (!pipe.begin(step_mask.data(), use_logit_bias ? lang->bias.data() : nullptr, next_tok)) {
             cleanup_gpu();
             return TRANSCRIBE_ERR_BACKEND;
@@ -1670,7 +1672,7 @@ transcribe_status run_decode_pass(transcribe_session *          session,
             while (launched <= i + transcribe::causal_lm::StepPipeline::kAhead && budget_ok(launched)) {
                 if (pipe.launch(cc->sched, sb.graph, sb.out, launched, p0 + launched) != TRANSCRIBE_OK) {
                     log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "qwen3_asr step: graph compute failed");
-                    pipe.free();
+                    pipe.drain();
                     cleanup_gpu();
                     return TRANSCRIBE_ERR_BACKEND;
                 }
@@ -1692,7 +1694,7 @@ transcribe_status run_decode_pass(transcribe_session *          session,
                 break;
             }
         }
-        pipe.free();  // waits for a step launched past the stop
+        pipe.drain();  // waits for a step launched past the stop
     } else if (k_drafts == 0) {
         while (next_tok != eos_id && static_cast<int32_t>(generated_ids.size()) < max_new && cur_past + 1 <= max_n_kv) {
             const int64_t t_set0 = ggml_time_us();

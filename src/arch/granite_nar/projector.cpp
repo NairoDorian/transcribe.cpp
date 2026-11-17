@@ -175,7 +175,11 @@ ProjectorBuild build_projector_graph(ggml_context *            ctx,
     ggml_tensor * mean_pool = ggml_reshape_3d(ctx, mp_mean, prj_hidden, n_query, pb.nblocks);
 
     // Query: learned [prj_hidden, n_query, 1] + mean_pool.
-    ggml_tensor * query = ggml_cast(ctx, weights.proj_top.query, GGML_TYPE_F32);
+    // A non-F32 query has an F32 copy made at load
+    // (load_common::make_f32_copy): same values, and no per-run cast (one a
+    // GPU backend cannot run for a K-quant).
+    ggml_tensor * query = weights.proj_top.query_f32 != nullptr ? weights.proj_top.query_f32 :
+                                                                  ggml_cast(ctx, weights.proj_top.query, GGML_TYPE_F32);
     // Broadcast query over the nblocks axis when adding mean_pool. ggml_add
     // broadcasts dims of size 1, so the [h, n_query, 1] query expands
     // naturally to match mean_pool's [h, n_query, nblocks].

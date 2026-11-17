@@ -48,6 +48,9 @@ struct GraniteNarModel final : public transcribe_model {
     ggml_context *        bn_fused_ctx    = nullptr;
     ggml_backend_buffer_t bn_fused_buffer = nullptr;
 
+    // Backing for weights.proj_top.query_f32.
+    transcribe::load_common::F32Copy query_f32;
+
     std::optional<transcribe::MelFrontend> mel;
 
     GraniteNarModel() = default;

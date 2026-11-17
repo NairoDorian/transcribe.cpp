@@ -1217,4 +1217,46 @@ ReadF32Result read_f32_tensor_checked(gguf_context *       gguf_ctx,
     return ReadF32Result::Ok;
 }
 
+void F32Copy::reset() noexcept {
+    tensor = nullptr;
+    if (buffer != nullptr) {
+        safe_buffer_free(buffer);
+        buffer = nullptr;
+    }
+    if (ctx != nullptr) {
+        ggml_free(ctx);
+        ctx = nullptr;
+    }
+}
+
+void make_f32_copy(const ggml_tensor * src, ggml_backend_t backend, F32Copy & out) {
+    out.reset();
+    if (src == nullptr || src->type == GGML_TYPE_F32 || backend == nullptr) {
+        return;
+    }
+    const auto * tt = ggml_get_type_traits(src->type);
+    if (tt == nullptr || tt->to_float == nullptr) {
+        return;
+    }
+    ggml_init_params params{};
+    params.mem_size = 2 * ggml_tensor_overhead() + 256;
+    params.no_alloc = true;
+    out.ctx         = ggml_init(params);
+    if (out.ctx == nullptr) {
+        return;
+    }
+    ggml_tensor * f = ggml_new_tensor(out.ctx, GGML_TYPE_F32, GGML_MAX_DIMS, src->ne);
+    out.buffer      = ggml_backend_alloc_ctx_tensors(out.ctx, backend);
+    if (out.buffer == nullptr) {
+        out.reset();
+        return;
+    }
+    std::vector<uint8_t> raw(ggml_nbytes(src));
+    std::vector<float>   values(static_cast<size_t>(ggml_nelements(src)));
+    ggml_backend_tensor_get(src, raw.data(), 0, raw.size());
+    tt->to_float(raw.data(), values.data(), ggml_nelements(src));
+    ggml_backend_tensor_set(f, values.data(), 0, values.size() * sizeof(float));
+    out.tensor = f;
+}
+
 }  // namespace transcribe::load_common

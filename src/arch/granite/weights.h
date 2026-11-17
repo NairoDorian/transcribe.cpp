@@ -223,8 +223,8 @@ struct GraniteProjTop {
     ggml_tensor * linear_b             = nullptr;  // [lm_hidden]
     ggml_tensor * qformer_final_norm_w = nullptr;  // [hidden]
     ggml_tensor * qformer_final_norm_b = nullptr;
-    // `query` dequantized to F32 once at load, on the primary backend (see
-    // prepare_query_f32 in model.cpp); null while it is not built.
+    // `query` dequantized to F32 once at load, on the primary backend
+    // (load_common::make_f32_copy); null when it is F32 already.
     ggml_tensor * query_f32            = nullptr;
 };
 

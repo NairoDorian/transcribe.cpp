@@ -14,6 +14,7 @@
 #include "transcribe-session-core.h"
 #include "transcribe.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -245,6 +246,45 @@ struct transcribe_session : transcribe::SessionCore {
     // the whole accumulated utterance on every tick). VAD telemetry is
     // unaffected either way.
     bool                              stream_activity_gate_allowed = true;
+
+    // Samples of a feed that did not fill a whole 256-sample VAD frame, carried
+    // into the next feed so the detector sees contiguous audio whatever the
+    // caller's chunk size. Cleared by transcribe_stream_begin.
+    std::array<float, transcribe::VoiceActivityDetector::FRAME_SAMPLES> stream_vad_partial{};
+    size_t                                                              stream_vad_partial_n = 0;
+
+    // Silence the dispatcher's fast path skipped this stream. A family never
+    // sees a skipped slice, so its own timeline (stream_audio_input_us /
+    // _committed_us, token times) counts only the audio it was fed; each entry
+    // records where in that timeline a run of skipped slices sat and how long
+    // it was. The fast path only skips when the family holds nothing
+    // (committed == input), so every later family time lies after the gap.
+    // stream_real_ms() maps a family time back to the caller's timeline.
+    // Cleared by transcribe_stream_begin; entries are in increasing family_us.
+    struct StreamSkip {
+        int64_t family_us  = 0;
+        int64_t skipped_us = 0;
+    };
+
+    std::vector<StreamSkip> stream_skips;
+
+    // Skipped audio (us) that precedes family time `family_us`.
+    int64_t stream_skipped_before_us(int64_t family_us) const {
+        int64_t total = 0;
+        for (const StreamSkip & s : stream_skips) {
+            if (s.family_us > family_us) {
+                break;
+            }
+            total += s.skipped_us;
+        }
+        return total;
+    }
+
+    // Family time in ms -> caller time in ms. A gap at family time t counts
+    // for every time in the millisecond that contains it.
+    int64_t stream_real_ms(int64_t family_ms) const {
+        return stream_skips.empty() ? family_ms : family_ms + stream_skipped_before_us(family_ms * 1000 + 999) / 1000;
+    }
 
     // Session-owned copies of the caller's run-params strings, refreshed
     // on every transcribe_stream_begin. The dispatcher hands the family

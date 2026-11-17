@@ -8,6 +8,7 @@
 #include "conformer/conformer.h"
 #include "ggml.h"
 #include "transcribe-debug.h"
+#include "transcribe-env.h"
 #include "transcribe-log.h"
 #include "weights.h"
 
@@ -152,12 +153,20 @@ EncoderBuild build_encoder_graph(ggml_context *        ctx,
         ggml_set_input(eb.pos_emb_in);
         eb.dumps.pos_emb = eb.pos_emb_in;
 
+        // The flash path passes the per-head relative-position term as the
+        // mask; where the backend cannot run that (CUDA), the scheduler ran
+        // every block's attention on the CPU. Use the manual path there, as
+        // parakeet does.
+        const bool block_flash = use_flash && (transcribe::env::flag("TRANSCRIBE_FORCE_FLASH") ||
+                                               conf::flash_supports_rel_pos_mask(
+                                                   backend_name, hp.enc_d_model / hp.enc_n_heads, hp.enc_n_heads));
+
         conf::BlockParams bparams{};
         bparams.d_model     = hp.enc_d_model;
         bparams.n_head      = hp.enc_n_heads;
         bparams.conv_kernel = hp.enc_conv_kernel;
         bparams.kv_type     = kv_type;
-        bparams.use_flash   = use_flash;
+        bparams.use_flash   = block_flash;
         bparams.policy      = policy;
 
         // Block 0.

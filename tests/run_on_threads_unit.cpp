@@ -5,6 +5,7 @@
 #include "transcribe-batch-util.h"
 
 #include <atomic>
+#include <barrier>
 #include <cstdio>
 #include <cstdlib>
 #include <new>
@@ -108,6 +109,42 @@ void test_launch_failure_joins_launched_threads() {
     CHECK(ran.load() == 2);
 }
 
+// Workers that meet at a barrier sized for every tid (the Earshot batch
+// scorer's phases): after a launch failure, the hook drops the missing tids'
+// places, so the launched workers run every phase and the join returns.
+// Without it this test never finishes.
+void test_launch_failure_releases_barrier_workers() {
+    reset_flaky(1);  // tid 1 launches, tid 2 fails: tids 0, 2, 3 never run
+    constexpr int    k_threads = 4;
+    constexpr int    k_phases  = 5;
+    std::barrier<>   phase(k_threads);
+    std::atomic<int> phases_done{ 0 };
+    int              reported_missing = -1;
+    bool             caught           = false;
+    try {
+        transcribe::run_on_threads<FlakyThread>(
+            k_threads,
+            [&](int) {
+                for (int p = 0; p < k_phases; ++p) {
+                    phase.arrive_and_wait();
+                    phases_done.fetch_add(1);
+                }
+            },
+            [&](int n_missing) {
+                reported_missing = n_missing;
+                for (int i = 0; i < n_missing; ++i) {
+                    phase.arrive_and_drop();
+                }
+            });
+    } catch (const std::system_error &) {
+        caught = true;
+    }
+    CHECK(caught);
+    CHECK(reported_missing == 3);
+    CHECK(FlakyThread::joins.load() == 1);
+    CHECK(phases_done.load() == k_phases);  // the one launched worker ran every phase
+}
+
 void test_parallel_for_all_propagates() {
     bool caught = false;
     try {
@@ -129,6 +166,7 @@ int main() {
     test_every_tid_runs_once();
     test_worker_throw_rethrown_after_join();
     test_launch_failure_joins_launched_threads();
+    test_launch_failure_releases_barrier_workers();
     test_parallel_for_all_propagates();
 
     if (g_failures != 0) {

@@ -57,10 +57,16 @@ struct transcribe_vad_gate {
     transcribe::earshot::Detector detector;
 
     // Hysteresis.
-    float threshold     = 0.5f;
-    float exit          = 0.35f;
-    bool  exit_explicit = false;
-    bool  gate_open     = false;
+    float threshold      = 0.5f;
+    float exit           = 0.35f;
+    bool  exit_explicit  = false;
+    float exit_requested = -1.0f;  // the caller's exit_threshold when explicit
+    bool  gate_open      = false;
+
+    // The exit edge for `t`: the requested one, never above the entry edge,
+    // or the derived default. Recomputed from the request on every threshold
+    // change, so lowering then raising the threshold restores the caller's exit.
+    float exit_for(float t) const { return exit_explicit ? std::min(exit_requested, t) : derived_exit(t); }
 
     // Smoother.
     uint32_t           onset_frames    = 4;
@@ -96,7 +102,8 @@ struct transcribe_vad_gate {
     explicit transcribe_vad_gate(const transcribe_vad_gate_params & p) {
         threshold       = p.threshold;
         exit_explicit   = p.exit_threshold >= 0.0f;
-        exit            = exit_explicit ? std::min(p.exit_threshold, p.threshold) : derived_exit(p.threshold);
+        exit_requested  = p.exit_threshold;
+        exit            = exit_for(p.threshold);
         onset_frames    = frames_for_ms(p.onset_ms);
         preroll_frames  = frames_for_ms(p.preroll_ms);
         hangover_frames = frames_for_ms(p.hangover_ms);
@@ -318,7 +325,7 @@ transcribe_status transcribe_vad_gate_set_threshold(transcribe_vad_gate * gate, 
     // next frame clearing the new threshold re-enters. Detector and smoother
     // state are kept, so this is safe mid-recording.
     gate->threshold = threshold;
-    gate->exit      = gate->exit_explicit ? std::min(gate->exit, threshold) : derived_exit(threshold);
+    gate->exit      = gate->exit_for(threshold);
     gate->gate_open = false;
     return TRANSCRIBE_OK;
 }

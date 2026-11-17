@@ -148,6 +148,10 @@ struct HostCtcHead {
     int                d_enc     = 0;
     std::vector<float> weight;         // [n_classes, d_enc]
     std::vector<float> bias;           // [n_classes]
+
+    // Builds without BLAS: weight transposed to [d_enc, n_classes] for the
+    // portable projection. Empty when BLAS is available.
+    std::vector<float> weight_t;
 };
 
 // Decoder head selector. Mirrors ParakeetHParams::HeadKind so the
@@ -203,6 +207,33 @@ struct TdtToken {
     int   duration_frames = 0;
 };
 
+// Device-resident transducer decode (TDT / RNN-T) for a GPU primary backend.
+//
+// The predictor LSTM and joint run on the GPU with their state kept there,
+// instead of as CPU graphs: on CUDA the CPU decoder was most of a run
+// (measured 2026-11-17, RTX 4070: nemotron jfk encode 38 ms vs decode 140 ms).
+// Opaque and owned by a session (it holds a backend, F32 copies of the decoder
+// weights and the per-step graphs); one per session, never shared. Passed to
+// the decode functions below, which use it when given and fall back to the CPU
+// decode if it fails. The decision rules (argmax, masks, confidence, stepping)
+// are the CPU loops' own, run on the same logits; only the GPU's float
+// summation order differs.
+struct ParakeetDeviceDecoder;
+
+// Build a device decoder for `dev` from the model's resident decoder weights.
+// nullptr when the head has no predictor (CTC), the weights are not resident,
+// or the device cannot host the graphs (logged).
+struct ParakeetWeights;
+// `model_weights` (optional) are the model's own decoder tensors, used in place
+// of F32 copies under TRANSCRIBE_PARAKEET_DEVICE_DECODER_WEIGHTS=native.
+ParakeetDeviceDecoder * parakeet_device_decoder_new(const HostDecoderWeights & w,
+                                                    ggml_backend_dev_t         dev,
+                                                    const ParakeetWeights *    model_weights = nullptr);
+void                    parakeet_device_decoder_free(ParakeetDeviceDecoder * d) noexcept;
+// End of a run: release the frame buffers when a long input grew them past a
+// few minutes of audio (they are rebuilt on demand); weights and graphs stay.
+void                    parakeet_device_decoder_trim(ParakeetDeviceDecoder * d) noexcept;
+
 // Run TDT greedy decode end-to-end against an encoder output buffer.
 //
 // Inputs:
@@ -224,7 +255,8 @@ transcribe_status decode_tdt_greedy(const HostDecoderWeights &   w,
                                     int                          d_enc,
                                     int                          n_threads,
                                     std::vector<TdtToken> &      out_tokens,
-                                    const std::vector<uint8_t> * blocked_tokens = nullptr);
+                                    const std::vector<uint8_t> * blocked_tokens = nullptr,
+                                    ParakeetDeviceDecoder *      device         = nullptr);
 
 // Run RNNT greedy decode end-to-end. Same predictor + joint code as TDT,
 // but the joint emits `vocab+1` logits (no duration extras) and the step
@@ -242,7 +274,8 @@ transcribe_status decode_rnnt_greedy(const HostDecoderWeights &   w,
                                      int                          d_enc,
                                      int                          n_threads,
                                      std::vector<TdtToken> &      out_tokens,
-                                     const std::vector<uint8_t> * blocked_tokens = nullptr);
+                                     const std::vector<uint8_t> * blocked_tokens = nullptr,
+                                     ParakeetDeviceDecoder *      device         = nullptr);
 
 // Argmax over data[0, n) skipping ids whose blocked[] entry is non-zero.
 // Falls back to the plain argmax when `blocked` is null or empty.
@@ -274,7 +307,8 @@ transcribe_status decode_rnnt_greedy_streaming(const HostDecoderWeights &      w
                                                int                             n_threads,
                                                std::vector<TdtToken> &         out_tokens,
                                                ParakeetStreamingDecoderGraph * dec_graph      = nullptr,
-                                               const std::vector<uint8_t> *    blocked_tokens = nullptr);
+                                               const std::vector<uint8_t> *    blocked_tokens = nullptr,
+                                               ParakeetDeviceDecoder *         device         = nullptr);
 
 // Run CTC greedy decode end-to-end. Per-frame: logits = W @ enc[t] + b,
 // argmax; collapse rule "drop adjacent duplicates, then drop blanks"

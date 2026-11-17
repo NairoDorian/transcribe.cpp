@@ -17,6 +17,7 @@
 #include "transcribe-backend.h"
 #include "transcribe-batch-util.h"
 #include "transcribe-debug.h"
+#include "transcribe-env.h"
 #include "transcribe-flash-policy.h"
 #include "transcribe-load-common.h"
 #include "transcribe-loader.h"
@@ -485,6 +486,12 @@ StreamInferBuild build_stream_infer_graph(ggml_context *              ctx,
     bp.kv_type         = GGML_TYPE_F32;
     bool enc_use_flash = true, dec_use_flash = false;
     transcribe::flash::apply_env_overrides(enc_use_flash, dec_use_flash);
+    // Only where the backend fuses the per-head rel-pos mask (not CUDA:
+    // there the scheduler ran every block's attention on the CPU).
+    if (enc_use_flash && !transcribe::env::flag("TRANSCRIBE_FORCE_FLASH") &&
+        !conf::flash_supports_rel_pos_mask(backend, ed / chp.enc_n_heads, chp.enc_n_heads)) {
+        enc_use_flash = false;
+    }
     bp.use_flash          = enc_use_flash;
     bp.policy             = sf_conv_policy(backend);
     bp.att_context_left   = -1;  // full (offline) attention over the concat

@@ -44,6 +44,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -844,6 +846,19 @@ transcribe_status build_host_decoder_weights(const ParakeetModel & model, HostDe
                     out.ctc_head.bias.size(), out.ctc_head.n_classes);
             return TRANSCRIBE_ERR_GGUF;
         }
+#if !TRANSCRIBE_HAS_BLAS
+        {
+            const int n_cls = out.ctc_head.n_classes;
+            const int d     = out.ctc_head.d_enc;
+            out.ctc_head.weight_t.resize(out.ctc_head.weight.size());
+            for (int r = 0; r < n_cls; ++r) {
+                for (int c = 0; c < d; ++c) {
+                    out.ctc_head.weight_t[static_cast<size_t>(c) * n_cls + r] =
+                        out.ctc_head.weight[static_cast<size_t>(r) * d + c];
+                }
+            }
+        }
+#endif
 
         out.tdt_durations.clear();
         out.tdt_max_symbols = 0;
@@ -1259,6 +1274,884 @@ int argmax_range_masked(const float * data, int n, const std::vector<uint8_t> * 
 }
 
 // ---------------------------------------------------------------------------
+// Device-resident decode (GPU primary)
+// ---------------------------------------------------------------------------
+//
+// The CPU decoder above runs one sub-millisecond CPU graph per step over
+// ~35 MB of F32 weights; on a GPU primary the encoder finishes long before it
+// (measured 2026-11-17, RTX 4070, warm: parakeet v3 jfk encode 34 ms / decode
+// 47 ms, nemotron 38 / 140 ms). This path runs the same predictor and joint
+// math on the model's GPU device, with everything that changes between steps
+// kept there:
+//   - weights: F32 copies of the resident CPU tensors (the same values);
+//   - LSTM state in two slots S[0] / S[1]: a predictor step reads the
+//     committed slot and writes the other, an emission flips `committed` —
+//     the CPU loops' state / next_state swap, so a streaming chunk that
+//     re-runs the predictor from the committed state gets the same input;
+//   - P = pred_w @ h + pred_b, written by the predictor step (the CPU joint
+//     recomputes it every frame: same values, now once per emission);
+//   - the encoder projection of the whole utterance (one GEMM), from which a
+//     joint step gathers its frames by index.
+// A predictor step uploads one embedding row; a joint step uploads its frame
+// indices and downloads the logits. Everything runs on the decoder's own
+// backend and stream (async set / compute / get, one synchronize per joint
+// step), so persistent graphs replay as CUDA graphs. The decision logic
+// (argmax, masks, confidence, stepping) is the CPU loops', on host logits.
+// TRANSCRIBE_PARAKEET_DEVICE_DECODER=0 keeps the decoder on the CPU.
+
+// Widest joint window the device loops take (TRANSCRIBE_PARAKEET_DEVICE_JOINT_W).
+constexpr int k_max_device_window = 256;
+
+struct ParakeetDeviceDecoder {
+    ggml_backend_t backend = nullptr;
+    int            H       = 0;  // predictor hidden
+    int            L       = 0;  // LSTM layers
+    int            joint_h = 0;
+    int            joint_n = 0;
+    int            d_enc   = 0;
+    std::string    activation;
+    const float *  embed      = nullptr;  // borrowed host embedding [pred_vocab, H] (model-owned)
+    int            pred_vocab = 0;
+
+    // Weights, the two LSTM state slots, P and the predictor input: fixed for
+    // the decoder's lifetime.
+    ggml_context *             w_ctx = nullptr;
+    ggml_backend_buffer_t      w_buf = nullptr;
+    std::vector<ggml_tensor *> Wx, Wh, Wb;
+    ggml_tensor *              pred_w = nullptr;
+    ggml_tensor *              pred_b = nullptr;
+    ggml_tensor *              enc_w  = nullptr;
+    ggml_tensor *              enc_b  = nullptr;
+    ggml_tensor *              out_w  = nullptr;
+    ggml_tensor *              out_b  = nullptr;
+    std::vector<ggml_tensor *> Sh[2], Sc[2];
+    ggml_tensor *              P           = nullptr;  // [joint_h]
+    ggml_tensor *              x           = nullptr;  // [H] embedding row
+    ggml_tensor *              bias        = nullptr;  // [n_token_cls] 0 / -inf: the run's blocked tokens
+    bool                       bias_active = false;
+    int                        n_token_cls = 0;
+    int                        n_dur       = 0;  // TDT duration classes, 0 for RNN-T
+
+    // Pinned host staging for every per-step copy (pageable memory makes an
+    // async CUDA copy wait for the stream). Falls back to heap memory when the
+    // device has no host buffer type.
+    ggml_backend_buffer_t host_buf = nullptr;
+    std::vector<uint8_t>  host_fallback;
+    float *               x_pin     = nullptr;  // [H]
+    int32_t *             idx_pin   = nullptr;  // [k_max_window]
+    int32_t *             tok_pin   = nullptr;  // [k_max_window]
+    int32_t *             dur_pin   = nullptr;  // [k_max_window]
+    float *               col_pin   = nullptr;  // [n_token_cls] one column's token logits
+    float *               state_pin = nullptr;  // [2 * L * H] h then c per layer
+
+    // Predictor step graphs: pg[i] reads slot i, writes slot 1 - i and P.
+    ggml_context *        pg_ctx[2] = { nullptr, nullptr };
+    ggml_backend_buffer_t pg_buf[2] = { nullptr, nullptr };
+    ggml_cgraph *         pg[2]     = { nullptr, nullptr };
+
+    // Encoder projection + joint graphs, sized for `cap` frames and a window
+    // of W frames; rebuilt when an utterance needs more.
+    int                   cap       = 0;
+    int                   W         = 0;
+    ggml_context *        ej_ctx    = nullptr;
+    ggml_backend_buffer_t ej_buf    = nullptr;
+    ggml_tensor *         enc_in    = nullptr;  // [d_enc, cap]
+    ggml_tensor *         enc_proj  = nullptr;  // [joint_h, cap] leaf, written by enc_graph
+    ggml_cgraph *         enc_graph = nullptr;
+
+    // Joint graphs over 1 frame (j1) and over the window (jw): logits
+    // [joint_n, n], and the token / duration argmax per frame [n] (I32).
+    struct Joint {
+        ggml_tensor * idx    = nullptr;
+        ggml_tensor * logits = nullptr;
+        ggml_tensor * tok    = nullptr;
+        ggml_tensor * dur    = nullptr;  // null for RNN-T
+        ggml_cgraph * graph  = nullptr;
+    };
+
+    Joint j1;
+    Joint jw;
+
+    int                T         = 0;  // frames of the current utterance / chunk
+    int                committed = 0;
+    std::vector<float> zeros;
+    const Joint *      last_joint = nullptr;  // the graph whose outputs are current
+
+    void free_capacity() noexcept {
+        if (ej_buf != nullptr) {
+            safe_buffer_free(ej_buf);
+            ej_buf = nullptr;
+        }
+        if (ej_ctx != nullptr) {
+            ggml_free(ej_ctx);
+            ej_ctx = nullptr;
+        }
+        enc_in = enc_proj = nullptr;
+        enc_graph         = nullptr;
+        j1                = Joint{};
+        jw                = Joint{};
+        last_joint        = nullptr;
+        cap = W = 0;
+    }
+
+    ~ParakeetDeviceDecoder() {
+        free_capacity();
+        if (host_buf != nullptr) {
+            safe_buffer_free(host_buf);
+        }
+        for (int i = 0; i < 2; ++i) {
+            if (pg_buf[i] != nullptr) {
+                safe_buffer_free(pg_buf[i]);
+            }
+            if (pg_ctx[i] != nullptr) {
+                ggml_free(pg_ctx[i]);
+            }
+        }
+        if (w_buf != nullptr) {
+            safe_buffer_free(w_buf);
+        }
+        if (w_ctx != nullptr) {
+            ggml_free(w_ctx);
+        }
+        if (backend != nullptr) {
+            safe_backend_free(backend);
+        }
+    }
+};
+
+namespace {
+
+ggml_tensor * joint_activation(ggml_context * ctx, const std::string & activation, ggml_tensor * t) {
+    if (activation == "relu") {
+        return ggml_relu(ctx, t);
+    }
+    if (activation == "sigmoid") {
+        return ggml_sigmoid(ctx, t);
+    }
+    return ggml_tanh(ctx, t);  // "tanh" (loader allow-list)
+}
+
+// Predictor step graph for slot `i`: the CPU build_pred_graph math (same op
+// order), reading slot i, then copies of every layer's (h, c) into slot 1 - i
+// and P = pred_w @ h_last + pred_b. The copies are expanded last, after every
+// read of slot i.
+bool build_device_pred_graph(ParakeetDeviceDecoder & d, int i) {
+    ggml_init_params ip{};
+    ip.mem_size        = ggml_tensor_overhead() * static_cast<size_t>(32 * d.L + 16) + ggml_graph_overhead();
+    ip.no_alloc        = true;
+    ggml_context * ctx = ggml_init(ip);
+    if (ctx == nullptr) {
+        return false;
+    }
+    d.pg_ctx[i]                  = ctx;
+    const int                  H = d.H;
+    std::vector<ggml_tensor *> outs;
+    ggml_tensor *              in = d.x;
+    for (int l = 0; l < d.L; ++l) {
+        ggml_tensor * gates = ggml_add(
+            ctx, ggml_add(ctx, ggml_mul_mat(ctx, d.Wx[l], in), ggml_mul_mat(ctx, d.Wh[l], d.Sh[i][l])), d.Wb[l]);
+        auto part = [&](int k) {
+            return ggml_view_1d(ctx, gates, H,
+                                static_cast<size_t>(k) * static_cast<size_t>(H) * ggml_element_size(gates));
+        };
+        ggml_tensor * i_ = ggml_sigmoid(ctx, part(0));
+        ggml_tensor * f_ = ggml_sigmoid(ctx, part(1));
+        ggml_tensor * gg = ggml_tanh(ctx, part(2));
+        ggml_tensor * o_ = ggml_sigmoid(ctx, part(3));
+        ggml_tensor * nc = ggml_add(ctx, ggml_mul(ctx, f_, d.Sc[i][l]), ggml_mul(ctx, i_, gg));
+        ggml_tensor * nh = ggml_mul(ctx, o_, ggml_tanh(ctx, nc));
+        outs.push_back(ggml_cpy(ctx, nh, d.Sh[1 - i][l]));
+        outs.push_back(ggml_cpy(ctx, nc, d.Sc[1 - i][l]));
+        in = nh;
+    }
+    outs.push_back(ggml_cpy(ctx, ggml_add(ctx, ggml_mul_mat(ctx, d.pred_w, in), d.pred_b), d.P));
+
+    d.pg[i] = ggml_new_graph(ctx);
+    for (ggml_tensor * t : outs) {
+        ggml_build_forward_expand(d.pg[i], t);
+    }
+    d.pg_buf[i] = ggml_backend_alloc_ctx_tensors(ctx, d.backend);
+    return d.pg_buf[i] != nullptr;
+}
+
+// Joint graph over `n` gathered frames: the CPU joint math with P for the
+// predictor term, then the decisions on the device: the token argmax over the
+// token logits plus `bias` (0, or -inf for the run's blocked tokens:
+// argmax_range_masked), and for TDT the duration argmax. A step then downloads
+// a few int32s instead of the logits; the token logits of a frame are fetched
+// only when it emits (its confidence).
+ParakeetDeviceDecoder::Joint build_device_joint(ParakeetDeviceDecoder & d, ggml_context * ctx, int n) {
+    ParakeetDeviceDecoder::Joint j;
+    j.idx = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n);
+    ggml_set_input(j.idx);
+    ggml_tensor * cols   = ggml_get_rows(ctx, d.enc_proj, j.idx);  // [joint_h, n]
+    ggml_tensor * summed = ggml_add(ctx, cols, d.P);
+    ggml_tensor * act    = joint_activation(ctx, d.activation, summed);
+    j.logits             = ggml_add(ctx, ggml_mul_mat(ctx, d.out_w, act), d.out_b);  // [joint_n, n]
+    ggml_set_output(j.logits);
+
+    ggml_tensor * tok_logits = ggml_view_2d(ctx, j.logits, d.n_token_cls, n, j.logits->nb[1], 0);
+    j.tok                    = ggml_argmax(ctx, ggml_add(ctx, tok_logits, d.bias));  // [n]
+    ggml_set_output(j.tok);
+    if (d.n_dur > 0) {
+        ggml_tensor * dur_logits = ggml_view_2d(ctx, j.logits, d.n_dur, n, j.logits->nb[1],
+                                                static_cast<size_t>(d.n_token_cls) * ggml_element_size(j.logits));
+        // Always copied out: the view starts n_token_cls floats into the
+        // logits, an offset Vulkan's argmax rejects (storage buffer offset
+        // alignment), and for n > 1 it is strided as well.
+        j.dur                    = ggml_argmax(ctx, ggml_cont(ctx, dur_logits));
+        ggml_set_output(j.dur);
+    }
+    j.graph = ggml_new_graph(ctx);
+    ggml_build_forward_expand(j.graph, j.tok);
+    if (j.dur != nullptr) {
+        ggml_build_forward_expand(j.graph, j.dur);
+    }
+    return j;
+}
+
+// Size the encoder-projection and joint graphs for `T` frames and a joint
+// window of `W` (>= 1). Capacity grows geometrically, so an utterance only
+// rebuilds when it is longer than every earlier one.
+bool device_ensure_capacity(ParakeetDeviceDecoder & d, int T, int W) {
+    if (d.ej_ctx != nullptr && T <= d.cap && W == d.W) {
+        return true;
+    }
+    const int new_cap = T <= d.cap ? d.cap : std::max({ T, d.cap * 2, 64 });  // a new W alone keeps the size
+    d.free_capacity();
+
+    ggml_init_params ip{};
+    ip.mem_size = ggml_tensor_overhead() * 48 + 3 * ggml_graph_overhead();
+    ip.no_alloc = true;
+    d.ej_ctx    = ggml_init(ip);
+    if (d.ej_ctx == nullptr) {
+        return false;
+    }
+    ggml_context * ctx = d.ej_ctx;
+    d.enc_in           = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, d.d_enc, new_cap);
+    ggml_set_input(d.enc_in);
+    d.enc_proj         = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, d.joint_h, new_cap);
+    // enc_proj = enc_w @ enc_in + enc_b (precompute_enc_proj_ggml's math),
+    // copied into the leaf the joint graphs read.
+    ggml_tensor * proj = ggml_add(ctx, ggml_mul_mat(ctx, d.enc_w, d.enc_in), d.enc_b);
+    d.enc_graph        = ggml_new_graph(ctx);
+    ggml_build_forward_expand(d.enc_graph, ggml_cpy(ctx, proj, d.enc_proj));
+
+    d.j1 = build_device_joint(d, ctx, 1);
+    if (W > 1) {
+        d.jw = build_device_joint(d, ctx, W);
+    }
+    d.ej_buf = ggml_backend_alloc_ctx_tensors(ctx, d.backend);
+    if (d.ej_buf == nullptr) {
+        d.free_capacity();
+        return false;
+    }
+    // Frames past an utterance's end are never gathered; keep them finite.
+    ggml_backend_buffer_clear(d.ej_buf, 0);
+    d.cap = new_cap;
+    d.W   = W;
+    return true;
+}
+
+// Upload `T` encoder frames and project them (async; the first joint step's
+// synchronize completes it). `enc_out` must stay valid until then.
+bool device_begin_frames(ParakeetDeviceDecoder & d, const float * enc_out, int T, int W) {
+    if (!device_ensure_capacity(d, T, W)) {
+        return false;
+    }
+    d.T          = T;
+    d.last_joint = nullptr;
+    ggml_backend_tensor_set_async(d.backend, d.enc_in, enc_out, 0,
+                                  static_cast<size_t>(T) * static_cast<size_t>(d.d_enc) * sizeof(float));
+    return ggml_backend_graph_compute_async(d.backend, d.enc_graph) == GGML_STATUS_SUCCESS;
+}
+
+// The run's blocked tokens as the argmax bias (argmax_range_masked's mask).
+// Uploads only when a mask is set or one has to be cleared; synchronizes then,
+// so the host vector may be reused.
+void device_set_mask(ParakeetDeviceDecoder & d, const std::vector<uint8_t> * blocked) {
+    const bool active = blocked != nullptr && !blocked->empty();
+    if (!active && !d.bias_active) {
+        return;
+    }
+    std::vector<float> bias(static_cast<size_t>(d.n_token_cls), 0.0f);
+    if (active) {
+        const size_t n = std::min(blocked->size(), bias.size());
+        for (size_t i = 0; i < n; ++i) {
+            if ((*blocked)[i] != 0) {
+                bias[i] = -INFINITY;
+            }
+        }
+    }
+    ggml_backend_tensor_set_async(d.backend, d.bias, bias.data(), 0, bias.size() * sizeof(float));
+    ggml_backend_synchronize(d.backend);
+    d.bias_active = active;
+}
+
+// Committed slot <- the given state (zeros when null).
+void device_load_state(ParakeetDeviceDecoder & d, const LstmState * state) {
+    d.committed     = 0;
+    const size_t H  = static_cast<size_t>(d.H);
+    const size_t hb = H * sizeof(float);
+    for (int l = 0; l < d.L; ++l) {
+        float * h = d.state_pin + static_cast<size_t>(2 * l) * H;
+        float * c = h + H;
+        std::memcpy(h, state != nullptr ? state->h[static_cast<size_t>(l)].data() : d.zeros.data(), hb);
+        std::memcpy(c, state != nullptr ? state->c[static_cast<size_t>(l)].data() : d.zeros.data(), hb);
+        ggml_backend_tensor_set_async(d.backend, d.Sh[0][l], h, 0, hb);
+        ggml_backend_tensor_set_async(d.backend, d.Sc[0][l], c, 0, hb);
+    }
+}
+
+// The committed slot -> state (synchronizes).
+void device_store_state(ParakeetDeviceDecoder & d, LstmState & state) {
+    const size_t H  = static_cast<size_t>(d.H);
+    const size_t hb = H * sizeof(float);
+    for (int l = 0; l < d.L; ++l) {
+        float * h = d.state_pin + static_cast<size_t>(2 * l) * H;
+        ggml_backend_tensor_get_async(d.backend, d.Sh[d.committed][l], h, 0, hb);
+        ggml_backend_tensor_get_async(d.backend, d.Sc[d.committed][l], h + H, 0, hb);
+    }
+    ggml_backend_synchronize(d.backend);
+    for (int l = 0; l < d.L; ++l) {
+        const float * h = d.state_pin + static_cast<size_t>(2 * l) * H;
+        std::memcpy(state.h[static_cast<size_t>(l)].data(), h, hb);
+        std::memcpy(state.c[static_cast<size_t>(l)].data(), h + H, hb);
+    }
+}
+
+// One predictor step from the committed slot (embedding of last_token, zeros
+// for the start state). Async: the next joint step's synchronize completes it.
+bool device_pred(ParakeetDeviceDecoder & d, int last_token) {
+    if (last_token < 0) {
+        std::fill_n(d.x_pin, d.H, 0.0f);
+    } else {
+        std::memcpy(d.x_pin, d.embed + static_cast<size_t>(last_token) * static_cast<size_t>(d.H),
+                    static_cast<size_t>(d.H) * sizeof(float));
+    }
+    ggml_backend_tensor_set_async(d.backend, d.x, d.x_pin, 0, static_cast<size_t>(d.H) * sizeof(float));
+    return ggml_backend_graph_compute_async(d.backend, d.pg[d.committed]) == GGML_STATUS_SUCCESS;
+}
+
+// Joint decisions for frames step .. step + n - 1 (n = 1 or the window W;
+// frames past the end repeat the last one and are never consumed):
+// d.tok_pin[k] / d.dur_pin[k] hold frame step + k's token (-1 if every token
+// was blocked) and duration argmax until the next call. False on a compute
+// failure.
+bool device_joint(ParakeetDeviceDecoder & d, int step, int n) {
+    for (int k = 0; k < n; ++k) {
+        d.idx_pin[k] = std::min(step + k, d.T - 1);
+    }
+    const ParakeetDeviceDecoder::Joint & j = n > 1 ? d.jw : d.j1;
+    ggml_backend_tensor_set_async(d.backend, j.idx, d.idx_pin, 0, static_cast<size_t>(n) * sizeof(int32_t));
+    if (ggml_backend_graph_compute_async(d.backend, j.graph) != GGML_STATUS_SUCCESS) {
+        return false;
+    }
+    ggml_backend_tensor_get_async(d.backend, j.tok, d.tok_pin, 0, static_cast<size_t>(n) * sizeof(int32_t));
+    if (j.dur != nullptr) {
+        ggml_backend_tensor_get_async(d.backend, j.dur, d.dur_pin, 0, static_cast<size_t>(n) * sizeof(int32_t));
+    }
+    ggml_backend_synchronize(d.backend);
+    d.last_joint = &j;
+    return true;
+}
+
+// Queue the copy of column k's token logits (of the last joint call) into
+// d.col_pin, for the emitted token's confidence. No synchronize: the next
+// device_joint (or device_finish) completes it, and it reads the logits before
+// any later graph on the stream overwrites them.
+void device_fetch_token_logits(ParakeetDeviceDecoder & d, int k) {
+    const ParakeetDeviceDecoder::Joint & j = *d.last_joint;
+    ggml_backend_tensor_get_async(d.backend, j.logits, d.col_pin, static_cast<size_t>(k) * j.logits->nb[1],
+                                  static_cast<size_t>(d.n_token_cls) * sizeof(float));
+}
+
+// Joint window width for the device loops: the CPU default, unless
+// TRANSCRIBE_PARAKEET_DEVICE_JOINT_W overrides it (<= 1 = one frame per step,
+// clamped to 256).
+int resolve_device_joint_w(int default_w) {
+    int w = default_w;
+    if (const char * v = transcribe::env::str("TRANSCRIBE_PARAKEET_DEVICE_JOINT_W")) {
+        w = std::atoi(v);
+    }
+    return std::min(std::max(w, 1), k_max_device_window);
+}
+
+// Whether a decode call may use `device`: given, and not a debugging mode that
+// reads the CPU loop's intermediate state (tensor dumps, the batched-joint
+// cross-check).
+bool device_usable(const ParakeetDeviceDecoder * device) {
+    return device != nullptr && !transcribe::debug::enabled() && !joint_batch_check_enabled();
+}
+
+// TDT greedy decode on the device: decode_tdt_greedy's loop, line for line,
+// with device steps in place of the CPU graphs.
+transcribe_status decode_tdt_greedy_device(const HostDecoderWeights &   w,
+                                           ParakeetDeviceDecoder &      d,
+                                           const float *                enc_out,
+                                           int                          T_enc,
+                                           std::vector<TdtToken> &      out_tokens,
+                                           const std::vector<uint8_t> * blocked_tokens) {
+    const int n_token_cls = w.predictor.pred_vocab;
+    const int n_dur       = static_cast<int>(w.tdt_durations.size());
+    const int blank_id    = w.blank_id;
+    const int batch_W     = resolve_device_joint_w(/*default_w=*/1);
+
+    const int64_t t_begin = ggml_time_us();
+    if (!device_begin_frames(d, enc_out, T_enc, batch_W)) {
+        return TRANSCRIBE_ERR_BACKEND;
+    }
+    device_load_state(d, nullptr);
+    device_set_mask(d, blocked_tokens);
+
+    std::vector<float> scratch_probs;
+    int                win_base  = 0;
+    bool               win_valid = false;
+    int                pending   = -1;  // out_tokens index whose confidence waits for its logits copy
+
+    int       last_token      = -1;
+    int       step            = 0;
+    int       new_symbols     = 0;
+    const int max_iters       = 16 * T_enc + 1024;
+    int       iter            = 0;
+    bool      predictor_dirty = true;
+
+    const bool global_budget   = w.tdt_global_symbol_budget;
+    int64_t    steps_remaining = static_cast<int64_t>(w.tdt_max_symbols) * T_enc;
+
+    while (step < T_enc && iter < max_iters && (!global_budget || steps_remaining > 0)) {
+        ++iter;
+        if (predictor_dirty) {
+            if (!device_pred(d, last_token)) {
+                return TRANSCRIBE_ERR_BACKEND;
+            }
+            predictor_dirty = false;
+        }
+
+        int col = 0;  // this frame's column in the joint output
+        if (batch_W > 1) {
+            if (!win_valid || step < win_base || step >= win_base + batch_W) {
+                if (!device_joint(d, step, batch_W)) {
+                    return TRANSCRIBE_ERR_BACKEND;
+                }
+                win_base  = step;
+                win_valid = true;
+            }
+            col = step - win_base;
+        } else if (!device_joint(d, step, 1)) {
+            return TRANSCRIBE_ERR_BACKEND;
+        }
+        if (pending >= 0) {  // the previous emission's logits arrived with that synchronize
+            out_tokens[static_cast<size_t>(pending)].p = token_confidence(d.col_pin, n_token_cls, scratch_probs);
+            pending                                    = -1;
+        }
+
+        // Every token blocked (-1) is argmax_range_masked's plain-argmax
+        // fallback: leave that rare case to the CPU decode.
+        const int pred_token = d.tok_pin[col];
+        const int decision   = d.dur_pin[col];
+        if (pred_token < 0 || decision < 0 || decision >= n_dur) {
+            return TRANSCRIBE_ERR_BACKEND;
+        }
+        const int duration = w.tdt_durations[static_cast<size_t>(decision)];
+
+        const bool is_blank = (pred_token == blank_id);
+        if (!is_blank) {
+            TdtToken tok;
+            tok.id              = pred_token;
+            tok.step_at_emit    = step;
+            tok.duration_frames = duration;
+            out_tokens.push_back(tok);
+            device_fetch_token_logits(d, col);  // confidence: filled in after the next synchronize
+            pending = static_cast<int>(out_tokens.size()) - 1;
+
+            last_token = pred_token;
+            d.committed ^= 1;  // commit (the CPU loop's state swap)
+            predictor_dirty = true;
+            win_valid       = false;
+        }
+
+        if (global_budget) {
+            step += (is_blank && duration == 0) ? 1 : duration;
+            --steps_remaining;
+            continue;
+        }
+        step += duration;
+        new_symbols += 1;
+        if (duration != 0) {
+            new_symbols = 0;
+        } else if (w.tdt_max_symbols > 0 && new_symbols >= w.tdt_max_symbols) {
+            step += 1;
+            new_symbols = 0;
+        } else if (is_blank && w.tdt_max_symbols > 0) {
+            const int skip = w.tdt_max_symbols - new_symbols;
+            if (skip > 0 && iter + skip < max_iters) {
+                iter += skip;
+                step += 1;
+                new_symbols = 0;
+            }
+        }
+    }
+    if (pending >= 0) {  // the last emission's logits
+        ggml_backend_synchronize(d.backend);
+        out_tokens[static_cast<size_t>(pending)].p = token_confidence(d.col_pin, n_token_cls, scratch_probs);
+    }
+
+    log_msg(TRANSCRIBE_LOG_LEVEL_DEBUG,
+            "decoder (device): %d iters, %d tokens, T_enc=%d  total=%.1f ms  per_iter=%.0f us", iter,
+            static_cast<int>(out_tokens.size()), T_enc, (ggml_time_us() - t_begin) / 1000.0,
+            static_cast<double>(ggml_time_us() - t_begin) / std::max(iter, 1));
+    if (iter >= max_iters && !global_budget) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet decoder (device): hit iteration cap (%d)", max_iters);
+        return TRANSCRIBE_ERR_BACKEND;
+    }
+    return TRANSCRIBE_OK;
+}
+
+// RNN-T greedy decode on the device, offline (state from the start state) or
+// streaming (state_io / last_token_io carried across chunks, tokens at
+// frame_offset + step): decode_rnnt_greedy's and
+// decode_rnnt_greedy_streaming's loop, line for line, with device steps.
+transcribe_status decode_rnnt_greedy_device(const HostDecoderWeights &   w,
+                                            ParakeetDeviceDecoder &      d,
+                                            const float *                enc_out,
+                                            int                          T_enc,
+                                            LstmState *                  state_io,
+                                            int *                        last_token_io,
+                                            int                          frame_offset,
+                                            int                          batch_W,
+                                            std::vector<TdtToken> &      out_tokens,
+                                            const std::vector<uint8_t> * blocked_tokens) {
+    const int n_token_cls = w.predictor.pred_vocab;
+    const int blank_id    = w.blank_id;
+
+    const int64_t t_begin = ggml_time_us();
+    if (!device_begin_frames(d, enc_out, T_enc, batch_W)) {
+        return TRANSCRIBE_ERR_BACKEND;
+    }
+    device_load_state(d, state_io);
+    device_set_mask(d, blocked_tokens);
+
+    std::vector<float> scratch_probs;
+    int                win_base  = 0;
+    bool               win_valid = false;
+    int                pending   = -1;  // out_tokens index whose confidence waits for its logits copy
+
+    int       last_token      = last_token_io != nullptr ? *last_token_io : -1;
+    int       step            = 0;
+    int       new_symbols     = 0;
+    const int max_iters       = 16 * T_enc + 1024;
+    int       iter            = 0;
+    bool      predictor_dirty = true;
+
+    while (step < T_enc && iter < max_iters) {
+        ++iter;
+        if (predictor_dirty) {
+            if (!device_pred(d, last_token)) {
+                return TRANSCRIBE_ERR_BACKEND;
+            }
+            predictor_dirty = false;
+        }
+
+        int col = 0;  // this frame's column in the joint output
+        if (batch_W > 1) {
+            if (!win_valid || step < win_base || step >= win_base + batch_W) {
+                if (!device_joint(d, step, batch_W)) {
+                    return TRANSCRIBE_ERR_BACKEND;
+                }
+                win_base  = step;
+                win_valid = true;
+            }
+            col = step - win_base;
+        } else if (!device_joint(d, step, 1)) {
+            return TRANSCRIBE_ERR_BACKEND;
+        }
+
+        if (pending >= 0) {  // the previous emission's logits arrived with that synchronize
+            out_tokens[static_cast<size_t>(pending)].p = token_confidence(d.col_pin, n_token_cls, scratch_probs);
+            pending                                    = -1;
+        }
+        const int pred_token = d.tok_pin[col];
+        if (pred_token < 0) {
+            return TRANSCRIBE_ERR_BACKEND;  // every token blocked: the CPU decode's fallback
+        }
+        const bool is_blank = (pred_token == blank_id);
+        if (is_blank) {
+            step += 1;
+            new_symbols = 0;
+        } else {
+            TdtToken tok;
+            tok.id              = pred_token;
+            tok.step_at_emit    = frame_offset + step;
+            tok.duration_frames = 1;
+            out_tokens.push_back(tok);
+            device_fetch_token_logits(d, col);  // confidence: filled in after the next synchronize
+            pending = static_cast<int>(out_tokens.size()) - 1;
+
+            last_token = pred_token;
+            d.committed ^= 1;  // commit (the CPU loop's state swap)
+            predictor_dirty = true;
+            win_valid       = false;
+
+            new_symbols += 1;
+            if (w.tdt_max_symbols > 0 && new_symbols >= w.tdt_max_symbols) {
+                step += 1;
+                new_symbols = 0;
+            }
+        }
+    }
+    if (pending >= 0) {  // the last emission's logits
+        ggml_backend_synchronize(d.backend);
+        out_tokens[static_cast<size_t>(pending)].p = token_confidence(d.col_pin, n_token_cls, scratch_probs);
+    }
+
+    if (iter >= max_iters) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet decoder (device rnnt): hit iteration cap (%d)", max_iters);
+        return TRANSCRIBE_ERR_BACKEND;
+    }
+    if (state_io != nullptr) {
+        device_store_state(d, *state_io);
+    }
+    if (last_token_io != nullptr) {
+        *last_token_io = last_token;
+    }
+    log_msg(TRANSCRIBE_LOG_LEVEL_DEBUG, "decoder (device rnnt): %d iters, %d tokens, T_enc=%d  total=%.1f ms", iter,
+            static_cast<int>(out_tokens.size()), T_enc, (ggml_time_us() - t_begin) / 1000.0);
+    return TRANSCRIBE_OK;
+}
+
+}  // namespace
+
+ParakeetDeviceDecoder * parakeet_device_decoder_new(const HostDecoderWeights & w,
+                                                    ggml_backend_dev_t         dev,
+                                                    const ParakeetWeights *    model_weights) {
+    if (dev == nullptr || w.head_kind == HostHeadKind::CTC || !w.predictor.lstm_ready || !w.joint.w_ready ||
+        w.predictor.lstm.empty()) {
+        return nullptr;
+    }
+    auto d     = std::make_unique<ParakeetDeviceDecoder>();
+    d->backend = ggml_backend_dev_init(dev, nullptr);
+    if (d->backend == nullptr) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_WARN, "parakeet decoder: cannot open %s for the device decoder",
+                ggml_backend_dev_name(dev));
+        return nullptr;
+    }
+    const HostPredictor & p = w.predictor;
+    const HostJoint &     j = w.joint;
+    d->H                    = p.pred_hidden;
+    d->L                    = static_cast<int>(p.lstm.size());
+    d->joint_h              = j.joint_h;
+    d->joint_n              = j.joint_n;
+    d->d_enc                = j.d_enc;
+    d->activation           = j.activation;
+    d->embed                = p.embed_w.data();
+    d->pred_vocab           = p.pred_vocab;
+    d->n_token_cls          = p.pred_vocab;
+    d->n_dur                = w.head_kind == HostHeadKind::TDT ? static_cast<int>(w.tdt_durations.size()) : 0;
+    if (d->n_token_cls + d->n_dur != d->joint_n || (w.head_kind == HostHeadKind::TDT && d->n_dur == 0)) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_WARN, "parakeet decoder: joint width %d != %d tokens + %d durations; CPU decoder",
+                d->joint_n, d->n_token_cls, d->n_dur);
+        return nullptr;
+    }
+    d->zeros.assign(static_cast<size_t>(d->H), 0.0f);
+
+    // Pinned staging: x, frame indices, token / duration decisions, one
+    // column of token logits, the LSTM state.
+    {
+        const size_t f    = sizeof(float);
+        const size_t i32  = sizeof(int32_t);
+        const size_t n_x  = static_cast<size_t>(d->H);
+        const size_t n_c  = static_cast<size_t>(d->n_token_cls);
+        const size_t n_s  = static_cast<size_t>(2 * d->L * d->H);
+        const size_t w_i  = static_cast<size_t>(k_max_device_window);
+        const size_t sz   = n_x * f + 3 * w_i * i32 + n_c * f + n_s * f + 64;
+        uint8_t *    base = nullptr;
+        if (ggml_backend_buffer_type_t hbt = ggml_backend_dev_host_buffer_type(dev)) {
+            d->host_buf = ggml_backend_buft_alloc_buffer(hbt, sz);
+        }
+        if (d->host_buf != nullptr) {
+            base = static_cast<uint8_t *>(ggml_backend_buffer_get_base(d->host_buf));
+        } else {
+            d->host_fallback.assign(sz, 0);
+            base = d->host_fallback.data();
+        }
+        auto take = [&base](size_t bytes) {
+            uint8_t * p = base;
+            base += (bytes + 15) & ~static_cast<size_t>(15);
+            return p;
+        };
+        d->x_pin     = reinterpret_cast<float *>(take(n_x * f));
+        d->idx_pin   = reinterpret_cast<int32_t *>(take(w_i * i32));
+        d->tok_pin   = reinterpret_cast<int32_t *>(take(w_i * i32));
+        d->dur_pin   = reinterpret_cast<int32_t *>(take(w_i * i32));
+        d->col_pin   = reinterpret_cast<float *>(take(n_c * f));
+        d->state_pin = reinterpret_cast<float *>(take(n_s * f));
+        std::fill_n(d->dur_pin, w_i, 0);
+    }
+
+    ggml_init_params ip{};
+    ip.mem_size = ggml_tensor_overhead() * static_cast<size_t>(8 * d->L + 16);
+    ip.no_alloc = true;
+    d->w_ctx    = ggml_init(ip);
+    if (d->w_ctx == nullptr) {
+        return nullptr;
+    }
+    // Weights. Default: F32 copies of the resident CPU tensors, the values
+    // the CPU decoder multiplies with. TRANSCRIBE_PARAKEET_DEVICE_DECODER_WEIGHTS
+    // =native instead borrows the model's own tensors (the GGUF's storage,
+    // e.g. Q8_0) when they already live on this device: no copy and ~4x fewer
+    // bytes per step, but a quantized matmul also quantizes the activation,
+    // so the logits move further from the CPU decoder's than summation order
+    // alone does.
+    const char * wmode  = transcribe::env::str("TRANSCRIBE_PARAKEET_DEVICE_DECODER_WEIGHTS");
+    bool         native = model_weights != nullptr && wmode != nullptr && std::strcmp(wmode, "native") == 0;
+    auto         on_dev = [dev](const ggml_tensor * t) {
+        return t != nullptr && t->buffer != nullptr &&
+               ggml_backend_buft_get_device(ggml_backend_buffer_get_type(t->buffer)) == dev &&
+               !ggml_backend_buffer_is_host(t->buffer);
+    };
+    auto same_shape = [](const ggml_tensor * a, const ggml_tensor * b) {
+        return a != nullptr && b != nullptr && ggml_are_same_shape(a, b);
+    };
+    if (native) {
+        const ParakeetPredictor & mp = model_weights->predictor;
+        const ParakeetJoint &     mj = model_weights->joint;
+        native                       = mp.lstm.size() == p.lstm.size();
+        for (size_t l = 0; native && l < p.lstm.size(); ++l) {
+            native = on_dev(mp.lstm[l].Wx) && on_dev(mp.lstm[l].Wh) && on_dev(mp.lstm[l].b) &&
+                     same_shape(mp.lstm[l].Wx, p.lstm[l].g_Wx) && same_shape(mp.lstm[l].Wh, p.lstm[l].g_Wh) &&
+                     same_shape(mp.lstm[l].b, p.lstm[l].g_b);
+        }
+        const std::pair<const ggml_tensor *, const ggml_tensor *> pairs[] = {
+            { mj.pred_w, j.g_pred_w },
+            { mj.pred_b, j.g_pred_b },
+            { mj.enc_w,  j.g_enc_w  },
+            { mj.enc_b,  j.g_enc_b  },
+            { mj.out_w,  j.gw_w     },
+            { mj.out_b,  j.gw_b     },
+        };
+        for (const auto & pr : pairs) {
+            native = native && on_dev(pr.first) && same_shape(pr.first, pr.second);
+        }
+        if (!native) {
+            log_msg(TRANSCRIBE_LOG_LEVEL_WARN,
+                    "parakeet decoder: the model's decoder weights are not on %s in the expected shapes; "
+                    "using F32 copies",
+                    ggml_backend_dev_name(dev));
+        }
+    }
+    auto like = [&](const ggml_tensor * src) {
+        return ggml_new_tensor(d->w_ctx, src->type, ggml_n_dims(src), src->ne);
+    };
+    if (native) {
+        const ParakeetPredictor & mp = model_weights->predictor;
+        const ParakeetJoint &     mj = model_weights->joint;
+        for (const auto & ml : mp.lstm) {
+            d->Wx.push_back(ml.Wx);
+            d->Wh.push_back(ml.Wh);
+            d->Wb.push_back(ml.b);
+        }
+        d->pred_w = mj.pred_w;
+        d->pred_b = mj.pred_b;
+        d->enc_w  = mj.enc_w;
+        d->enc_b  = mj.enc_b;
+        d->out_w  = mj.out_w;
+        d->out_b  = mj.out_b;
+    } else {
+        for (const HostLstmLayer & lh : p.lstm) {
+            d->Wx.push_back(like(lh.g_Wx));
+            d->Wh.push_back(like(lh.g_Wh));
+            d->Wb.push_back(like(lh.g_b));
+        }
+        d->pred_w = like(j.g_pred_w);
+        d->pred_b = like(j.g_pred_b);
+        d->enc_w  = like(j.g_enc_w);
+        d->enc_b  = like(j.g_enc_b);
+        d->out_w  = like(j.gw_w);
+        d->out_b  = like(j.gw_b);
+    }
+    for (int s = 0; s < 2; ++s) {
+        for (int l = 0; l < d->L; ++l) {
+            d->Sh[s].push_back(ggml_new_tensor_1d(d->w_ctx, GGML_TYPE_F32, d->H));
+            d->Sc[s].push_back(ggml_new_tensor_1d(d->w_ctx, GGML_TYPE_F32, d->H));
+        }
+    }
+    d->P = ggml_new_tensor_1d(d->w_ctx, GGML_TYPE_F32, d->joint_h);
+    d->x = ggml_new_tensor_1d(d->w_ctx, GGML_TYPE_F32, d->H);
+    ggml_set_input(d->x);
+    d->bias = ggml_new_tensor_1d(d->w_ctx, GGML_TYPE_F32, d->n_token_cls);
+
+    d->w_buf = ggml_backend_alloc_ctx_tensors(d->w_ctx, d->backend);
+    if (d->w_buf == nullptr) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_WARN, "parakeet decoder: %s has no room for the device decoder",
+                ggml_backend_dev_name(dev));
+        return nullptr;
+    }
+    ggml_backend_buffer_clear(d->w_buf, 0);
+    if (!native) {
+        for (int l = 0; l < d->L; ++l) {
+            ggml_backend_tensor_copy(p.lstm[static_cast<size_t>(l)].g_Wx, d->Wx[l]);
+            ggml_backend_tensor_copy(p.lstm[static_cast<size_t>(l)].g_Wh, d->Wh[l]);
+            ggml_backend_tensor_copy(p.lstm[static_cast<size_t>(l)].g_b, d->Wb[l]);
+        }
+        ggml_backend_tensor_copy(j.g_pred_w, d->pred_w);
+        ggml_backend_tensor_copy(j.g_pred_b, d->pred_b);
+        ggml_backend_tensor_copy(j.g_enc_w, d->enc_w);
+        ggml_backend_tensor_copy(j.g_enc_b, d->enc_b);
+        ggml_backend_tensor_copy(j.gw_w, d->out_w);
+        ggml_backend_tensor_copy(j.gw_b, d->out_b);
+    }
+
+    for (int i = 0; i < 2; ++i) {
+        if (!build_device_pred_graph(*d, i)) {
+            log_msg(TRANSCRIBE_LOG_LEVEL_WARN, "parakeet decoder: device predictor graph build failed");
+            return nullptr;
+        }
+    }
+    // Every op must run on the device itself (no CPU fallback inside these
+    // graphs: they are computed directly on the backend, not via a scheduler).
+    for (int i = 0; i < 2; ++i) {
+        for (int k = 0; k < ggml_graph_n_nodes(d->pg[i]); ++k) {
+            if (!ggml_backend_supports_op(d->backend, ggml_graph_node(d->pg[i], k))) {
+                log_msg(TRANSCRIBE_LOG_LEVEL_WARN, "parakeet decoder: %s cannot run %s; decoding on the CPU",
+                        ggml_backend_dev_name(dev), ggml_op_desc(ggml_graph_node(d->pg[i], k)));
+                return nullptr;
+            }
+        }
+    }
+    if (!device_ensure_capacity(*d, 64, 1)) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_WARN, "parakeet decoder: device joint graph build failed");
+        return nullptr;
+    }
+    for (ggml_cgraph * g : { d->enc_graph, d->j1.graph }) {
+        for (int k = 0; k < ggml_graph_n_nodes(g); ++k) {
+            if (!ggml_backend_supports_op(d->backend, ggml_graph_node(g, k))) {
+                log_msg(TRANSCRIBE_LOG_LEVEL_WARN, "parakeet decoder: %s cannot run %s; decoding on the CPU",
+                        ggml_backend_dev_name(dev), ggml_op_desc(ggml_graph_node(g, k)));
+                return nullptr;
+            }
+        }
+    }
+    log_msg(TRANSCRIBE_LOG_LEVEL_INFO, "parakeet decoder: predictor and joint on %s (%s weights, %.1f MiB)",
+            ggml_backend_dev_name(dev), native ? "model" : "F32",
+            static_cast<double>(ggml_backend_buffer_get_size(d->w_buf)) / (1024.0 * 1024.0));
+    return d.release();
+}
+
+void parakeet_device_decoder_free(ParakeetDeviceDecoder * d) noexcept {
+    delete d;
+}
+
+void parakeet_device_decoder_trim(ParakeetDeviceDecoder * d) noexcept {
+    // 2048 encoder frames ~ 164 s at 80 ms: ~13 MB of frame buffers kept for
+    // the common case, released for long-form inputs.
+    if (d != nullptr && d->cap > 2048) {
+        ggml_backend_synchronize(d->backend);
+        d->free_capacity();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Greedy decode driver
 // ---------------------------------------------------------------------------
 
@@ -1268,7 +2161,8 @@ transcribe_status decode_tdt_greedy(const HostDecoderWeights &   w,
                                     int                          d_enc,
                                     int                          n_threads,
                                     std::vector<TdtToken> &      out_tokens,
-                                    const std::vector<uint8_t> * blocked_tokens) {
+                                    const std::vector<uint8_t> * blocked_tokens,
+                                    ParakeetDeviceDecoder *      device) {
     if (enc_out == nullptr || T_enc <= 0 || d_enc <= 0) {
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
@@ -1278,6 +2172,16 @@ transcribe_status decode_tdt_greedy(const HostDecoderWeights &   w,
                 "expected %d)",
                 d_enc, w.joint.d_enc);
         return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+    if (device_usable(device)) {
+        const size_t            n_before = out_tokens.size();
+        const transcribe_status dst = decode_tdt_greedy_device(w, *device, enc_out, T_enc, out_tokens, blocked_tokens);
+        if (dst == TRANSCRIBE_OK) {
+            return dst;
+        }
+        out_tokens.resize(n_before);
+        log_msg(TRANSCRIBE_LOG_LEVEL_WARN, "parakeet decoder: device decode failed (%d); decoding on the CPU",
+                static_cast<int>(dst));
     }
 
     const int nt          = resolve_decode_threads(n_threads);
@@ -1556,7 +2460,8 @@ transcribe_status decode_rnnt_greedy(const HostDecoderWeights &   w,
                                      int                          d_enc,
                                      int                          n_threads,
                                      std::vector<TdtToken> &      out_tokens,
-                                     const std::vector<uint8_t> * blocked_tokens) {
+                                     const std::vector<uint8_t> * blocked_tokens,
+                                     ParakeetDeviceDecoder *      device) {
     if (enc_out == nullptr || T_enc <= 0 || d_enc <= 0) {
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
@@ -1566,6 +2471,18 @@ transcribe_status decode_rnnt_greedy(const HostDecoderWeights &   w,
                 "expected %d)",
                 d_enc, w.joint.d_enc);
         return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+    if (device_usable(device)) {
+        const size_t            n_before = out_tokens.size();
+        const transcribe_status dst      = decode_rnnt_greedy_device(
+            w, *device, enc_out, T_enc, /*state_io=*/nullptr, /*last_token_io=*/nullptr, /*frame_offset=*/0,
+            resolve_device_joint_w(/*default_w=*/16), out_tokens, blocked_tokens);
+        if (dst == TRANSCRIBE_OK) {
+            return dst;
+        }
+        out_tokens.resize(n_before);
+        log_msg(TRANSCRIBE_LOG_LEVEL_WARN, "parakeet decoder (rnnt): device decode failed (%d); decoding on the CPU",
+                static_cast<int>(dst));
     }
 
     const int nt          = resolve_decode_threads(n_threads);
@@ -1772,7 +2689,8 @@ transcribe_status decode_rnnt_greedy_streaming(const HostDecoderWeights &      w
                                                int                             n_threads,
                                                std::vector<TdtToken> &         out_tokens,
                                                ParakeetStreamingDecoderGraph * dec_graph,
-                                               const std::vector<uint8_t> *    blocked_tokens) {
+                                               const std::vector<uint8_t> *    blocked_tokens,
+                                               ParakeetDeviceDecoder *         device) {
     if (enc_out == nullptr || T_enc_new <= 0 || d_enc <= 0) {
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
@@ -1799,6 +2717,36 @@ transcribe_status decode_rnnt_greedy_streaming(const HostDecoderWeights &      w
     const int H           = w.predictor.pred_hidden;
     const int n_token_cls = w.predictor.pred_vocab;
     const int blank_id    = w.blank_id;
+
+    if (device_usable(device)) {
+        // Same state_io validation as the CPU path below, then the chunk on
+        // the device; state_io / last_token_io are only written on success,
+        // so a failure falls back to the CPU decode from the same state.
+        bool degenerate =
+            static_cast<int>(state_io.h.size()) != n_layers || static_cast<int>(state_io.c.size()) != n_layers;
+        for (int l = 0; !degenerate && l < n_layers; ++l) {
+            degenerate = static_cast<int>(state_io.h[l].size()) != H || static_cast<int>(state_io.c[l].size()) != H;
+        }
+        if (degenerate) {
+            state_io.reset(n_layers, H);
+            last_token_io = -1;
+        }
+        LstmState               state      = state_io;
+        int                     last_token = last_token_io;
+        const size_t            n_before   = out_tokens.size();
+        const transcribe_status dst =
+            decode_rnnt_greedy_device(w, *device, enc_out, T_enc_new, &state, &last_token, frame_offset,
+                                      resolve_device_joint_w(/*default_w=*/16), out_tokens, blocked_tokens);
+        if (dst == TRANSCRIBE_OK) {
+            state_io      = std::move(state);
+            last_token_io = last_token;
+            return dst;
+        }
+        out_tokens.resize(n_before);
+        log_msg(TRANSCRIBE_LOG_LEVEL_WARN,
+                "parakeet decoder (rnnt-stream): device decode failed (%d); decoding on the CPU",
+                static_cast<int>(dst));
+    }
 
     // Reuse persistent decode graphs if provided, otherwise fall back to local per-call graphs.
     PredGraph *  p_pg = nullptr;
@@ -1995,22 +2943,57 @@ transcribe_status decode_ctc_greedy(const HostDecoderWeights &   w,
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, T_enc, n_classes, d_enc, 1.0f, enc_out, d_enc,
                 w.ctc_head.weight.data(), d_enc, 0.0f, logits_all.data(), n_classes);
 #else
-    // No BLAS: project all T frames in parallel over parallel_for_all
-    // (rows within a frame are a serial, auto-vectorized dot). Bias folded
-    // in below.
+    // No BLAS: project the frames in parallel over parallel_for_all, four
+    // frames per pass over the weight. Each class sums W[r][0]*x[0],
+    // W[r][1]*x[1], ... from 0 in that order, as a row-by-row dot would;
+    // walking the transposed weight keeps that order per class
+    // (bit-identical) while the inner loop runs across classes, which
+    // compilers vectorize without reordering a sum (a dot product's
+    // reduction they do not, short of fast-math). Sharing each weight load
+    // across four frames keeps the pass from being bound by weight traffic.
+    // Bias folded in below.
     {
-        const int     nt = resolve_decode_threads(n_threads);
-        const float * Wc = w.ctc_head.weight.data();
-        transcribe::parallel_for_all(T_enc, nt, [&](int t) {
-            const float * frame = enc_out + static_cast<size_t>(t) * static_cast<size_t>(d_enc);
-            float *       row   = logits_all.data() + static_cast<size_t>(t) * static_cast<size_t>(n_classes);
-            for (int r = 0; r < n_classes; ++r) {
-                const float * wr  = Wc + static_cast<size_t>(r) * static_cast<size_t>(d_enc);
-                float         acc = 0.0f;
-                for (int c = 0; c < d_enc; ++c) {
-                    acc += wr[c] * frame[c];
+        constexpr int kFrames  = 4;
+        const int     nt       = resolve_decode_threads(n_threads);
+        const float * Wt       = w.ctc_head.weight_t.data();
+        const int     n_blocks = (T_enc + kFrames - 1) / kFrames;
+        transcribe::parallel_for_all(n_blocks, nt, [&](int blk) {
+            const int     t0 = blk * kFrames;
+            const int     nb = std::min(kFrames, T_enc - t0);
+            const float * x[kFrames];
+            float *       y[kFrames];
+            for (int b = 0; b < nb; ++b) {
+                x[b] = enc_out + static_cast<size_t>(t0 + b) * static_cast<size_t>(d_enc);
+                y[b] = logits_all.data() + static_cast<size_t>(t0 + b) * static_cast<size_t>(n_classes);
+                std::fill(y[b], y[b] + n_classes, 0.0f);
+            }
+            for (int c = 0; c < d_enc; ++c) {
+                const float * __restrict col = Wt + static_cast<size_t>(c) * static_cast<size_t>(n_classes);
+                if (nb == kFrames) {
+                    const float x0        = x[0][c];
+                    const float x1        = x[1][c];
+                    const float x2        = x[2][c];
+                    const float x3        = x[3][c];
+                    float * __restrict y0 = y[0];
+                    float * __restrict y1 = y[1];
+                    float * __restrict y2 = y[2];
+                    float * __restrict y3 = y[3];
+                    for (int r = 0; r < n_classes; ++r) {
+                        const float wr = col[r];
+                        y0[r] += wr * x0;
+                        y1[r] += wr * x1;
+                        y2[r] += wr * x2;
+                        y3[r] += wr * x3;
+                    }
+                } else {
+                    for (int b = 0; b < nb; ++b) {
+                        const float xb        = x[b][c];
+                        float * __restrict yb = y[b];
+                        for (int r = 0; r < n_classes; ++r) {
+                            yb[r] += col[r] * xb;
+                        }
+                    }
                 }
-                row[r] = acc;
             }
             return true;
         });

@@ -1051,13 +1051,16 @@ transcribe_status run_batch(transcribe_session *          session,
                                 "out of memory.");
             return TRANSCRIBE_ERR_OOM;
         }
-        ggml_backend_tensor_set(sb.cross_mask_in, cmask.data(), 0, cmask.size() * sizeof(ggml_fp16_t));
-        io.token_ids = sb.token_ids_in;
-        io.pos_ids   = sb.pos_ids_in;
-        io.kv_idx    = sb.kv_idx_in;
-        io.self_mask = sb.self_mask_in;
-        io.argmax    = sb.argmax_out;
-        io.graph     = sb.graph;
+        io.token_ids        = sb.token_ids_in;
+        io.pos_ids          = sb.pos_ids_in;
+        io.kv_idx           = sb.kv_idx_in;
+        io.self_mask        = sb.self_mask_in;
+        io.argmax           = sb.argmax_out;
+        io.graph            = sb.graph;
+        // Uploaded by the step loop before every step (see EncDecStepIO).
+        io.cross_mask       = sb.cross_mask_in;
+        io.cross_mask_host  = cmask.data();
+        io.cross_mask_bytes = cmask.size() * sizeof(ggml_fp16_t);
         return TRANSCRIBE_OK;
     };
 

@@ -21,6 +21,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -821,6 +823,180 @@ void test_activity_gate_family_opt_out_receives_every_slice() {
     CHECK(transcribe_stream_finalize(&session, nullptr) == TRANSCRIBE_OK);
 }
 
+// A family that keeps its own timeline from the samples it is fed and reports
+// it, like parakeet / voxtral_realtime: nothing buffered, committed == input.
+transcribe_status timeline_stream_feed(transcribe_session * session,
+                                       const float *,
+                                       int                        n_samples,
+                                       transcribe_stream_update * update) {
+    g_gate_fed_samples += n_samples;
+    session->stream_audio_input_us += static_cast<int64_t>(n_samples) * 1000000LL / 16000LL;
+    session->stream_audio_committed_us = session->stream_audio_input_us;
+    if (update != nullptr) {
+        update->input_received_ms  = session->stream_audio_input_us / 1000;
+        update->audio_committed_ms = session->stream_audio_committed_us / 1000;
+        update->buffered_ms        = 0;
+    }
+    return TRANSCRIBE_OK;
+}
+
+const transcribe::Arch & timeline_arch() {
+    static const transcribe::Arch arch = {
+        "fake-timeline",
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        gate_stream_begin,
+        timeline_stream_feed,
+        gate_stream_finalize,
+        nullptr,
+        fake_accepts_no_ext,
+    };
+    return arch;
+}
+
+// Silence the fast path skips never reaches the family, so the family's own
+// timeline lacks it; the dispatcher records each gap and publishes times on
+// the caller's timeline. Regression: the skipped time was added to the
+// family's cursors, which the family overwrote on its next feed, so every
+// later cursor and token time ran early by the skipped silence.
+void test_activity_gate_keeps_caller_timeline() {
+    transcribe_model model;
+    model.arch                    = &timeline_arch();
+    model.caps.supports_streaming = true;
+    model.caps.max_timestamp_kind = TRANSCRIBE_TIMESTAMPS_NONE;
+    transcribe_session session;
+    session.model = &model;
+
+    transcribe_stream_params sp;
+    transcribe_stream_params_init(&sp);
+    CHECK(transcribe_stream_begin(&session, nullptr, &sp) == TRANSCRIBE_OK);
+
+    float silence[256] = {};
+    float tone[256];
+    for (int i = 0; i < 256; ++i) {
+        tone[i] = 0.5f * static_cast<float>(std::sin(2.0 * 3.14159265358979 * 440.0 * i / 16000.0));
+    }
+    transcribe_stream_update upd;
+
+    // 64 ms of leading silence: skipped, reported on the caller's timeline,
+    // the family's untouched.
+    for (int i = 1; i <= 4; ++i) {
+        transcribe_stream_update_init(&upd);
+        CHECK(transcribe_stream_feed(&session, silence, 256, &upd) == TRANSCRIBE_OK);
+        CHECK(upd.input_received_ms == 16 * i);
+        CHECK(upd.audio_committed_ms == 16 * i);
+    }
+    CHECK(g_gate_fed_samples == 0);
+    CHECK(session.stream_audio_input_us == 0);
+    CHECK(session.stream_skips.size() == 1);
+
+    // The family's first 16 ms are the caller's 64..80 ms.
+    transcribe_stream_update_init(&upd);
+    CHECK(transcribe_stream_feed(&session, tone, 256, &upd) == TRANSCRIBE_OK);
+    CHECK(g_gate_fed_samples == 256);
+    CHECK(session.stream_audio_input_us == 16000);
+    CHECK(upd.input_received_ms == 80);
+    CHECK(upd.audio_committed_ms == 80);
+    CHECK(upd.buffered_ms == 0);
+
+    // More silence: the family gets it while the VAD still hears the tone,
+    // then the fast path skips again. Either way the caller's clock advances
+    // 16 ms per feed.
+    int64_t expect_ms     = 80;
+    bool    skipped_again = false;
+    for (int i = 0; i < 200 && !skipped_again; ++i) {
+        const int64_t fed_before = g_gate_fed_samples;
+        transcribe_stream_update_init(&upd);
+        CHECK(transcribe_stream_feed(&session, silence, 256, &upd) == TRANSCRIBE_OK);
+        expect_ms += 16;
+        CHECK(upd.input_received_ms == expect_ms);
+        skipped_again = g_gate_fed_samples == fed_before;
+    }
+    CHECK(skipped_again);
+    CHECK(session.stream_skips.size() == 2);
+
+    // Audio again: both gaps count, for the cursors and for any family time.
+    transcribe_stream_update_init(&upd);
+    CHECK(transcribe_stream_feed(&session, tone, 256, &upd) == TRANSCRIBE_OK);
+    expect_ms += 16;
+    CHECK(upd.input_received_ms == expect_ms);
+    CHECK(upd.audio_committed_ms == expect_ms);
+    CHECK(session.stream_real_ms(session.stream_audio_input_us / 1000) == expect_ms);
+    CHECK(session.stream_real_ms(0) == 64);  // after the leading gap
+    CHECK(session.stream_real_ms(8) == 72);  // inside the first fed frame
+    CHECK(transcribe_stream_finalize(&session, nullptr) == TRANSCRIBE_OK);
+
+    // A new stream starts with no gaps.
+    transcribe_stream_reset(&session);
+    CHECK(transcribe_stream_begin(&session, nullptr, &sp) == TRANSCRIBE_OK);
+    CHECK(session.stream_skips.empty());
+    CHECK(session.stream_real_ms(10) == 10);
+    CHECK(transcribe_stream_finalize(&session, nullptr) == TRANSCRIBE_OK);
+}
+
+// The stream VAD scores contiguous audio whatever the feed size: a feed that
+// ends mid-frame carries its tail into the next one. Regression: the tail was
+// dropped, so 160-sample feeds were never scored and 480-sample feeds were
+// scored on spliced audio. Every feed size must reach the same detector state
+// as 256-sample feeds wherever the fed total is a whole number of frames.
+void test_stream_vad_carries_partial_frames_across_feeds() {
+    transcribe_model model;
+    model.arch                    = &gate_opt_out_arch();
+    model.caps.supports_streaming = true;
+    model.caps.max_timestamp_kind = TRANSCRIBE_TIMESTAMPS_NONE;
+
+    // 1.2 s of deterministic audio: noise bursts over a gliding tone.
+    constexpr int      k_total = 19200;  // lcm(160, 256, 480) * 5
+    std::vector<float> audio(k_total);
+    uint32_t           rng = 12345u;
+    for (int i = 0; i < k_total; ++i) {
+        rng                           = rng * 1664525u + 1013904223u;
+        const double noise            = (static_cast<double>(rng >> 8) / 16777216.0 - 0.5) * 0.2;
+        const double t                = i / 16000.0;
+        const double tone             = 0.3 * std::sin(2.0 * 3.14159265358979 * (180.0 + 400.0 * t) * t);
+        const double env              = (i / 2400) % 2 == 0 ? 1.0 : 0.15;
+        audio[static_cast<size_t>(i)] = static_cast<float>(env * (tone + noise));
+    }
+
+    // Detector state (score, speech clock) after each whole multiple of
+    // `checkpoint` samples, feeding `chunk` samples at a time.
+    auto run = [&](int chunk, int checkpoint) {
+        transcribe_session session;
+        session.model = &model;
+        transcribe_stream_params sp;
+        transcribe_stream_params_init(&sp);
+        CHECK(transcribe_stream_begin(&session, nullptr, &sp) == TRANSCRIBE_OK);
+        std::vector<std::pair<float, uint64_t>> states;
+        for (int off = 0; off < k_total; off += chunk) {
+            transcribe_stream_update upd;
+            transcribe_stream_update_init(&upd);
+            CHECK(transcribe_stream_feed(&session, audio.data() + off, chunk, &upd) == TRANSCRIBE_OK);
+            if ((off + chunk) % checkpoint == 0) {
+                states.emplace_back(upd.vad_last_score, upd.vad_speech_ms);
+            }
+        }
+        CHECK(transcribe_stream_finalize(&session, nullptr) == TRANSCRIBE_OK);
+        return states;
+    };
+
+    for (const int chunk : { 160, 480 }) {
+        const int  checkpoint = chunk == 160 ? 1280 : 3840;  // lcm(chunk, 256)
+        const auto reference  = run(256, checkpoint);
+        const auto states     = run(chunk, checkpoint);
+        CHECK(states.size() == reference.size());
+        bool any_score = false;
+        for (size_t i = 0; i < states.size() && i < reference.size(); ++i) {
+            CHECK(states[i].first == reference[i].first);
+            CHECK(states[i].second == reference[i].second);
+            any_score = any_score || reference[i].first > 0.0f;
+        }
+        CHECK(any_score);  // the detector really ran
+    }
+}
+
 void test_stream_text_on_finalize_policy() {
     transcribe_model model;
     init_streaming_model(model);
@@ -1169,6 +1345,49 @@ void test_stream_text_stable_prefix_floors_utf8_boundary() {
     CHECK(text.committed_text_bytes == 3);
     CHECK(std::strcmp(text.tentative_text, "\303\252") == 0);
     CHECK(text.raw_tentative_start_bytes == 3);
+}
+
+// A tick whose decoded text stops between the bytes of one character (a
+// byte-level tokenizer emitting U+00E9 as two single-byte tokens) publishes
+// neither half: committed and tentative text end before it, and it goes out
+// whole with the tick that completes it.
+void test_stream_text_holds_back_incomplete_utf8_tail() {
+    transcribe_model model;
+    init_streaming_model(model);
+    transcribe_session session;
+    session.model = &model;
+
+    static const char cafe_half[] = "caf\303";      // lead byte of U+00E9 only
+    static const char cafe[]      = "caf\303\251";  // cafe + U+00E9
+    g_feed_texts[0]               = cafe_half;
+    g_feed_texts[1]               = cafe;
+    g_n_feed_texts                = 2;
+    g_finalize_text               = cafe;
+    g_feed_audio_committed_us     = 0;
+
+    transcribe_stream_params sp;
+    transcribe_stream_params_init(&sp);
+    sp.commit_policy             = TRANSCRIBE_STREAM_COMMIT_STABLE_PREFIX;
+    sp.stable_prefix_agreement_n = 1;  // commit everything decoded so far
+    CHECK(transcribe_stream_begin(&session, nullptr, &sp) == TRANSCRIBE_OK);
+
+    float                    pcm = 0.0f;
+    transcribe_stream_update upd;
+    transcribe_stream_update_init(&upd);
+    CHECK(transcribe_stream_feed(&session, &pcm, 1, &upd) == TRANSCRIBE_OK);
+    transcribe_stream_text text;
+    transcribe_stream_text_init(&text);
+    CHECK(transcribe_stream_get_text(&session, &text) == TRANSCRIBE_OK);
+    CHECK(std::strcmp(text.committed_text, "caf") == 0);
+    CHECK(std::strcmp(text.tentative_text, "") == 0);
+
+    transcribe_stream_update_init(&upd);
+    CHECK(transcribe_stream_feed(&session, &pcm, 1, &upd) == TRANSCRIBE_OK);
+    transcribe_stream_text_init(&text);
+    CHECK(transcribe_stream_get_text(&session, &text) == TRANSCRIBE_OK);
+    CHECK(std::strcmp(text.committed_text, cafe) == 0);
+    CHECK(std::strcmp(text.tentative_text, "") == 0);
+    CHECK(transcribe_stream_finalize(&session, nullptr) == TRANSCRIBE_OK);
 }
 
 void test_stream_text_stable_prefix_respects_agreement_n() {
@@ -1814,6 +2033,7 @@ int main() {
     test_stream_text_clamps_raw_tentative_offset_after_shrink();
     test_stream_committed_row_hints_can_exceed_current_rows();
     test_stream_text_stable_prefix_floors_utf8_boundary();
+    test_stream_text_holds_back_incomplete_utf8_tail();
     test_stream_text_stable_prefix_respects_agreement_n();
     test_stream_text_stable_prefix_intentionally_commits_partial_words();
     test_stream_update_old_prefix_tail_untouched();
@@ -1827,5 +2047,7 @@ int main() {
     test_two_sessions_independent_streams();
     test_activity_gate_only_skips_silence_with_nothing_buffered();
     test_activity_gate_family_opt_out_receives_every_slice();
+    test_stream_vad_carries_partial_frames_across_feeds();
+    test_activity_gate_keeps_caller_timeline();
     return g_failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

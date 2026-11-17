@@ -151,6 +151,45 @@ void test_reset_and_threshold(const std::vector<float> & speech) {
     transcribe_vad_gate_free(gate);
 }
 
+// An explicit exit threshold survives threshold changes: lowering the
+// threshold clamps the exit under it, raising it again restores the caller's
+// exit. Regression: the clamp ratcheted, so after 0.3 -> 0.6 the gate kept
+// exiting at 0.3 instead of the requested 0.4.
+void test_explicit_exit_survives_threshold_changes(const std::vector<float> & speech) {
+    std::vector<float> pcm(16000, 0.0f);
+    pcm.insert(pcm.end(), speech.begin(), speech.end());
+    pcm.insert(pcm.end(), 16000, 0.0f);
+
+    const auto run = [&](float threshold, float exit, const std::vector<float> & retune) {
+        transcribe_vad_gate_params p;
+        transcribe_vad_gate_params_init(&p);
+        p.threshold                = threshold;
+        p.exit_threshold           = exit;
+        p.hangover_ms              = 0;  // expose the exit edge directly
+        transcribe_vad_gate * gate = nullptr;
+        CHECK(transcribe_vad_gate_init(&p, &gate) == TRANSCRIBE_OK);
+        for (const float t : retune) {
+            CHECK(transcribe_vad_gate_set_threshold(gate, t) == TRANSCRIBE_OK);
+        }
+        transcribe_vad_gate_update u;
+        transcribe_vad_gate_update_init(&u);
+        CHECK(transcribe_vad_gate_feed(gate, pcm.data(), static_cast<int64_t>(pcm.size()), &u) == TRANSCRIBE_OK);
+        Run r;
+        r.audio.assign(u.audio, u.audio + u.n_audio);
+        r.speech_ms = u.speech_ms;
+        transcribe_vad_gate_free(gate);
+        return r;
+    };
+
+    const Run direct  = run(0.6f, 0.4f, {});
+    const Run retuned = run(0.5f, 0.4f, { 0.3f, 0.6f });
+    CHECK(retuned.audio == direct.audio);
+    CHECK(retuned.speech_ms == direct.speech_ms);
+    // The clip does exercise the exit edge: exiting at 0.3 keeps more audio.
+    const Run low_exit = run(0.6f, 0.3f, {});
+    CHECK(low_exit.audio != direct.audio || low_exit.speech_ms != direct.speech_ms);
+}
+
 void test_validation() {
     transcribe_vad_gate *      gate = nullptr;
     transcribe_vad_gate_params p;
@@ -199,6 +238,7 @@ int main() {
     test_speech(speech);
     test_finish_releases_only_real_samples(speech);
     test_reset_and_threshold(speech);
+    test_explicit_exit_survives_threshold_changes(speech);
     test_validation();
     test_score_frames(speech);
     if (g_failures == 0) {

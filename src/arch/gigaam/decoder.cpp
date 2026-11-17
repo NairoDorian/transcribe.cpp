@@ -71,25 +71,72 @@ inline float sigmoidf(float x) {
     return 1.0f / (1.0f + std::exp(-x));
 }
 
+#if TRANSCRIBE_HAS_BLAS
 // y = W @ x + b, where W is [out, in] row-major (numpy shape), x is
 // [in], b is [out]. b may be nullptr to skip the add.
 void matvec_add(const float * W, const float * b, const float * x, int out, int in_dim, float * y) {
-#if TRANSCRIBE_HAS_BLAS
     if (b != nullptr) {
         std::memcpy(y, b, static_cast<size_t>(out) * sizeof(float));
     } else {
         std::fill(y, y + out, 0.0f);
     }
     cblas_sgemv(CblasRowMajor, CblasNoTrans, out, in_dim, 1.0f, W, in_dim, x, 1, 1.0f, y, 1);
+}
 #else
-    for (int i = 0; i < out; ++i) {
-        float         acc = (b != nullptr) ? b[i] : 0.0f;
-        const float * row = W + static_cast<size_t>(i) * in_dim;
-        for (int j = 0; j < in_dim; ++j) {
-            acc += row[j] * x[j];
-        }
-        y[i] = acc;
+// y = W @ x + b with W stored transposed: Wt is [in, out] row-major, x is
+// [in], b is [out] or nullptr. Each y[i] still adds b[i] (or 0), then
+// W[i][0]*x[0], W[i][1]*x[1], ... in that order, one multiply and one add
+// per term, exactly like a row-by-row dot product, so the result is the
+// same bit for bit. The inner loop runs across outputs instead of along a
+// dot product, so compilers vectorize it without reordering any sum.
+void matvec_t_add(const float * Wt, const float * b, const float * x, int out, int in_dim, float * y_out) {
+    float * __restrict y = y_out;
+    if (b != nullptr) {
+        std::memcpy(y, b, static_cast<size_t>(out) * sizeof(float));
+    } else {
+        std::fill(y, y + out, 0.0f);
     }
+    for (int j = 0; j < in_dim; ++j) {
+        const float xj               = x[j];
+        const float * __restrict col = Wt + static_cast<size_t>(j) * out;
+        for (int i = 0; i < out; ++i) {
+            y[i] += col[i] * xj;
+        }
+    }
+}
+
+// Row-major [rows, cols] to [cols, rows]. Empty when the size is not
+// rows * cols.
+std::vector<float> transposed(const std::vector<float> & m, int rows, int cols) {
+    std::vector<float> t;
+    if (rows <= 0 || cols <= 0 || m.size() != static_cast<size_t>(rows) * static_cast<size_t>(cols)) {
+        return t;
+    }
+    t.resize(m.size());
+    for (int r = 0; r < rows; ++r) {
+        for (int c = 0; c < cols; ++c) {
+            t[static_cast<size_t>(c) * rows + r] = m[static_cast<size_t>(r) * cols + c];
+        }
+    }
+    return t;
+}
+#endif
+
+// y = W @ x + b for a matrix kept for the active path: BLAS reads the
+// row-major copy, the portable loop the transposed one.
+inline void linear(const std::vector<float> & W,
+                   const std::vector<float> & Wt,
+                   const float *              b,
+                   const float *              x,
+                   int                        out,
+                   int                        in_dim,
+                   float *                    y) {
+#if TRANSCRIBE_HAS_BLAS
+    (void) Wt;
+    matvec_add(W.data(), b, x, out, in_dim, y);
+#else
+    (void) W;
+    matvec_t_add(Wt.data(), b, x, out, in_dim, y);
 #endif
 }
 
@@ -104,6 +151,10 @@ transcribe_status build_host_decoder_weights(const GigaamWeights & w,
     if (hp.head_kind == HeadKind::CTC) {
         readback_f32(w.ctc_head.weight, out.ctc_w);
         readback_f32(w.ctc_head.bias, out.ctc_b);
+#if !TRANSCRIBE_HAS_BLAS
+        // decode_ctc_greedy validates ctc_w's size, which this copy shares.
+        out.ctc_w_t = transposed(out.ctc_w, hp.head_n_classes, hp.enc_d_model);
+#endif
         return TRANSCRIBE_OK;
     }
     // RNN-T.
@@ -122,6 +173,25 @@ transcribe_status build_host_decoder_weights(const GigaamWeights & w,
     readback_f32(w.joint.pred_b, out.joint_pred_b);
     readback_f32(w.joint.out_w, out.joint_out_w);
     readback_f32(w.joint.out_b, out.joint_out_b);
+#if !TRANSCRIBE_HAS_BLAS
+    const int H       = hp.pred_hidden;
+    const int joint_h = hp.joint_hidden;
+    out.lstm_Wx_t.resize(hp.pred_n_layers);
+    out.lstm_Wh_t.resize(hp.pred_n_layers);
+    bool shapes_ok = true;
+    for (int i = 0; i < hp.pred_n_layers; ++i) {
+        out.lstm_Wx_t[i] = transposed(out.lstm_Wx[i], 4 * H, H);
+        out.lstm_Wh_t[i] = transposed(out.lstm_Wh[i], 4 * H, H);
+        shapes_ok        = shapes_ok && !out.lstm_Wx_t[i].empty() && !out.lstm_Wh_t[i].empty();
+    }
+    out.joint_enc_w_t  = transposed(out.joint_enc_w, joint_h, hp.enc_d_model);
+    out.joint_pred_w_t = transposed(out.joint_pred_w, joint_h, H);
+    out.joint_out_w_t  = transposed(out.joint_out_w, hp.joint_n_classes, joint_h);
+    if (!shapes_ok || out.joint_enc_w_t.empty() || out.joint_pred_w_t.empty() || out.joint_out_w_t.empty()) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "gigaam decoder: predictor/joint tensor sizes do not match the hparams");
+        return TRANSCRIBE_ERR_GGUF;
+    }
+#endif
     return TRANSCRIBE_OK;
 }
 
@@ -130,34 +200,39 @@ transcribe_status build_host_decoder_weights(const GigaamWeights & w,
 //   x:      [pred_hidden] embedding (or zero on the first step)
 //   h_prev: [pred_hidden]
 //   c_prev: [pred_hidden]
-//   Wx:     [4*pred_hidden, pred_hidden] flat row-major
-//   Wh:     [4*pred_hidden, pred_hidden]
-//   b:      [4*pred_hidden] (already collapsed bias_ih + bias_hh)
+//   host:   layer 0's Wx, Wh ([4*pred_hidden, pred_hidden] row-major, or
+//           their transposes without BLAS) and b ([4*pred_hidden], already
+//           collapsed bias_ih + bias_hh)
 // Gate order is PyTorch (i, f, g, o), each block size `pred_hidden`.
-static void lstm_step(const float * x,
-                      const float * h_prev,
-                      const float * c_prev,
-                      const float * Wx,
-                      const float * Wh,
-                      const float * b,
-                      int           H,
-                      float *       h_out,
-                      float *       c_out,
-                      float *       scratch_gates) {
+static void lstm_step(const float *              x,
+                      const float *              h_prev,
+                      const float *              c_prev,
+                      const HostDecoderWeights & host,
+                      int                        H,
+                      float *                    h_out,
+                      float *                    c_out,
+                      float *                    scratch_gates) {
     // scratch_gates: [4*H]. Compute Wx @ x + Wh @ h_prev + b in place.
+    const float * b = host.lstm_b[0].data();
 #if TRANSCRIBE_HAS_BLAS
     std::memcpy(scratch_gates, b, static_cast<size_t>(4 * H) * sizeof(float));
-    cblas_sgemv(CblasRowMajor, CblasNoTrans, 4 * H, H, 1.0f, Wx, H, x, 1, 1.0f, scratch_gates, 1);
-    cblas_sgemv(CblasRowMajor, CblasNoTrans, 4 * H, H, 1.0f, Wh, H, h_prev, 1, 1.0f, scratch_gates, 1);
+    cblas_sgemv(CblasRowMajor, CblasNoTrans, 4 * H, H, 1.0f, host.lstm_Wx[0].data(), H, x, 1, 1.0f, scratch_gates, 1);
+    cblas_sgemv(CblasRowMajor, CblasNoTrans, 4 * H, H, 1.0f, host.lstm_Wh[0].data(), H, h_prev, 1, 1.0f, scratch_gates,
+                1);
 #else
-    for (int i = 0; i < 4 * H; ++i) {
-        float         acc    = b[i];
-        const float * wx_row = Wx + static_cast<size_t>(i) * H;
-        const float * wh_row = Wh + static_cast<size_t>(i) * H;
-        for (int j = 0; j < H; ++j) {
-            acc += wx_row[j] * x[j] + wh_row[j] * h_prev[j];
+    // Per gate: b, then + (Wx[i][j]*x[j] + Wh[i][j]*h[j]) for j = 0, 1, ...;
+    // the same terms in the same order as a row-by-row loop (see
+    // matvec_t_add), here walking the transposed weights.
+    float * __restrict gates = scratch_gates;
+    std::memcpy(gates, b, static_cast<size_t>(4 * H) * sizeof(float));
+    for (int j = 0; j < H; ++j) {
+        const float xj              = x[j];
+        const float hj              = h_prev[j];
+        const float * __restrict wx = host.lstm_Wx_t[0].data() + static_cast<size_t>(j) * 4 * H;
+        const float * __restrict wh = host.lstm_Wh_t[0].data() + static_cast<size_t>(j) * 4 * H;
+        for (int i = 0; i < 4 * H; ++i) {
+            gates[i] += wx[i] * xj + wh[i] * hj;
         }
-        scratch_gates[i] = acc;
     }
 #endif
 
@@ -196,15 +271,15 @@ static int joint_argmax(const HostDecoderWeights & h,
     scratch_logits.assign(n_classes, 0.0f);
 
     // pred_proj into scratch_join, then fuse `+ enc_proj` and ReLU.
-    matvec_add(h.joint_pred_w.data(), h.joint_pred_b.data(), g_t, joint_h, pred_d, scratch_join.data());
+    linear(h.joint_pred_w, h.joint_pred_w_t, h.joint_pred_b.data(), g_t, joint_h, pred_d, scratch_join.data());
     for (int i = 0; i < joint_h; ++i) {
         float v         = scratch_join[i] + enc_proj[i];
         scratch_join[i] = v > 0.0f ? v : 0.0f;
     }
     // logits = out_w @ relu + out_b. The reference applies log_softmax
     // but argmax is invariant under it, so we skip.
-    matvec_add(h.joint_out_w.data(), h.joint_out_b.data(), scratch_join.data(), n_classes, joint_h,
-               scratch_logits.data());
+    linear(h.joint_out_w, h.joint_out_w_t, h.joint_out_b.data(), scratch_join.data(), n_classes, joint_h,
+           scratch_logits.data());
 
     int   best_idx = 0;
     float best_val = scratch_logits[0];
@@ -237,7 +312,7 @@ static void joint_argmax_span(const HostDecoderWeights & h,
     logits.resize(static_cast<size_t>(n_frames) * n_classes);
     out_tokens.resize(n_frames);
 
-    matvec_add(h.joint_pred_w.data(), h.joint_pred_b.data(), g_t, joint_h, pred_d, pred_proj.data());
+    linear(h.joint_pred_w, h.joint_pred_w_t, h.joint_pred_b.data(), g_t, joint_h, pred_d, pred_proj.data());
     for (int t = 0; t < n_frames; ++t) {
         const float * enc_row  = enc_proj + static_cast<size_t>(t) * joint_h;
         float *       join_row = join.data() + static_cast<size_t>(t) * joint_h;
@@ -252,8 +327,8 @@ static void joint_argmax_span(const HostDecoderWeights & h,
                 h.joint_out_w.data(), joint_h, 0.0f, logits.data(), n_classes);
 #else
     for (int t = 0; t < n_frames; ++t) {
-        matvec_add(h.joint_out_w.data(), nullptr, join.data() + static_cast<size_t>(t) * joint_h, n_classes, joint_h,
-                   logits.data() + static_cast<size_t>(t) * n_classes);
+        matvec_t_add(h.joint_out_w_t.data(), nullptr, join.data() + static_cast<size_t>(t) * joint_h, n_classes,
+                     joint_h, logits.data() + static_cast<size_t>(t) * n_classes);
     }
 #endif
 
@@ -308,7 +383,7 @@ transcribe_status decode_rnnt_greedy(const HostDecoderWeights & host,
     for (int t = 0; t < T_enc; ++t) {
         const float * frame = encoded + static_cast<size_t>(t) * enc_d;
         float *       proj  = enc_proj_all.data() + static_cast<size_t>(t) * joint_h;
-        matvec_add(host.joint_enc_w.data(), nullptr, frame, joint_h, enc_d, proj);
+        matvec_t_add(host.joint_enc_w_t.data(), nullptr, frame, joint_h, enc_d, proj);
     }
 #endif
     for (int t = 0; t < T_enc; ++t) {
@@ -341,9 +416,15 @@ transcribe_status decode_rnnt_greedy(const HostDecoderWeights & host,
     bool predictor_dirty = true;
 
     // Speculate over a short span. Consume all leading blank frames, but stop
-    // at the first token because it changes the predictor state.
-    constexpr int lookahead = 32;
-    int           t         = 0;
+    // at the first token because it changes the predictor state. The span
+    // starts short after a token (a character model emits densely, so the
+    // rest of a long span is scored for nothing) and doubles across blank
+    // runs. A frame's scores do not depend on the span, so neither does the
+    // result.
+    constexpr int k_span_min = 4;
+    constexpr int k_span_max = 32;
+    int           lookahead  = k_span_min;
+    int           t          = 0;
     while (t < T_enc) {
         if (predictor_dirty) {
             if (fresh) {
@@ -352,8 +433,7 @@ transcribe_status decode_rnnt_greedy(const HostDecoderWeights & host,
                 const int prev = out_tokens.back();
                 std::memcpy(pred_in.data(), host.pred_embed.data() + static_cast<size_t>(prev) * H, H * sizeof(float));
             }
-            lstm_step(pred_in.data(), h_cur.data(), c_cur.data(), host.lstm_Wx[0].data(), host.lstm_Wh[0].data(),
-                      host.lstm_b[0].data(), H, h_next.data(), c_next.data(), gates.data());
+            lstm_step(pred_in.data(), h_cur.data(), c_cur.data(), host, H, h_next.data(), c_next.data(), gates.data());
             predictor_dirty = false;
         }
 
@@ -367,8 +447,10 @@ transcribe_status decode_rnnt_greedy(const HostDecoderWeights & host,
         }
         if (offset == span) {
             t += span;
+            lookahead = std::min(2 * lookahead, k_span_max);
             continue;
         }
+        lookahead = k_span_min;
 
         // Commit the first token and candidate predictor state at its frame.
         t += offset;
@@ -386,8 +468,7 @@ transcribe_status decode_rnnt_greedy(const HostDecoderWeights & host,
         while (max_symbols_per_step <= 0 || sym_count < max_symbols_per_step) {
             const int prev = out_tokens.back();
             std::memcpy(pred_in.data(), host.pred_embed.data() + static_cast<size_t>(prev) * H, H * sizeof(float));
-            lstm_step(pred_in.data(), h_cur.data(), c_cur.data(), host.lstm_Wx[0].data(), host.lstm_Wh[0].data(),
-                      host.lstm_b[0].data(), H, h_next.data(), c_next.data(), gates.data());
+            lstm_step(pred_in.data(), h_cur.data(), c_cur.data(), host, H, h_next.data(), c_next.data(), gates.data());
             predictor_dirty     = false;
             const float * enc_p = enc_proj_all.data() + static_cast<size_t>(t) * joint_h;
             tok                 = joint_argmax(host, enc_p, h_next.data(), H, joint_h, n_class, jh, logits);
@@ -414,7 +495,7 @@ transcribe_status decode_rnnt_greedy(const HostDecoderWeights & host,
 //   logits[t, :] = ctc_w @ encoded[t, :] + ctc_b
 // Layout of host.ctc_w after readback: ggml ne=[1, d_model, n_classes]
 // is byte-equivalent to a row-major [n_classes, d_model] matrix (the
-// k=1 axis collapses), which is what matvec_add expects.
+// k=1 axis collapses), which is what linear() expects.
 transcribe_status decode_ctc_greedy(const HostDecoderWeights & host,
                                     const GigaamHParams &      hp,
                                     const float *              encoded,
@@ -445,7 +526,7 @@ transcribe_status decode_ctc_greedy(const HostDecoderWeights & host,
     for (int t = 0; t < T_enc; ++t) {
         const float * frame = encoded + static_cast<size_t>(t) * d_model;
         float *       row   = logits.data() + static_cast<size_t>(t) * n_classes;
-        matvec_add(host.ctc_w.data(), host.ctc_b.data(), frame, n_classes, d_model, row);
+        linear(host.ctc_w, host.ctc_w_t, host.ctc_b.data(), frame, n_classes, d_model, row);
     }
 
     // Raw logits before log_softmax, [T_enc, n_classes] row-major.

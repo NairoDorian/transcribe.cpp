@@ -21,6 +21,16 @@
 #include <thread>
 #include <vector>
 
+#ifdef _WIN32
+#    ifndef NOMINMAX
+#        define NOMINMAX
+#    endif
+#    ifndef WIN32_LEAN_AND_MEAN
+#        define WIN32_LEAN_AND_MEAN
+#    endif
+#    include <windows.h>
+#endif
+
 using transcribe_cli::cli_args;
 
 namespace {
@@ -860,6 +870,37 @@ static int multi_main(const cli_args & args) {
     free_all();
     return EXIT_SUCCESS;
 }
+
+#ifdef _WIN32
+namespace {
+// The UTF-8 manifest (cmake/transcribe_utf8.manifest) makes the process's
+// narrow strings UTF-8 - argv, file paths - but an interactive console still
+// renders our UTF-8 output with its own code page (437, 850, ...), so a French
+// or Chinese transcript printed as mojibake. Switch the console to UTF-8 for
+// the run and restore the caller's code page on exit (return from main or
+// std::exit). Output redirected to a file or pipe is unaffected either way.
+struct ConsoleUtf8Output {
+    UINT previous = 0;
+
+    ConsoleUtf8Output() : previous(GetConsoleOutputCP()) {
+        if (previous != 0 && previous != CP_UTF8) {
+            SetConsoleOutputCP(CP_UTF8);
+        }
+    }
+
+    ~ConsoleUtf8Output() {
+        if (previous != 0 && previous != CP_UTF8) {
+            SetConsoleOutputCP(previous);
+        }
+    }
+
+    ConsoleUtf8Output(const ConsoleUtf8Output &)             = delete;
+    ConsoleUtf8Output & operator=(const ConsoleUtf8Output &) = delete;
+};
+
+const ConsoleUtf8Output g_console_utf8_output;
+}  // namespace
+#endif
 
 int main(int argc, char ** argv) {
     cli_args args;

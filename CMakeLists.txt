@@ -373,7 +373,9 @@ endfunction()
 # 1903 and later), matching the UTF-8 path contract across the transcribe API.
 function(transcribe_use_utf8_codepage tgt)
     if(MSVC)
-        target_sources(${tgt} PRIVATE "${CMAKE_SOURCE_DIR}/cmake/transcribe_utf8.manifest")
+        # This file's directory, not CMAKE_SOURCE_DIR: the latter is the parent
+        # project's root when transcribe.cpp is built as a subproject.
+        target_sources(${tgt} PRIVATE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/cmake/transcribe_utf8.manifest")
     endif()
 endfunction()
 

@@ -505,6 +505,36 @@ static size_t utf8_floor_boundary(const std::string & s, size_t pos) {
     return pos;
 }
 
+// Length of `s` without an incomplete UTF-8 character at its end: a lead byte
+// whose continuation bytes have not all arrived. Byte-level tokenizers emit a
+// character with no whole-character token as several single-byte tokens, and
+// a streaming tick can stop between them; publishing that tail would hand the
+// host half a character (the rest arrives next tick). Anything else, malformed
+// bytes included, is left as is.
+static size_t utf8_complete_end(const std::string & s) {
+    size_t i    = s.size();
+    size_t cont = 0;
+    while (i > 0 && cont < 4 && (static_cast<unsigned char>(s[i - 1]) & 0xC0u) == 0x80u) {
+        --i;
+        ++cont;
+    }
+    if (i == 0) {
+        return s.size();
+    }
+    const auto lead = static_cast<unsigned char>(s[i - 1]);
+    size_t     need = 0;
+    if ((lead & 0xE0u) == 0xC0u) {
+        need = 1;
+    } else if ((lead & 0xF0u) == 0xE0u) {
+        need = 2;
+    } else if ((lead & 0xF8u) == 0xF0u) {
+        need = 3;
+    } else {
+        return s.size();  // ASCII (or a stray continuation byte): nothing pending
+    }
+    return cont < need ? i - 1 : s.size();
+}
+
 static size_t common_prefix_bytes(const std::string & a, const std::string & b) {
     const size_t n = std::min(a.size(), b.size());
     size_t       i = 0;
@@ -686,13 +716,17 @@ static StreamTextDelta apply_stream_text_policy(transcribe_session * session, bo
                 candidate = selected_stable_prefix_candidate_raw_bytes(session);
                 break;
         }
-        delta.committed_changed = append_committed_raw_prefix(session, candidate);
+        // Mid-stream, neither the commit nor the tentative text ends inside a
+        // character whose bytes are still being decoded; it goes out with the
+        // tick that completes it. Finalize publishes the text as decoded.
+        const size_t complete_end = utf8_complete_end(session->full_text);
+        delta.committed_changed   = append_committed_raw_prefix(session, std::min(candidate, complete_end));
 
         const size_t boundary = utf8_floor_boundary(
             session->full_text, std::min<size_t>(static_cast<size_t>(session->stream_raw_tentative_start_bytes),
                                                  session->full_text.size()));
-        session->stream_tentative_text.assign(session->full_text.data() + boundary,
-                                              session->full_text.size() - boundary);
+        const size_t end = std::max(boundary, complete_end);
+        session->stream_tentative_text.assign(session->full_text.data() + boundary, end - boundary);
     } else {
         session->stream_tentative_text.clear();
     }
@@ -1147,6 +1181,8 @@ static transcribe_status transcribe_stream_begin_impl(struct transcribe_session 
     session->stream_vad      = transcribe::VoiceActivityDetector(vad_threshold, vad_prefill_ms, vad_hangover_ms);
     // Per stream: the family's begin hook below may opt out.
     session->stream_activity_gate_allowed = true;
+    // A new stream starts with an empty VAD frame.
+    session->stream_vad_partial_n         = 0;
 
     // Hand the family hook a params view whose pointers the LIBRARY owns.
     // Families may capture `*run_params` for the stream's lifetime
@@ -1226,6 +1262,18 @@ static transcribe_status prepare_stream_update(struct transcribe_stream_update *
     return TRANSCRIBE_OK;
 }
 
+// Families report the received / committed cursors on their own timeline
+// (the audio they were fed); put back the silence the fast path skipped so the
+// caller sees its own. Both cursors lie at or after every gap (gaps only open
+// while committed == input), so buffered_ms, their difference, is unchanged.
+static void map_stream_update_times(const transcribe_session * session, struct transcribe_stream_update * update) {
+    if (update == nullptr || session->stream_skips.empty()) {
+        return;
+    }
+    update->input_received_ms  = session->stream_real_ms(update->input_received_ms);
+    update->audio_committed_ms = session->stream_real_ms(update->audio_committed_ms);
+}
+
 static transcribe_status transcribe_stream_feed_impl(struct transcribe_session *       session,
                                                      const float *                     pcm,
                                                      int                               n_samples,
@@ -1256,14 +1304,34 @@ static transcribe_status transcribe_stream_feed_impl(struct transcribe_session *
         return TRANSCRIBE_ERR_NOT_IMPLEMENTED;
     }
 
-    // Step 1: Run native Earshot minGRU VAD on 256-sample chunks
+    // Step 1: Run native Earshot minGRU VAD on 256-sample frames. A feed that
+    // ends mid-frame keeps its tail for the next feed: the detector's window
+    // and recurrent state assume contiguous audio, so dropping the remainder
+    // (10 / 30 / 100 ms feeds) spliced the signal it scored, and a feed shorter
+    // than a frame was never scored at all.
     if (session->enable_vad) {
-        int processed = 0;
-        while (processed + 256 <= n_samples) {
-            float frame_score = 0.0f;
+        constexpr size_t k_vad_frame = transcribe::VoiceActivityDetector::FRAME_SAMPLES;
+        const size_t     n           = static_cast<size_t>(n_samples);
+        size_t           processed   = 0;
+        if (session->stream_vad_partial_n > 0) {
+            const size_t take = std::min(k_vad_frame - session->stream_vad_partial_n, n);
+            std::copy(pcm, pcm + take, session->stream_vad_partial.begin() + session->stream_vad_partial_n);
+            session->stream_vad_partial_n += take;
+            processed = take;
+            if (session->stream_vad_partial_n == k_vad_frame) {
+                std::ignore = session->stream_vad.process_frame(
+                    std::span<const float, k_vad_frame>(session->stream_vad_partial.data(), k_vad_frame));
+                session->stream_vad_partial_n = 0;
+            }
+        }
+        while (processed + k_vad_frame <= n) {
             std::ignore =
-                session->stream_vad.process_frame(std::span<const float, 256>(pcm + processed, 256), &frame_score);
-            processed += 256;
+                session->stream_vad.process_frame(std::span<const float, k_vad_frame>(pcm + processed, k_vad_frame));
+            processed += k_vad_frame;
+        }
+        if (processed < n) {
+            std::copy(pcm + processed, pcm + n, session->stream_vad_partial.begin() + session->stream_vad_partial_n);
+            session->stream_vad_partial_n += n - processed;
         }
     }
 
@@ -1304,16 +1372,29 @@ static transcribe_status transcribe_stream_feed_impl(struct transcribe_session *
     if (session->enable_vad && session->stream_activity_gate_allowed && n_samples >= 256 &&
         !transcribe::is_activity_gate_disabled() &&
         session->stream_audio_committed_us == session->stream_audio_input_us &&
-        session->stream_tentative_text.empty() && !session->stream_vad.is_speaking() &&
-        !transcribe::is_audio_active(pcm, static_cast<size_t>(n_samples))) {
+        session->stream_tentative_text.empty() &&
+        utf8_complete_end(session->full_text) == session->full_text.size() &&  // no character held back
+        !session->stream_vad.is_speaking() && !transcribe::is_audio_active(pcm, static_cast<size_t>(n_samples))) {
+        // The family's own timeline (input == committed) stays where it is:
+        // it never sees this slice. The gap is recorded instead and added back
+        // wherever a time is published (stream_real_ms), so token times and the
+        // received / committed cursors stay on the caller's timeline. Families
+        // count their timeline from the samples they were fed, so advancing
+        // their cursors here was overwritten on their next feed and the skipped
+        // silence went missing from every later timestamp.
         const int64_t slice_us = (static_cast<int64_t>(n_samples) * 1000000LL) / 16000LL;
-        session->stream_audio_input_us += slice_us;
-        session->stream_audio_committed_us += slice_us;
+        const int64_t at_us    = session->stream_audio_input_us;
+        if (!session->stream_skips.empty() && session->stream_skips.back().family_us == at_us) {
+            session->stream_skips.back().skipped_us += slice_us;  // consecutive skipped slices
+        } else {
+            session->stream_skips.push_back({ at_us, slice_us });
+        }
         if (update != nullptr) {
+            const int64_t real_ms      = (at_us + session->stream_skipped_before_us(at_us)) / 1000LL;
             update->result_changed     = false;
             update->revision           = session->stream_revision;
-            update->input_received_ms  = session->stream_audio_input_us / 1000LL;
-            update->audio_committed_ms = session->stream_audio_committed_us / 1000LL;
+            update->input_received_ms  = real_ms;
+            update->audio_committed_ms = real_ms;
             update->buffered_ms        = 0;
             update->is_final           = false;
             populate_vad_telemetry(update);
@@ -1333,6 +1414,7 @@ static transcribe_status transcribe_stream_feed_impl(struct transcribe_session *
         populate_vad_telemetry(update);
         return st;
     }
+    map_stream_update_times(session, update);
     const StreamTextDelta text_delta = apply_stream_text_policy(session, /*is_finalize=*/false);
     if (session->stream_commit_policy == TRANSCRIBE_STREAM_COMMIT_ON_FINALIZE) {
         session->n_committed_tokens   = 0;
@@ -1380,6 +1462,7 @@ static transcribe_status transcribe_stream_finalize_impl(struct transcribe_sessi
         session->stream_last_status = st;
         return st;
     }
+    map_stream_update_times(session, update);
     const StreamTextDelta text_delta = apply_stream_text_policy(session, /*is_finalize=*/true);
     publish_observable_delta(session, update, prev_revision, prev_full_text, prev_has_result, text_delta);
     session->stream_state = TRANSCRIBE_STREAM_FINISHED;

@@ -151,6 +151,25 @@ KaldiFbankFrontend::KaldiFbankFrontend(KaldiFbankParams params) :
     padded_n_fft_(next_pow2(params_.win_length)) {
     mel_fb_ = build_htk_mel_filterbank(params_.sample_rate, padded_n_fft_, params_.n_mels, kMelLowFreq, kMelHighFreq);
     window_ = build_hamming_window(params_.win_length);
+
+    // Trailing zeros are trimmed first so an all-zero band collapses to an
+    // empty span rather than [0, n_freq).
+    const int n_freq = padded_n_fft_ / 2 + 1;
+    fb_begin_.assign(static_cast<size_t>(params_.n_mels), 0);
+    fb_end_.assign(static_cast<size_t>(params_.n_mels), 0);
+    for (int m = 0; m < params_.n_mels; ++m) {
+        const float * row = mel_fb_.data() + static_cast<size_t>(m) * n_freq;
+        int           lo  = 0;
+        while (lo < n_freq && row[lo] == 0.0f) {
+            ++lo;
+        }
+        int hi = n_freq;
+        while (hi > lo && row[hi - 1] == 0.0f) {
+            --hi;
+        }
+        fb_begin_[static_cast<size_t>(m)] = lo;
+        fb_end_[static_cast<size_t>(m)]   = hi;
+    }
 }
 
 int KaldiFbankFrontend::compute(const float * pcm, size_t n_samples, std::vector<float> & out_features) const {
@@ -231,11 +250,22 @@ int KaldiFbankFrontend::compute(const float * pcm, size_t n_samples, std::vector
         // passes energy_floor=0.0; with that, kaldi falls back to its
         // hard-coded mel-energy floor of `FLT_EPSILON` (≈ 1.19e-7), NOT
         // the underflow-floor `FLT_MIN`. log of that floor is ~ -15.94.
+        //
+        // Each band sums only its nonzero span. The skipped terms are
+        // 0 * power with power >= 0, added to a sum that starts at +0, which
+        // never changes it: bit-identical to the dense sum. Non-finite power
+        // (NaN/inf in the input) would make 0 * power a NaN, so such a frame
+        // keeps the dense sum.
+        bool power_finite = true;
+        for (int b = 0; b < n_freq; ++b) {
+            power_finite = power_finite && std::isfinite(power[static_cast<size_t>(b)]);
+        }
         float * mel_row = mel.data() + static_cast<size_t>(t) * n_mels;
         for (int m = 0; m < n_mels; ++m) {
             const float * fb_row = mel_fb_.data() + static_cast<size_t>(m) * n_freq;
             float         acc    = 0.0f;
-            for (int b = 0; b < n_freq; ++b) {
+            const int     b_end  = power_finite ? fb_end_[static_cast<size_t>(m)] : n_freq;
+            for (int b = power_finite ? fb_begin_[static_cast<size_t>(m)] : 0; b < b_end; ++b) {
                 acc += fb_row[b] * power[static_cast<size_t>(b)];
             }
             constexpr float kMelEpsilon     = 1.1920928955078125e-07f;

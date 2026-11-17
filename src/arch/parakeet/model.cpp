@@ -96,6 +96,7 @@ ParakeetSession::~ParakeetSession() {
 void ParakeetSession::on_scratch_released() noexcept {
     encoder_out = nullptr;
     stream_graph.reset();
+    parakeet_device_decoder_trim(device_decoder.get());
 }
 
 ParakeetModel::~ParakeetModel() {
@@ -992,6 +993,33 @@ static transcribe_status resolve_language_block_mask(const ParakeetModel *      
     return TRANSCRIBE_OK;
 }
 
+// The session's GPU transducer decoder (decoder.h), created on first use when
+// the model's primary backend is CUDA, ROCm or Vulkan — where the CPU decoder
+// was most of a run — and the head has a predictor (TDT / RNN-T).
+// TRANSCRIBE_PARAKEET_DEVICE_DECODER=0 keeps every decode on the CPU; =1 also
+// allows the other GPU backends (Metal, SYCL, ...). Null = the CPU decoder.
+static ParakeetDeviceDecoder * session_device_decoder(ParakeetSession * pc, const ParakeetModel * pm) {
+    if (pc->device_decoder != nullptr || pc->device_decoder_tried) {
+        return pc->device_decoder.get();
+    }
+    pc->device_decoder_tried = true;
+    const char * env         = transcribe::env::str("TRANSCRIBE_PARAKEET_DEVICE_DECODER");
+    const bool   forced_off  = env != nullptr && env[0] == '0';
+    const bool   forced_on   = env != nullptr && env[0] == '1';
+    const auto   kind        = pm->plan.primary_kind;
+    const bool   default_gpu = kind == transcribe::BackendKind::Cuda || kind == transcribe::BackendKind::Rocm ||
+                               kind == transcribe::BackendKind::Vulkan;
+    const bool   other_gpu   = kind == transcribe::BackendKind::Metal || kind == transcribe::BackendKind::Sycl ||
+                               kind == transcribe::BackendKind::OtherGpu;
+    if (forced_off || pm->plan.primary == nullptr || pm->host_decoder.head_kind == HostHeadKind::CTC ||
+        !(default_gpu || (forced_on && other_gpu))) {
+        return nullptr;
+    }
+    pc->device_decoder.reset(
+        parakeet_device_decoder_new(pm->host_decoder, ggml_backend_get_device(pm->plan.primary), &pm->weights));
+    return pc->device_decoder.get();
+}
+
 static transcribe_status decode_and_populate(ParakeetSession *             pc,
                                              ParakeetModel *               pm,
                                              const transcribe_run_params * params,
@@ -1036,11 +1064,11 @@ static transcribe_status decode_and_populate(ParakeetSession *             pc,
         switch (pm->host_decoder.head_kind) {
             case HostHeadKind::TDT:
                 st = decode_tdt_greedy(pm->host_decoder, enc, T_enc, d_enc, pc->n_threads, pc->raw_tokens,
-                                       &language_block_mask);
+                                       &language_block_mask, session_device_decoder(pc, pm));
                 break;
             case HostHeadKind::RNNT:
                 st = decode_rnnt_greedy(pm->host_decoder, enc, T_enc, d_enc, pc->n_threads, pc->raw_tokens,
-                                        &language_block_mask);
+                                        &language_block_mask, session_device_decoder(pc, pm));
                 break;
             case HostHeadKind::CTC:
                 st = decode_ctc_greedy(pm->host_decoder, enc, T_enc, d_enc, pc->n_threads, pc->raw_tokens,
@@ -3052,7 +3080,8 @@ transcribe_status emit_streaming_chunk(ParakeetSession * pc,
     if (const transcribe_status st = decode_rnnt_greedy_streaming(
             pm->host_decoder, pc->enc_host.data(), T_q_new, d_enc, pc->stream_dec_state.lstm_state,
             pc->stream_dec_state.prev_token_id, static_cast<int>(pc->stream_dec_state.frame_offset), pc->n_threads,
-            pc->raw_tokens, pc->stream_dec_state.dec_graph.get(), &pc->stream_language_block_mask);
+            pc->raw_tokens, pc->stream_dec_state.dec_graph.get(), &pc->stream_language_block_mask,
+            session_device_decoder(pc, pm));
         st != TRANSCRIBE_OK) {
         return st;
     }
@@ -3127,6 +3156,12 @@ void rebuild_streaming_result_text(ParakeetSession * pc, const ParakeetModel * p
         te.t0_ms = static_cast<int64_t>(std::llround(frame_to_ms * static_cast<double>(tk.step_at_emit)));
         te.t1_ms =
             static_cast<int64_t>(std::llround(frame_to_ms * static_cast<double>(tk.step_at_emit + tk.duration_frames)));
+        // Frames count only the audio this stream was fed; put back the
+        // silence the dispatcher skipped before the token (one shift for both
+        // ends, so the duration is kept).
+        const int64_t skipped_ms = pc->stream_real_ms(te.t0_ms) - te.t0_ms;
+        te.t0_ms += skipped_ms;
+        te.t1_ms += skipped_ms;
         te.seg_index  = 0;
         te.word_index = -1;
         te.text       = tok.decode(&tk.id, 1);
@@ -3144,7 +3179,7 @@ void rebuild_streaming_result_text(ParakeetSession * pc, const ParakeetModel * p
         pc->raw_text = tok.decode(raw_ids.data(), static_cast<int>(raw_ids.size()));
     }
     if (pc->buf_active) {
-        const int64_t max_ms = us_to_ms(pc->stream_audio_input_us);
+        const int64_t max_ms = pc->stream_real_ms(us_to_ms(pc->stream_audio_input_us));
         for (auto & token : pc->tokens) {
             token.t1_ms = std::min(token.t1_ms, max_ms);
             token.t0_ms = std::min(token.t0_ms, token.t1_ms);
@@ -3472,7 +3507,8 @@ transcribe_status emit_buffered_chunk(ParakeetSession * pc,
     if (const transcribe_status st = decode_rnnt_greedy_streaming(
             pm->host_decoder, enc_chunk, T_to_decode, d_enc, pc->stream_dec_state.lstm_state,
             pc->stream_dec_state.prev_token_id, static_cast<int>(pc->stream_dec_state.frame_offset), pc->n_threads,
-            pc->raw_tokens, pc->stream_dec_state.dec_graph.get(), &pc->stream_language_block_mask);
+            pc->raw_tokens, pc->stream_dec_state.dec_graph.get(), &pc->stream_language_block_mask,
+            session_device_decoder(pc, pm));
         st != TRANSCRIBE_OK) {
         return st;
     }

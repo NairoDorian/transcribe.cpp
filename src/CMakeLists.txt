@@ -627,6 +627,16 @@ else()
     set_source_files_properties(third_party/miniz/miniz.c PROPERTIES COMPILE_OPTIONS "-w")
 endif()
 
+# The RNNoise port keeps nnnoiseless's arithmetic (Rust never fuses a * b + c)
+# and its SIMD widths agree bit for bit because nothing is fused. GCC and Clang
+# may contract a multiply-add into an FMA wherever the target has one (every
+# AArch64 CPU, x86 builds with -mfma / -march=native), which would change its
+# output by the rounding of the fused step; keep contraction off for this one
+# file. MSVC does not contract under its default /fp:precise.
+if(NOT MSVC)
+    set_source_files_properties(transcribe-rnnoise.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+endif()
+
 if(WIN32)
     # Windows toolchains hide M_PI and friends behind _USE_MATH_DEFINES
     # (used by the mel frontends and Whisper's bin loader). MSVC and MinGW

@@ -1710,7 +1710,7 @@ transcribe_status run_batch(transcribe_session *          session,
     const ggml_fp16_t f16_ninf = ggml_fp32_to_fp16(-INFINITY);
     const int32_t     eos_id   = hp.eos_token_id;
 
-    // Fixed cross-pad mask [T_enc_max, 1, 1, B] (re-uploaded after rebuilds).
+    // Fixed cross-pad mask [T_enc_max, 1, 1, B] (uploaded before every step).
     std::vector<ggml_fp16_t> cmask(static_cast<size_t>(T_enc_max) * n, f16_ninf);
     for (int b = 0; b < n; ++b) {
         const int     real = valid[b] ? T_enc[b] : 1;  // >=1 valid col avoids NaN
@@ -1740,13 +1740,16 @@ transcribe_status run_batch(transcribe_session *          session,
         if (!TRANSCRIBE_ALLOC_SCHED_GRAPH(cc->sched, sb.graph, "cohere")) {
             return TRANSCRIBE_ERR_OOM;
         }
-        ggml_backend_tensor_set(sb.cross_mask_in, cmask.data(), 0, cmask.size() * sizeof(ggml_fp16_t));
-        io.token_ids = sb.token_ids_in;
-        io.pos_ids   = sb.pos_ids_in;
-        io.kv_idx    = sb.kv_idx_in;
-        io.self_mask = sb.self_mask_in;
-        io.argmax    = sb.argmax_out;
-        io.graph     = sb.graph;
+        io.token_ids        = sb.token_ids_in;
+        io.pos_ids          = sb.pos_ids_in;
+        io.kv_idx           = sb.kv_idx_in;
+        io.self_mask        = sb.self_mask_in;
+        io.argmax           = sb.argmax_out;
+        io.graph            = sb.graph;
+        // Uploaded by the step loop before every step (see EncDecStepIO).
+        io.cross_mask       = sb.cross_mask_in;
+        io.cross_mask_host  = cmask.data();
+        io.cross_mask_bytes = cmask.size() * sizeof(ggml_fp16_t);
         return TRANSCRIBE_OK;
     };
 

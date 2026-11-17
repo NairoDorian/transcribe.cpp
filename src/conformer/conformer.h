@@ -160,6 +160,11 @@ bool detect_direct_pw(const char * backend);
 // backend runs natively. Probed once per (backend, head_dim, n_head).
 bool flash_supports_rel_pos_mask(const char * backend, int head_dim, int n_head);
 
+// Same probe for maskless attention (rotary encoders): CUDA's flash
+// attention only has kernels for some head sizes (64, 80, 96, 112, 128, 256,
+// ...), so e.g. GigaAM's head_dim 48 ran on the CPU in every block.
+bool flash_supports_unmasked(const char * backend, int head_dim, int n_head);
+
 // Scalar knobs for the block forward. All fields required except the
 // optional local-attention window (att_context_left / att_context_right).
 struct BlockParams {

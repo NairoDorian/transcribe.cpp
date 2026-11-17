@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 // clang-format off
@@ -1059,7 +1060,10 @@ void score_frames(const float * samples, int64_t n_samples, int n_threads, float
     }
     const EarshotWeights & w       = builtin_weights();
     const Kernels &        k       = kernels_for(resolve_isa(isa));
-    const int              threads = std::max(1, n_threads);
+    // More workers than cores only adds barrier waits (scores do not depend on
+    // the count); an unknown core count leaves the request as given.
+    const unsigned         cores   = std::thread::hardware_concurrency();
+    const int              threads = std::max(1, cores > 0 ? std::min(n_threads, static_cast<int>(cores)) : n_threads);
 
     // Blocks bound the scratch memory. Within a block the front end, the convs
     // and both matrix products run in parallel over frames; only the two scans
@@ -1108,7 +1112,7 @@ void score_frames(const float * samples, int64_t n_samples, int n_threads, float
             }
         };
 
-        run_on_threads(workers, [&](int tid) {
+        const auto work = [&](int tid) {
             int64_t b = 0;
             int64_t e = 0;
             share(count, tid, b, e);
@@ -1174,7 +1178,16 @@ void score_frames(const float * samples, int64_t n_samples, int n_threads, float
                 gather_hidden(h2, i, r2);
                 out[block + i] = output_score(w, r1, r2);
             }
-        });
+        };
+        // A worker that failed to launch never reaches the barrier: drop its
+        // place (and tid 0's, which then does not run) so the launched ones
+        // finish their phases and the launch error reaches the caller.
+        const auto release_missing = [&phase](int n_missing) {
+            for (int i = 0; i < n_missing; ++i) {
+                phase.arrive_and_drop();
+            }
+        };
+        run_on_threads(workers, work, release_missing);
         // The last two feature rows are the next block's leading context.
         std::copy(features.begin() + count * kMels, features.begin() + (count + 2) * kMels, features.begin());
     }

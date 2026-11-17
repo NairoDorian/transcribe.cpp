@@ -169,7 +169,7 @@ fn stream_options_vad_defaults() {
 }
 
 #[test]
-fn vad_lifecycle_and_energy_pregate() {
+fn vad_lifecycle_and_network_on_every_frame() {
     let mut vad = transcribe_cpp::VoiceActivityDetector::new(0.50).expect("VAD init");
 
     // Pure silence frame
@@ -177,13 +177,16 @@ fn vad_lifecycle_and_energy_pregate() {
     let raw_score = vad.predict_frame(&silence);
     assert!(raw_score >= 0.0 && raw_score < 0.5);
 
-    // Energy pre-gate zeroing in process_frame
+    // process_frame scores every frame with the network (no -45 dBFS energy
+    // shortcut, so a quiet microphone can still reach speech): silence gets
+    // the same raw score predict_frame reports, below the threshold. Mirrors
+    // tests/api_smoke.c test_vad_abi.
     vad.reset();
     let (speaking, frame_score) = vad.process_frame(&silence);
     assert!(!speaking);
-    assert_eq!(frame_score, 0.0);
+    assert!((frame_score - raw_score).abs() < 1e-6);
 
-    // Audio above -45 dBFS
+    // Audible audio
     let mut audio = [0.0f32; 256];
     for i in 0..256 {
         audio[i] = 0.2 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16000.0).sin();

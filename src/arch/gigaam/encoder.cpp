@@ -10,6 +10,7 @@
 #include "conformer/conformer.h"
 #include "ggml.h"
 #include "transcribe-debug.h"
+#include "transcribe-env.h"
 #include "transcribe-log.h"
 #include "weights.h"
 
@@ -410,8 +411,14 @@ EncoderBuild build_encoder_graph(ggml_context *        ctx,
     policy.direct_dw_in_pre_encode = false;
     policy.causal_pre_encode       = false;
 
-    // Use flash attention on GPU backends; manual path on CPU.
-    const bool use_flash = (backend_name != nullptr && std::string(backend_name).find("CPU") == std::string::npos);
+    // Flash attention on GPU backends that have a kernel for this head size;
+    // the manual path on CPU and elsewhere. CUDA has none for GigaAM's
+    // head_dim 48, and the scheduler then ran every block's attention on the
+    // CPU (two transfers per block).
+    const bool use_flash =
+        backend_name != nullptr && std::string(backend_name).find("CPU") == std::string::npos &&
+        (transcribe::env::flag("TRANSCRIBE_FORCE_FLASH") ||
+         conf::flash_supports_unmasked(backend_name, hp.enc_d_model / hp.enc_n_heads, hp.enc_n_heads));
 
     const int n_layers = hp.enc_n_layers;
     eb.dumps.all_block_outs.reserve(n_layers);

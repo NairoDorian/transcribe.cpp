@@ -430,6 +430,9 @@ transcribe_status run_batched_encdec_step_loop(transcribe_session *             
         ggml_backend_tensor_set(io.pos_ids, pos_buf.data(), 0, n * sizeof(int32_t));
         ggml_backend_tensor_set(io.kv_idx, kvidx_buf.data(), 0, n * sizeof(int64_t));
         ggml_backend_tensor_set(io.self_mask, smask.data(), 0, smask.size() * sizeof(ggml_fp16_t));
+        if (io.cross_mask != nullptr && io.cross_mask_host != nullptr) {
+            ggml_backend_tensor_set(io.cross_mask, io.cross_mask_host, 0, io.cross_mask_bytes);
+        }
         if (const ggml_status gs = ggml_backend_sched_graph_compute(sched, io.graph); gs != GGML_STATUS_SUCCESS) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "batched decode: step compute failed (%d)",
                                 static_cast<int>(gs));

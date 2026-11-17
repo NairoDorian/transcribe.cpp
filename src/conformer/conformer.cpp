@@ -358,18 +358,23 @@ bool resolve_conv_direct(const char * direct_env, const char * no_direct_env, bo
     return backend_default;
 }
 
-bool flash_supports_rel_pos_mask(const char * backend, int head_dim, int n_head) {
+namespace {
+
+// FLASH_ATTN_EXT with F16 K/V for (head_dim, n_head), with a per-head
+// [T_k, T_q, n_head] F16 mask or none: does `backend` run it itself? Probed
+// once per shape; an unknown device keeps the historical default (true).
+bool flash_probe(const char * backend, int head_dim, int n_head, bool per_head_mask) {
     if (backend == nullptr) {
         return true;
     }
-    static std::mutex                                        mu;
-    static std::map<std::tuple<std::string, int, int>, bool> cache;
-    const auto                  key = std::make_tuple(std::string(backend), head_dim, n_head);
+    static std::mutex                                              mu;
+    static std::map<std::tuple<std::string, int, int, bool>, bool> cache;
+    const auto                  key = std::make_tuple(std::string(backend), head_dim, n_head, per_head_mask);
     std::lock_guard<std::mutex> lock(mu);
     if (auto it = cache.find(key); it != cache.end()) {
         return it->second;
     }
-    bool               ok  = true;  // unknown device: keep the historical default
+    bool               ok  = true;
     ggml_backend_dev_t dev = ggml_backend_dev_by_name(backend);
     if (dev != nullptr) {
         ggml_init_params ip   = { 8 * ggml_tensor_overhead(), nullptr, /*no_alloc=*/true };
@@ -378,19 +383,28 @@ bool flash_supports_rel_pos_mask(const char * backend, int head_dim, int n_head)
         ggml_tensor *    q    = ggml_new_tensor_3d(pctx, GGML_TYPE_F32, head_dim, T, n_head);
         ggml_tensor *    k    = ggml_new_tensor_3d(pctx, GGML_TYPE_F16, head_dim, T, n_head);
         ggml_tensor *    v    = ggml_new_tensor_3d(pctx, GGML_TYPE_F16, head_dim, T, n_head);
-        ggml_tensor *    m    = ggml_new_tensor_3d(pctx, GGML_TYPE_F16, T, T, n_head);
+        ggml_tensor *    m    = per_head_mask ? ggml_new_tensor_3d(pctx, GGML_TYPE_F16, T, T, n_head) : nullptr;
         ggml_tensor *    fa   = ggml_flash_attn_ext(pctx, q, k, v, m, 1.0f, 0.0f, 0.0f);
         ok                    = ggml_backend_dev_supports_op(dev, fa);
         ggml_free(pctx);
         if (!ok) {
             log_msg(TRANSCRIBE_LOG_LEVEL_INFO,
-                    "conformer: %s has no fused flash attention for per-head rel-pos masks; "
-                    "using the manual attention path",
-                    backend);
+                    "conformer: %s has no fused flash attention for head_dim %d%s; using the manual attention path",
+                    backend, head_dim, per_head_mask ? " with a per-head rel-pos mask" : "");
         }
     }
     cache.emplace(key, ok);
     return ok;
+}
+
+}  // namespace
+
+bool flash_supports_rel_pos_mask(const char * backend, int head_dim, int n_head) {
+    return flash_probe(backend, head_dim, n_head, /*per_head_mask=*/true);
+}
+
+bool flash_supports_unmasked(const char * backend, int head_dim, int n_head) {
+    return flash_probe(backend, head_dim, n_head, /*per_head_mask=*/false);
 }
 
 bool detect_direct_pw(const char * backend) {

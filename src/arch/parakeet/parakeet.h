@@ -264,6 +264,12 @@ struct ParakeetStreamingDecoderGraphDeleter {
 using ParakeetStreamingDecoderGraphPtr =
     std::unique_ptr<ParakeetStreamingDecoderGraph, ParakeetStreamingDecoderGraphDeleter>;
 
+struct ParakeetDeviceDecoderDeleter {
+    void operator()(ParakeetDeviceDecoder * d) const noexcept { parakeet_device_decoder_free(d); }
+};
+
+using ParakeetDeviceDecoderPtr = std::unique_ptr<ParakeetDeviceDecoder, ParakeetDeviceDecoderDeleter>;
+
 // Per-context streaming RNN-T decoder state, owned on the context so it
 // carries across stream_feed calls. Reset at each stream_begin to a fresh
 // start-of-sequence state.
@@ -412,6 +418,14 @@ struct ParakeetSession final : public transcribe_session {
     // per-chunk dump file naming.
     int32_t buf_chunk_step      = 0;
     bool    buf_active          = false;
+
+    // Transducer decode on the model's GPU (decoder.h ParakeetDeviceDecoder),
+    // created on the first decode that can use it; null = the CPU decoder.
+    // Persists across runs and streams (its weights are copies; its graphs
+    // are reused). device_decoder_tried stops a failed creation from being
+    // retried on every run.
+    ParakeetDeviceDecoderPtr device_decoder;
+    bool                     device_decoder_tried = false;
 
     ParakeetSession() = default;
     ~ParakeetSession() override;

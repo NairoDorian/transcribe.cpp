@@ -57,6 +57,8 @@ void transcribe_session::clear_result() {
     // wiped, so leaving it set would let the next stream's first feed commit
     // a prefix of text that was never published by that stream.
     stream_family_committed_bytes = 0;
+    // Gaps the stream fast path left in the timeline that was just reset.
+    stream_skips.clear();
 }
 
 void transcribe_model::set_languages(std::vector<std::string> langs) {

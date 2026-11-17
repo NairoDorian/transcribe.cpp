@@ -74,6 +74,10 @@ class KaldiFbankFrontend {
     int                padded_n_fft_ = 0;  // next_pow2(win_length)
     std::vector<float> mel_fb_;            // [n_mels, padded_n_fft/2 + 1]
     std::vector<float> window_;            // [win_length]
+
+    // Nonzero support [fb_begin_[m], fb_end_[m]) of each mel band.
+    std::vector<int> fb_begin_;
+    std::vector<int> fb_end_;
 };
 
 }  // namespace transcribe

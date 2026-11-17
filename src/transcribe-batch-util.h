@@ -17,6 +17,7 @@
 #include <exception>
 #include <functional>
 #include <thread>
+#include <utility>
 #include <vector>
 
 struct ggml_tensor;
@@ -47,7 +48,15 @@ bool parallel_for_all(int n, int n_threads, const std::function<bool(int)> & wor
 //     after all threads have joined.
 // n_threads <= 1 runs fn(0) inline. `Thread` is a test seam (fault injection
 // for thread launch); production code uses the default.
-template <typename Thread = std::thread, typename Fn> void run_on_threads(int n_threads, Fn && fn) {
+//
+// `on_launch_failure(n_missing)` runs on the calling thread after a launch
+// failure and before the launched threads are joined, with the number of tids
+// that will never run (tid 0 and every unlaunched one). Workers that wait on
+// each other (a std::barrier sized for n_threads) must be released there, e.g.
+// with one barrier.arrive_and_drop() per missing tid, or the join never returns.
+// It must not throw.
+template <typename Thread = std::thread, typename Fn, typename OnLaunchFailure>
+void run_on_threads(int n_threads, Fn && fn, OnLaunchFailure && on_launch_failure) {
     if (n_threads <= 1) {
         fn(0);
         return;
@@ -73,6 +82,8 @@ template <typename Thread = std::thread, typename Fn> void run_on_threads(int n_
     }
     if (!launch_error) {
         guarded(0);
+    } else {
+        on_launch_failure(n_threads - static_cast<int>(pool.size()));
     }
     for (auto & th : pool) {
         th.join();
@@ -85,6 +96,10 @@ template <typename Thread = std::thread, typename Fn> void run_on_threads(int n_
             std::rethrow_exception(e);
         }
     }
+}
+
+template <typename Thread = std::thread, typename Fn> void run_on_threads(int n_threads, Fn && fn) {
+    run_on_threads<Thread>(n_threads, std::forward<Fn>(fn), [](int) {});
 }
 
 // Default CPU thread count for the ggml backends and the host parallel-for
@@ -191,13 +206,24 @@ struct EncDecStepIO {
     ggml_tensor * self_mask = nullptr;  // [win, 1, 1, B] f16
     ggml_tensor * argmax    = nullptr;  // [B] i32 — graph output (next token)
     ggml_cgraph * graph     = nullptr;
+
+    // Cross-attention pad mask and its host values. The values never change
+    // during the loop, but the step loop uploads them before every step like
+    // the other inputs: the scheduler's allocator reuses an input's memory once
+    // its last reader has run, so a value set once is clobbered by the first
+    // step's intermediates (Whisper's CPU static decode, 55504bde). The host
+    // buffer must outlive the loop. Optional (null = none).
+    ggml_tensor *       cross_mask       = nullptr;
+    const ggml_fp16_t * cross_mask_host  = nullptr;
+    size_t              cross_mask_bytes = 0;
 };
 
 // Build (or rebuild) the step graph for self-attention window `win`: allocate a
-// fresh compute graph, build it, reset+alloc the scheduler, upload the static
-// cross-attention mask, and fill `io`. Returns the failure status (OOM for an
-// allocation failure) or TRANSCRIBE_OK. Called once at the initial window and
-// again whenever the window must grow.
+// fresh compute graph, build it, reset+alloc the scheduler, and fill `io`
+// (including the cross-attention mask and its host values, which the step loop
+// uploads every step). Returns the failure status (OOM for an allocation
+// failure) or TRANSCRIBE_OK. Called once at the initial window and again
+// whenever the window must grow.
 using EncDecRebuildFn = std::function<transcribe_status(int win, EncDecStepIO & io)>;
 
 // Run the shared greedy enc-dec step loop. Feeds `prompt_ids[0..prompt_len)` as

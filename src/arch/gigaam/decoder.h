@@ -34,6 +34,15 @@ struct HostDecoderWeights {
     // CTC fields.
     std::vector<float>              ctc_w;  // [n_classes, d_model]
     std::vector<float>              ctc_b;
+
+    // Builds without BLAS: the matrices above transposed to [in, out], read
+    // by the portable matvec. Empty when BLAS is available.
+    std::vector<std::vector<float>> lstm_Wx_t;
+    std::vector<std::vector<float>> lstm_Wh_t;
+    std::vector<float>              joint_enc_w_t;
+    std::vector<float>              joint_pred_w_t;
+    std::vector<float>              joint_out_w_t;
+    std::vector<float>              ctc_w_t;
 };
 
 // Read the predictor + joint (or CTC head) tensors from backend memory

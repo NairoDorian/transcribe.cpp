@@ -72,19 +72,27 @@ was removed. Before Silero integration the fork's Earshot files were also called
 
 ## Baseline traps future agents must recheck
 
-- ZER0 filters with Rust Earshot, but native ASR streams inherit engine VAD on
-  through StreamOptions defaults. The app toggle/slider do not synchronize that
-  second detector, and the app does not consume its VAD telemetry for the UI.
-- RNNoise is currently app-side, optional, 48 kHz / 10 ms. Its probability gate
+- Since ZER0 `a12ca902` (2026-11-17) the app's capture runs this engine's
+  `VadGate` (wrapped as `SpeechGate`) and `Denoiser`; the Rust `earshot` /
+  `nnnoiseless` copies, `Hysteresis` and `SmoothedVad` are gone from the app.
+  Every native stream it opens passes `enable_vad = false` (live builder,
+  `benchmark_stream`, `replay_stream_once`), so the activity gate is no longer
+  a second detector in series. A change to `transcribe_vad_gate_*` or
+  `transcribe_denoise_*` now changes ZER0's capture: check its gate tests
+  (`audio_toolkit/vad/gate.rs`), the recorder tests and
+  `tests/vad_speech_clock_probe.rs` against the new build.
+- ZER0 feeds the gate exactly one 256-sample frame per `feed` and reads
+  `voiced` / `last_score` / `audio`; it does not read the gate's own speech
+  clock (its `SpeechClock` counts `voiced` with a per-recording pause hold) and
+  never calls `finish` (no partial frame). It passes `exit_threshold`
+  explicitly (`max(t - 0.15, 0.01)`).
+- RNNoise is optional, 48 kHz / 10 ms, framed by the app. Its probability gate
   is different from acoustic frame retention and semantic turn completion.
-- Since 2026-11-14 the engine has ports of both app-side layers
-  (`transcribe_vad_gate_*`, `transcribe_denoise_*`; master plan §B.9). Until
-  ZER0 switches to them, the app's Rust copies are what runs; after it does,
-  pass `enable_vad = false` on its native streams so the engine's activity
-  gate is not a second detector in series (§B.7).
-- SmoothedVad already has a preallocated ring. The old proposed allocation
-  savings are not work still to do. Resampler output and per-model stream copies
-  remain separate measurable costs.
+- Correction to the 2026-11-14 measurement: at `cfb07a12` a headless Nemotron
+  replay of the quiet FLEURS French clip transcribes with the stream gate on
+  and off; the empty transcript was measured on the earlier engine.
+- Resampler output and per-model stream copies remain separate measurable
+  costs.
 - The embedded engine speech counter includes hangover; the app clock uses
   deferred short-gap accounting. A common field name does not mean equal WPM.
 - Upstream's new Silero role buffers partial frames and segments offline; it

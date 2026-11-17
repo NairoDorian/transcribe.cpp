@@ -1163,7 +1163,7 @@ static transcribe_status transcribe_stream_begin_impl(struct transcribe_session 
     }
     if (has_field(stream_params->struct_size, k_stream_params_vad_threshold_size)) {
         vad_threshold = stream_params->vad_threshold;
-        if (vad_threshold < 0.05f || vad_threshold > 0.95f) {
+        if (!(vad_threshold >= 0.05f && vad_threshold <= 0.95f)) {  // NaN fails both comparisons
             vad_threshold = 0.50f;
         }
     }

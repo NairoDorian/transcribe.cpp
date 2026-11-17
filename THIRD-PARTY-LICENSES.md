@@ -10,6 +10,10 @@ reproduced here for convenience.
 | ggml      | MIT     | [`ggml/LICENSE`](ggml/LICENSE) | see [`ggml/UPSTREAM`](ggml/UPSTREAM) |
 | Silero VAD | MIT | [`src/third_party/silero_vad/LICENSE`](src/third_party/silero_vad/LICENSE) | see [`src/third_party/silero_vad/UPSTREAM`](src/third_party/silero_vad/UPSTREAM) |
 | miniz     | MIT     | [`src/third_party/miniz/LICENSE`](src/third_party/miniz/LICENSE) | see [`src/third_party/miniz/UPSTREAM`](src/third_party/miniz/UPSTREAM) |
+| cJSON     | MIT     | [`src/third_party/cJSON/LICENSE`](src/third_party/cJSON/LICENSE) | vendored `cJSON.c` / `cJSON.h` |
+| Earshot VAD (network weights, front-end tables) | MIT (dual MIT OR Apache-2.0 upstream; used under MIT) | [`licenses/earshot-MIT.txt`](licenses/earshot-MIT.txt) | pykeio/earshot 1.2.2 (`src/earshot-weights.inl`, `src/transcribe-earshot-*`) |
+| RNNoise model and algorithm, via nnnoiseless | BSD-3-Clause | [`licenses/rnnoise-nnnoiseless-BSD-3-Clause.txt`](licenses/rnnoise-nnnoiseless-BSD-3-Clause.txt) | nnnoiseless 0.5.2 (`src/rnnoise-weights.inl`, `src/transcribe-rnnoise.*`) |
+| audio.cpp (Earshot SIMD kernels, graph-optimizer subset) | Apache-2.0 | [`licenses/audio-cpp-Apache-2.0.txt`](licenses/audio-cpp-Apache-2.0.txt) | 0xShug0/audio.cpp #1095 / #1102 (`src/transcribe-earshot-engine.cpp`, `src/transcribe-earshot-kernels.inc`, `src/transcribe-graph-opt.h`) |
 
 Prebuilt artifacts (the Swift xcframework, the native Python wheels, and the
 npm platform packages) carry these same texts alongside the binaries — see each
@@ -124,3 +128,40 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+---
+
+## Components added by this fork
+
+These ship inside libtranscribe. Their license texts, copyright notices
+included, are kept verbatim in the files linked below rather than reproduced
+here. `cmake --install` copies each of them into
+`share/licenses/transcribe/` as `LICENSE.<name>`, so they travel with every
+installed binary.
+
+- **cJSON** (MIT), [`src/third_party/cJSON/LICENSE`](src/third_party/cJSON/LICENSE),
+  installed as `LICENSE.cjson`. A small JSON parser vendored under
+  `src/third_party/cJSON/`; it reads the R2T2 package manifest.
+- **Earshot VAD** (pykeio/earshot 1.2.2, dual MIT OR Apache-2.0, used here
+  under MIT), [`licenses/earshot-MIT.txt`](licenses/earshot-MIT.txt), installed
+  as `LICENSE.earshot`. The network behind `transcribe_vad_*`,
+  `transcribe_vad_gate_*` and the stream fast path. Its weights are embedded as
+  `src/earshot-weights.inl` and its front-end tables as
+  `src/transcribe-earshot-tables.inl`.
+- **RNNoise via nnnoiseless** (BSD-3-Clause),
+  [`licenses/rnnoise-nnnoiseless-BSD-3-Clause.txt`](licenses/rnnoise-nnnoiseless-BSD-3-Clause.txt),
+  installed as `LICENSE.rnnoise`. `transcribe_denoise_*` runs classic RNNoise
+  (xiph/rnnoise). The algorithm in `src/transcribe-rnnoise.cpp` is ported from
+  the nnnoiseless 0.5.2 Rust crate, itself a port of xiph/rnnoise, and the
+  bundled model is embedded as `src/rnnoise-weights.inl`. BSD-3-Clause
+  requires its notice in the documentation of binary redistributions; ship
+  `LICENSE.rnnoise` with any build.
+- **audio.cpp** (Apache-2.0),
+  [`licenses/audio-cpp-Apache-2.0.txt`](licenses/audio-cpp-Apache-2.0.txt),
+  installed as `LICENSE.audio-cpp`. Two pieces are ported or adapted from it:
+  - the Earshot SIMD kernels, FFT, minGRU scan and CPU detection
+    (`src/transcribe-earshot-engine.cpp`, `src/transcribe-earshot-kernels.inc`),
+    from 0xShug0/audio.cpp #1095 / #1102;
+  - a subset of its `graph_optimizer.cpp`, in `src/transcribe-graph-opt.h`.
+
+  Each adapted file states its origin and the changes made.

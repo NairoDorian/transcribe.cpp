@@ -15,6 +15,7 @@
 #include "transcribe-session.h"
 #include "transcribe.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -820,6 +821,54 @@ void test_activity_gate_family_opt_out_receives_every_slice() {
     CHECK(session.stream_activity_gate_allowed);
     CHECK(transcribe_stream_feed(&session, silence, 256, nullptr) == TRANSCRIBE_OK);
     CHECK(g_gate_fed_samples == 0);
+    CHECK(transcribe_stream_finalize(&session, nullptr) == TRANSCRIBE_OK);
+}
+
+// The energy half of the fast path judges 16 ms windows, not the slice mean: a
+// short audible onset at the end of a long, otherwise silent slice is quiet as
+// a slice average (-47 dBFS here, under the -42 floor) but loud in its own
+// window (-37 dBFS), and it must reach the family whatever slice size the host
+// feeds. The VAD threshold is validated the same way at begin and mid-stream:
+// NaN is never accepted (it compares false both ways and would leave the
+// detector unable to enter speech).
+void test_activity_gate_keeps_short_onset_in_long_slice() {
+    transcribe_model model;
+    model.arch                    = &gate_arch();
+    model.caps.supports_streaming = true;
+    model.caps.max_timestamp_kind = TRANSCRIBE_TIMESTAMPS_NONE;
+    transcribe_session session;
+    session.model = &model;
+
+    transcribe_stream_params sp;
+    transcribe_stream_params_init(&sp);
+    sp.vad_threshold = NAN;  // falls back to the default
+    CHECK(transcribe_stream_begin(&session, nullptr, &sp) == TRANSCRIBE_OK);
+    CHECK(session.vad_threshold == 0.50f);
+    CHECK(transcribe_stream_set_vad_threshold(&session, NAN) == TRANSCRIBE_ERR_INVALID_ARG);
+    CHECK(transcribe_stream_set_vad_threshold(&session, 0.96f) == TRANSCRIBE_ERR_INVALID_ARG);
+    CHECK(transcribe_stream_set_vad_threshold(&session, 0.6f) == TRANSCRIBE_OK);
+    CHECK(session.vad_threshold == 0.6f);
+
+    constexpr int      k_slice = 2560;  // 160 ms
+    std::vector<float> slice(k_slice, 0.0f);
+    for (int i = k_slice - 256; i < k_slice; ++i) {
+        slice[static_cast<size_t>(i)] =
+            0.02f * static_cast<float>(std::sin(2.0 * 3.14159265358979 * 440.0 * i / 16000.0));
+    }
+    transcribe_stream_update upd;
+    transcribe_stream_update_init(&upd);
+    CHECK(transcribe_stream_feed(&session, slice.data(), k_slice, &upd) == TRANSCRIBE_OK);
+    CHECK(g_gate_fed_samples == k_slice);
+
+    // A ragged slice (not a whole number of windows) is judged on its last
+    // whole window too: the same onset ending a 2600-sample slice is kept.
+    CHECK(transcribe_stream_finalize(&session, nullptr) == TRANSCRIBE_OK);
+    transcribe_stream_reset(&session);
+    CHECK(transcribe_stream_begin(&session, nullptr, &sp) == TRANSCRIBE_OK);
+    std::vector<float> ragged(2600, 0.0f);
+    std::copy(slice.end() - 256, slice.end(), ragged.end() - 256);
+    CHECK(transcribe_stream_feed(&session, ragged.data(), static_cast<int>(ragged.size()), nullptr) == TRANSCRIBE_OK);
+    CHECK(g_gate_fed_samples == static_cast<int64_t>(ragged.size()));
     CHECK(transcribe_stream_finalize(&session, nullptr) == TRANSCRIBE_OK);
 }
 
@@ -2047,6 +2096,7 @@ int main() {
     test_two_sessions_independent_streams();
     test_activity_gate_only_skips_silence_with_nothing_buffered();
     test_activity_gate_family_opt_out_receives_every_slice();
+    test_activity_gate_keeps_short_onset_in_long_slice();
     test_stream_vad_carries_partial_frames_across_feeds();
     test_activity_gate_keeps_caller_timeline();
     return g_failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;

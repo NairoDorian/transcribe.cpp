@@ -446,17 +446,26 @@ transcribe_status transcribe_vad_score_frames(const float * pcm,
     if (n_samples < 0 || (n_samples > 0 && (pcm == nullptr || out_scores == nullptr))) {
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
+    bool in_range = true;
     for (int64_t i = 0; i < n_samples; ++i) {
         if (!std::isfinite(pcm[i])) {
             return TRANSCRIBE_ERR_INVALID_ARG;
         }
+        in_range = in_range && pcm[i] >= -1.0f && pcm[i] <= 1.0f;
     }
     try {
-        std::vector<float> clamped(static_cast<size_t>(n_samples));
-        for (int64_t i = 0; i < n_samples; ++i) {
-            clamped[static_cast<size_t>(i)] = std::clamp(pcm[i], -1.0f, 1.0f);
+        // A clamped copy only when a sample needs it: normalized capture audio
+        // (the usual input) is scored in place instead of duplicating the clip.
+        std::vector<float> clamped;
+        const float *      samples = pcm;
+        if (!in_range) {
+            clamped.resize(static_cast<size_t>(n_samples));
+            for (int64_t i = 0; i < n_samples; ++i) {
+                clamped[static_cast<size_t>(i)] = std::clamp(pcm[i], -1.0f, 1.0f);
+            }
+            samples = clamped.data();
         }
-        transcribe::earshot::score_frames(clamped.data(), n_samples, n_threads, out_scores);
+        transcribe::earshot::score_frames(samples, n_samples, n_threads, out_scores);
     } catch (const std::bad_alloc &) {
         return TRANSCRIBE_ERR_OOM;
     } catch (...) {

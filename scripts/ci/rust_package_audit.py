@@ -37,6 +37,9 @@ REQUIRED_PREFIXES = [
     "src/",
     "cmake/",
     "ggml/",
+    # cmake/transcribe-install.cmake installs these; a package without them
+    # fails at `cmake --install`.
+    "licenses/",
     "bindings/rust/sys/build.rs",
     "bindings/rust/sys/src/lib.rs",
     "bindings/rust/sys/src/transcribe_sys.rs",

@@ -887,9 +887,12 @@ TRANSCRIBE_API transcribe_status transcribe_init_backends_default(void);
  * Register a directory to search for dynamic architecture plugin modules
  * (transcribe-arch-<family>.dll / .so / .dylib).
  *
- * Directories registered here are searched in addition to TRANSCRIBE_ARCH_DIR,
- * the library's own directory (and its arch/ subfolder), and the model file's
- * directory.
+ * Search order (the first match wins): directories registered here, in
+ * registration order; TRANSCRIBE_ARCH_DIR; the library's own directory (its
+ * arch/ subfolder first). The model file's directory (then its arch/
+ * subfolder) is searched last, and only with TRANSCRIBE_ARCH_SEARCH_MODEL_DIR=1:
+ * a plugin is native code, and model files are often downloaded. The current
+ * working directory is never searched.
  *
  * Returns TRANSCRIBE_OK on success, or TRANSCRIBE_ERR_FILE_NOT_FOUND if the
  * directory does not exist.
@@ -2181,10 +2184,18 @@ struct transcribe_stream_params {
     const struct transcribe_ext *   family;
     transcribe_stream_commit_policy commit_policy;
     uint32_t                        stable_prefix_agreement_n;
-    /* --- Voice Activity Detection (VAD) --- */
+    /* --- Voice Activity Detection (VAD) ---
+     * enable_vad: the silence fast path. A feed slice is skipped (never reaches
+     * the model, its time is kept in every published timestamp) only when the
+     * model holds no audio, Earshot is not in speech and no 16 ms window of the
+     * slice reaches -42 dBFS. Telemetry fields of transcribe_stream_update are
+     * filled either way. vad_threshold outside 0.05..0.95 (or NaN) takes the
+     * default. vad_prefill_ms is reserved and has no effect: nothing audible is
+     * ever skipped, so there is no onset to restore. vad_hangover_ms keeps the
+     * VAD in speech that long after the last voiced frame. */
     bool                            enable_vad;      /* Default: true */
     float                           vad_threshold;   /* Default: 0.50f (0.05f to 0.95f) */
-    uint32_t                        vad_prefill_ms;  /* Default: 450 ms */
+    uint32_t                        vad_prefill_ms;  /* Reserved, no effect (default 450) */
     uint32_t                        vad_hangover_ms; /* Default: 1200 ms */
 };
 

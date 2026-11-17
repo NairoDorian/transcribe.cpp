@@ -48,6 +48,23 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/silero_vad/LICENSE"
     DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/transcribe
     RENAME LICENSE.silero_vad)
 
+# --- fork components compiled into libtranscribe -------------------------------
+# Earshot's weights, RNNoise's model (BSD-3-Clause: the notice must travel with
+# binaries), cJSON and the audio.cpp ports ship inside every build; their texts
+# go next to Silero's. See THIRD-PARTY-LICENSES.md.
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/licenses/earshot-MIT.txt"
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/transcribe
+    RENAME LICENSE.earshot)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/licenses/rnnoise-nnnoiseless-BSD-3-Clause.txt"
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/transcribe
+    RENAME LICENSE.rnnoise)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/cJSON/LICENSE"
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/transcribe
+    RENAME LICENSE.cjson)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/licenses/audio-cpp-Apache-2.0.txt"
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/transcribe
+    RENAME LICENSE.audio-cpp)
+
 # --- libtranscribe ------------------------------------------------------------
 # ggml's own install rules cover ggml / ggml-base. They ALSO declare an install
 # for each backend module, but ggml_add_backend_library() uses `LIBRARY

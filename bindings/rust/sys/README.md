@@ -108,6 +108,25 @@ design: they exist so a Cargo feature is never a hard ceiling on what you can
 configure. The link line is still reconstructed from the generated manifest, so
 whatever you turn on links correctly.
 
+## Persistent build cache
+
+A source build is saved as an install tree under
+`%LOCALAPPDATA%\handy\transcribe_cpp_cache\` (`$XDG_CACHE_HOME` or
+`~/.cache/handy/transcribe_cpp_cache/` elsewhere). A later build with the same
+key copies it instead of running CMake. The key covers:
+
+- the target, the Cargo features and `TRANSCRIBE_MODEL_SET`;
+- `TRANSCRIBE_MODELS`, the CMake args and the CUDA architecture;
+- a fingerprint of the native sources (newest mtime, file count, total size).
+
+So any change to those is a rebuild, never a stale hit.
+
+| Variable | Effect |
+|---|---|
+| `TRANSCRIBE_CACHE_DIR` | Use another cache root (e.g. one per build lane). |
+| `TRANSCRIBE_CACHE_KEEP` | Entries kept per root after a save, newest first (default 6). Only directories named like a cache key are ever removed. |
+| `TRANSCRIBE_FORCE_REBUILD` | Ignore the cache and build from source (the result is still saved). |
+
 ## ABI drift
 
 The generated FFI is committed and CI-checked against `include/transcribe.abihash`

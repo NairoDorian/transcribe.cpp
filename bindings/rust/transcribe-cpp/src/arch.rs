@@ -7,12 +7,15 @@
 //! Windows, `libtranscribe-arch-<family>.so` / `.dylib` elsewhere — and the
 //! library resolves one at model-open time.
 //!
-//! A host normally does nothing at all: the library probes, in order, the model
-//! file's directory and `<model dir>/arch`, every directory registered through
-//! [`register_arch_dir`], `$TRANSCRIBE_ARCH_DIR`, and finally the directory
-//! holding libtranscribe (plus its `arch/` subdirectory). Install the plugins
-//! beside libtranscribe — which is what `cmake --install` does — and models
-//! open with no host code.
+//! A host normally does nothing at all: the library probes, in order, every
+//! directory registered through [`register_arch_dir`], `$TRANSCRIBE_ARCH_DIR`,
+//! and the directory holding libtranscribe (its `arch/` subdirectory first);
+//! the first match wins. The model file's directory and `<model dir>/arch` are
+//! searched last and only with `TRANSCRIBE_ARCH_SEARCH_MODEL_DIR=1`: loading a
+//! plugin runs its code, and model files are often downloaded. The current
+//! working directory is never searched. Install the plugins beside
+//! libtranscribe — which is what `cmake --install` does — and models open with
+//! no host code.
 //!
 //! The two functions here are for the cases that layout does not cover:
 //! pointing the loader at a plugin directory the library cannot guess

@@ -39,6 +39,7 @@ include = [
     "/CMakePresets.json",
     "/LICENSE",
     "/THIRD-PARTY-LICENSES.md",
+    "/licenses/**",
     "/include/**/*.h",
     "/include/transcribe.abihash",
     "/src/**",

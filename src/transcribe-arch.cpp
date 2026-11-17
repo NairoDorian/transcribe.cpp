@@ -8,6 +8,7 @@
 
 #include "transcribe-arch.h"
 
+#include "transcribe-env.h"
 #include "transcribe-log.h"
 #include "transcribe-model.h"
 #include "transcribe-plugin.h"
@@ -251,7 +252,13 @@ const Arch * load_plugin_file(const std::filesystem::path & file_path, const cha
 
     void * module_handle = nullptr;
 #if defined(_WIN32)
-    module_handle = LoadLibraryW(file_path.c_str());
+    // The plugin's own imports resolve from its folder, the application folder
+    // and System32, never from the current directory or PATH. Modules already
+    // in the process (libtranscribe, ggml) match by name as before. These flags
+    // require a fully qualified path, so the absolute one computed above is
+    // loaded (a relative model path yields a relative plugin path).
+    module_handle =
+        LoadLibraryExW(canonical.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
     if (module_handle == nullptr) {
         return nullptr;
     }
@@ -439,17 +446,16 @@ const Arch * find_arch(const char * name, const char * model_hint_path) {
         }
     }
 
-    // 3. Search for dynamic plugin on disk
+    // 3. Search for dynamic plugin on disk. Loading a plugin runs its code, so
+    // only locations the host controls are searched by default, and the first
+    // match wins: directories the host registered, TRANSCRIBE_ARCH_DIR, then
+    // the library's own folder. The model file's folder is opt-in
+    // (TRANSCRIBE_ARCH_SEARCH_MODEL_DIR=1) and comes last even then: model
+    // files are often downloaded, and a module shipped beside one must neither
+    // run unasked nor shadow the host's plugin. The current working directory
+    // is never searched (DLL-planting territory; the library's own folder
+    // already covers a CLI run from its build tree).
     std::vector<std::filesystem::path> search_dirs;
-
-    if (model_hint_path != nullptr && model_hint_path[0] != '\0') {
-        std::filesystem::path mp(model_hint_path);
-        std::filesystem::path mdir = mp.parent_path();
-        if (!mdir.empty()) {
-            search_dirs.push_back(mdir);
-            search_dirs.push_back(mdir / "arch");
-        }
-    }
 
     for (const auto & cd : g_custom_dirs) {
         search_dirs.push_back(cd);
@@ -467,8 +473,15 @@ const Arch * find_arch(const char * name, const char * model_hint_path) {
         search_dirs.push_back(sdir);
     }
 
-    search_dirs.push_back(std::filesystem::current_path() / "arch");
-    search_dirs.push_back(std::filesystem::current_path());
+    if (model_hint_path != nullptr && model_hint_path[0] != '\0' &&
+        transcribe::env::flag("TRANSCRIBE_ARCH_SEARCH_MODEL_DIR")) {
+        std::filesystem::path mp(model_hint_path);
+        std::filesystem::path mdir = mp.parent_path();
+        if (!mdir.empty()) {
+            search_dirs.push_back(mdir);
+            search_dirs.push_back(mdir / "arch");
+        }
+    }
 
     std::vector<std::string> candidates;
 #if defined(_WIN32)

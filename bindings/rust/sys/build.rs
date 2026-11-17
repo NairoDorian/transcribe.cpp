@@ -92,7 +92,7 @@ fn main() {
         println!("cargo:rerun-if-changed={}", root.join(p).display());
     }
 
-    // Prebuilt path: TRANSCRIBE_DIR (or TRANSCRIBE_PREBUILT_DIR) points at an existing install prefix (a
+    // Prebuilt path: TRANSCRIBE_DIR (or its alias TRANSCRIBE_PREBUILT_DIR) points at an existing install prefix (a
     // `cmake --install` tree from a TRANSCRIBE_INSTALL=ON configure). Skip the
     // source build and emit the link line from that prefix's manifest; the
     // manifest records the install's own posture (static/shared, backends), so
@@ -199,6 +199,12 @@ fn main() {
     let cmake_args_env = env::var("TRANSCRIBE_CMAKE_ARGS")
         .or_else(|_| env::var("CMAKE_ARGS"))
         .ok();
+    // TRANSCRIBE_MODELS picks the compiled families just like the model set,
+    // so it is part of the key: changing it must be a miss, not a stale hit.
+    let models_env = env::var("TRANSCRIBE_MODELS").ok();
+    if let Some(models) = models_env.as_deref().filter(|m| !m.trim().is_empty()) {
+        active_features.push(models);
+    }
 
     // Cache key includes a source-tree fingerprint (max mtime across tracked
     // source dirs), targeted CUDA arch, and CMake configure flags so the
@@ -216,41 +222,20 @@ fn main() {
     );
     let cache_dir = get_cache_root().join(&cache_key);
 
-    // Check for explicit prebuilt or persistent cache hit. On a cache hit we
-    // copy the pre-built artifacts into OUT_DIR and skip CMake entirely — so
-    // `bun run tauri dev` only rebuilds transcribe.cpp when its sources moved
-    // (cache key differs → cache miss → CMake build).
+    // Persistent cache hit: copy the cached install into OUT_DIR and skip
+    // CMake entirely — so `bun run tauri dev` only rebuilds transcribe.cpp
+    // when its sources or configuration moved (key differs → miss → build).
+    // Only an entry under this exact key is ever used: a key-less fallback
+    // would hand one configuration's library to another (CPU vs CUDA, a
+    // different model set) with nothing to say so. An explicit prebuilt
+    // install goes through TRANSCRIBE_DIR above instead.
     if !force_rebuild {
-        if let Ok(prebuilt) = env::var("TRANSCRIBE_PREBUILT_DIR") {
-            let prebuilt_path = PathBuf::from(prebuilt);
-            if let Some(manifest) = find_manifest(&prebuilt_path) {
-                println!(
-                    "cargo:warning=transcribe-cpp-sys: [PREBUILT] Using prebuilt transcribe-cpp from {}",
-                    prebuilt_path.display()
-                );
-                let _ = copy_dir_all(&prebuilt_path, &out_dir);
-                emit_link_lines(&out_dir, &manifest);
-                return;
-            }
-        }
-
         if let Some(manifest) = find_manifest(&cache_dir) {
             println!(
                 "cargo:warning=transcribe-cpp-sys: [CACHE HIT] Using persistent cached build from {} (0s compile time)",
                 cache_dir.display()
             );
             let _ = copy_dir_all(&cache_dir, &out_dir);
-            emit_link_lines(&out_dir, &manifest);
-            return;
-        }
-
-        let fallback_prebuilt = get_cache_root().join("prebuilt");
-        if let Some(manifest) = find_manifest(&fallback_prebuilt) {
-            println!(
-                "cargo:warning=transcribe-cpp-sys: [CACHE HIT] Using prebuilt cache from {} (0s compile time)",
-                fallback_prebuilt.display()
-            );
-            let _ = copy_dir_all(&fallback_prebuilt, &out_dir);
             emit_link_lines(&out_dir, &manifest);
             return;
         }
@@ -560,6 +545,7 @@ fn main() {
             "cargo:warning=transcribe-cpp-sys: [CACHE SAVED] Cached transcribe-cpp artifacts to {}",
             cache_dir.display()
         );
+        evict_old_cache_entries(&get_cache_root(), &cache_dir);
     }
 
     emit_link_lines(&prefix, &manifest);
@@ -868,10 +854,8 @@ fn stage_windows_dlls(prefix: &Path) {
 }
 
 /// Root directory for persistent out-of-tree transcribe.cpp build artifacts.
+/// (TRANSCRIBE_PREBUILT_DIR never reaches here: main() links it directly.)
 fn get_cache_root() -> PathBuf {
-    if let Ok(dir) = env::var("TRANSCRIBE_PREBUILT_DIR") {
-        return PathBuf::from(dir);
-    }
     if let Ok(dir) = env::var("TRANSCRIBE_CACHE_DIR") {
         return PathBuf::from(dir);
     }
@@ -1200,12 +1184,61 @@ fn setup_msvc_environment() -> bool {
     true
 }
 
-/// Walk the source trees that participate in the native build and return the
-/// maximum file modification time as a hex string. When any source file changes
-/// (git pull, local edit) the max advances and the cache key changes, forcing a
-/// recompile. mtime-based (not content hash) for speed.
+/// Keep the cache root bounded: every source change or configuration adds a
+/// full install (100+ MB with CUDA), and nothing else ever removes one. After
+/// a save, entries beyond the newest TRANSCRIBE_CACHE_KEEP (default 6) are
+/// deleted, oldest first. Only directories named like this script's keys
+/// (`<os>_<arch>_<env>_<16 hex>`) are candidates, and never the one just saved,
+/// so a custom TRANSCRIBE_CACHE_DIR holding anything else is left alone.
+fn evict_old_cache_entries(root: &Path, keep_dir: &Path) {
+    println!("cargo:rerun-if-env-changed=TRANSCRIBE_CACHE_KEEP");
+    let keep = env::var("TRANSCRIBE_CACHE_KEEP")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(6)
+        .max(1);
+    let is_key = |name: &str| {
+        let hash = name.rsplit('_').next().unwrap_or("");
+        name.matches('_').count() >= 3
+            && hash.len() == 16
+            && hash.bytes().all(|b| b.is_ascii_hexdigit())
+    };
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    let mut found: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter(|e| is_key(&e.file_name().to_string_lossy()))
+        .filter(|e| e.path() != keep_dir)
+        .filter_map(|e| {
+            let mtime = e.metadata().and_then(|m| m.modified()).ok()?;
+            Some((mtime, e.path()))
+        })
+        .collect();
+    // The entry just saved counts toward `keep`.
+    if found.len() < keep {
+        return;
+    }
+    found.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
+    for (_, stale) in found.into_iter().skip(keep - 1) {
+        if std::fs::remove_dir_all(&stale).is_ok() {
+            println!(
+                "cargo:warning=transcribe-cpp-sys: [CACHE EVICT] Removed old cached build {}",
+                stale.display()
+            );
+        }
+    }
+}
+
+/// Fingerprint the source trees that participate in the native build: the
+/// newest file modification time plus the file count and total size. When a
+/// source file changes (git pull, local edit) the newest mtime advances; a
+/// deleted or replaced file that leaves the newest mtime alone still moves the
+/// count or the size. Either way the cache key changes, forcing a recompile.
+/// Metadata-based (not a content hash) for speed.
 fn max_source_mtime(root: &Path) -> String {
-    let mut max: Option<std::time::SystemTime> = None;
+    let mut fp = SourceFingerprint::default();
     for p in [
         "CMakeLists.txt",
         "include",
@@ -1214,20 +1247,33 @@ fn max_source_mtime(root: &Path) -> String {
         "cmake",
         "bindings/rust/sys",
     ] {
-        walk_mtimes(&root.join(p), &mut max);
+        walk_mtimes(&root.join(p), &mut fp);
     }
-    match max.and_then(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH).ok()) {
+    let mtime = match fp
+        .max
+        .and_then(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
+    {
         Some(d) => format!("{:016x}", d.as_nanos()),
         None => "0".to_string(),
-    }
+    };
+    format!("{mtime}-{}-{}", fp.files, fp.bytes)
 }
 
-fn walk_mtimes(path: &Path, max: &mut Option<std::time::SystemTime>) {
+#[derive(Default)]
+struct SourceFingerprint {
+    max: Option<std::time::SystemTime>,
+    files: u64,
+    bytes: u64,
+}
+
+fn walk_mtimes(path: &Path, fp: &mut SourceFingerprint) {
     if path.is_file() {
         if let Ok(meta) = path.metadata() {
+            fp.files += 1;
+            fp.bytes = fp.bytes.wrapping_add(meta.len());
             if let Ok(mtime) = meta.modified() {
-                if max.map_or(true, |m| mtime > m) {
-                    *max = Some(mtime);
+                if fp.max.map_or(true, |m| mtime > m) {
+                    fp.max = Some(mtime);
                 }
             }
         }
@@ -1244,7 +1290,7 @@ fn walk_mtimes(path: &Path, max: &mut Option<std::time::SystemTime>) {
                 {
                     continue;
                 }
-                walk_mtimes(&entry.path(), max);
+                walk_mtimes(&entry.path(), fp);
             }
         }
     }

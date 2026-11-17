@@ -516,7 +516,8 @@ def main() -> int:
                                         f"a/{path}", f"b/{path}", lineterm="", n=1)
             print("\n".join(diff))
         else:
-            path.write_text(text, encoding="utf-8")
+            # newline="\n": Windows would otherwise write CRLF into LF docs.
+            path.write_text(text, encoding="utf-8", newline="\n")
 
     for error in errors:
         print(f"  error: {error}", file=sys.stderr)

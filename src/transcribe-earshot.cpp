@@ -23,11 +23,22 @@ struct VoiceActivityDetector::Impl {
     float predict_f32(std::span<const float, 256> frame) noexcept { return detector.predict(frame.data()); }
 };
 
-VoiceActivityDetector::VoiceActivityDetector(float threshold, uint32_t prefill_ms, uint32_t hangover_ms) :
+namespace {
+
+// The accepted threshold range; anything else (NaN included, which compares
+// false both ways and would leave the gate unable to ever enter speech) takes
+// the default.
+float sanitize_threshold(float threshold) noexcept {
+    return threshold >= 0.05f && threshold <= 0.95f ? threshold : 0.50f;
+}
+
+}  // namespace
+
+VoiceActivityDetector::VoiceActivityDetector(float threshold, uint32_t /*prefill_ms*/, uint32_t hangover_ms) :
     impl_(new Impl()),
-    threshold_(threshold),
-    enter_threshold_(threshold),
-    exit_threshold_(std::max(0.05f, threshold * 0.70f)),
+    threshold_(sanitize_threshold(threshold)),
+    enter_threshold_(threshold_),
+    exit_threshold_(std::max(0.05f, threshold_ * 0.70f)),
     hangover_frames_(std::max(1u, hangover_ms / 16u)) {}
 
 VoiceActivityDetector::~VoiceActivityDetector() {
@@ -140,7 +151,7 @@ void VoiceActivityDetector::reset() noexcept {
 }
 
 void VoiceActivityDetector::set_threshold(float threshold) noexcept {
-    threshold_       = std::clamp(threshold, 0.05f, 0.95f);
+    threshold_       = std::isnan(threshold) ? threshold_ : std::clamp(threshold, 0.05f, 0.95f);
     enter_threshold_ = threshold_;
     exit_threshold_  = std::max(0.05f, threshold_ * 0.70f);
 }
@@ -198,10 +209,11 @@ transcribe_status transcribe_stream_set_vad_threshold(struct transcribe_session 
     if (!session) {
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
-    if (threshold < 0.05f || threshold > 0.95f) {
+    if (!(threshold >= 0.05f && threshold <= 0.95f)) {  // NaN fails both comparisons
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
     session->stream_vad.set_threshold(threshold);
+    session->vad_threshold = threshold;
     return TRANSCRIBE_OK;
 }
 }

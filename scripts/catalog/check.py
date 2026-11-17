@@ -51,7 +51,7 @@ ARCH_NAME_RE = re.compile(r'/\*\s*\.name\s*=\s*\*/\s*"([^"]+)"')
 def engine_arches() -> set[str]:
     """The `.name` each src/arch registers: the GGUF general.architecture."""
     return {name for path in (REPO / "src" / "arch").glob("*/*.cpp")
-            for name in ARCH_NAME_RE.findall(path.read_text())}
+            for name in ARCH_NAME_RE.findall(path.read_text(encoding="utf-8"))}
 
 
 def family_pass(records: dict) -> int:

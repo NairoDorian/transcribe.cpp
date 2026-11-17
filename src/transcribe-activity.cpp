@@ -4,10 +4,34 @@
 
 #include "transcribe-env.h"
 
-#include <algorithm>
 #include <cmath>
 
 namespace transcribe {
+
+namespace {
+
+constexpr size_t k_window = 256;  // 16 ms at 16 kHz, the VAD frame
+
+double sum_squares(const float * pcm, size_t n) {
+    // Four accumulators: independent chains the compiler can keep in flight.
+    double a0 = 0.0;
+    double a1 = 0.0;
+    double a2 = 0.0;
+    double a3 = 0.0;
+    size_t i  = 0;
+    for (; i + 3 < n; i += 4) {
+        a0 += static_cast<double>(pcm[i]) * pcm[i];
+        a1 += static_cast<double>(pcm[i + 1]) * pcm[i + 1];
+        a2 += static_cast<double>(pcm[i + 2]) * pcm[i + 2];
+        a3 += static_cast<double>(pcm[i + 3]) * pcm[i + 3];
+    }
+    for (; i < n; ++i) {
+        a0 += static_cast<double>(pcm[i]) * pcm[i];
+    }
+    return (a0 + a1) + (a2 + a3);
+}
+
+}  // namespace
 
 bool is_activity_gate_disabled() {
     static const bool disabled = env::flag("TRANSCRIBE_DISABLE_ACTIVITY_GATE");
@@ -18,77 +42,21 @@ bool is_audio_active(const float * pcm, size_t n_samples, float threshold_dbfs) 
     if (pcm == nullptr || n_samples == 0) {
         return false;
     }
-
-    // Convert dBFS threshold to linear energy (power) threshold:
-    // energy = 10^(threshold_dbfs / 10)
+    // energy = 10^(dBFS / 10); compared as a window sum to skip the divide.
     const double threshold_energy = std::pow(10.0, static_cast<double>(threshold_dbfs) / 10.0);
-
-    double sum_sq = 0.0;
-    size_t i      = 0;
-
-    // 4-way unrolled accumulator for fast scalar processing
-    for (; i + 3 < n_samples; i += 4) {
-        const double s0 = pcm[i];
-        const double s1 = pcm[i + 1];
-        const double s2 = pcm[i + 2];
-        const double s3 = pcm[i + 3];
-        sum_sq += s0 * s0 + s1 * s1 + s2 * s2 + s3 * s3;
+    if (n_samples <= k_window) {
+        return sum_squares(pcm, n_samples) > threshold_energy * static_cast<double>(n_samples);
     }
-    for (; i < n_samples; ++i) {
-        const double s = pcm[i];
-        sum_sq += s * s;
-    }
-
-    const double mean_energy = sum_sq / static_cast<double>(n_samples);
-    return mean_energy > threshold_energy;
-}
-
-AudioActivityRegion find_audio_activity_region(const float * pcm,
-                                               size_t        n_samples,
-                                               float         threshold_dbfs,
-                                               float         window_seconds,
-                                               float         margin_seconds,
-                                               int           sample_rate_hz) {
-    AudioActivityRegion region;
-    if (pcm == nullptr || n_samples == 0 || sample_rate_hz <= 0) {
-        return region;
-    }
-
-    const size_t window_frames =
-        std::max<size_t>(1, static_cast<size_t>(std::llround(window_seconds * sample_rate_hz)));
-    const size_t margin_frames    = static_cast<size_t>(std::llround(margin_seconds * sample_rate_hz));
-    const double threshold_energy = std::pow(10.0, static_cast<double>(threshold_dbfs) / 10.0);
-
-    size_t first_active = n_samples;
-    size_t last_active  = 0;
-
-    for (size_t win_start = 0; win_start < n_samples; win_start += window_frames) {
-        const size_t win_end = std::min(n_samples, win_start + window_frames);
-        const size_t count   = win_end - win_start;
-        if (count == 0) {
-            continue;
-        }
-
-        double sum_sq = 0.0;
-        for (size_t i = win_start; i < win_end; ++i) {
-            const double s = pcm[i];
-            sum_sq += s * s;
-        }
-        const double mean_energy = sum_sq / static_cast<double>(count);
-        if (mean_energy > threshold_energy) {
-            first_active = std::min(first_active, win_start);
-            last_active  = std::max(last_active, win_end);
+    const double window_threshold = threshold_energy * static_cast<double>(k_window);
+    size_t       start            = 0;
+    for (; start + k_window <= n_samples; start += k_window) {
+        if (sum_squares(pcm + start, k_window) > window_threshold) {
+            return true;
         }
     }
-
-    if (first_active >= last_active) {
-        return region;
-    }
-
-    region.has_activity = true;
-    region.start_sample = (first_active > margin_frames) ? (first_active - margin_frames) : 0;
-    region.end_sample   = std::min(n_samples, last_active + margin_frames);
-    return region;
+    // A ragged tail is measured as the buffer's last whole window (overlapping
+    // the previous one), so a few trailing samples are never judged alone.
+    return start < n_samples && sum_squares(pcm + n_samples - k_window, k_window) > window_threshold;
 }
 
 }  // namespace transcribe

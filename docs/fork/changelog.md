@@ -5,6 +5,17 @@ the commits that carry the detail; `git show <sha>` has the measurements. Most
 upstream merges are not listed (`git log --merges upstream/main..HEAD`); the
 ones listed carry fork-side merge decisions. Overview: [README.md](README.md).
 
+## 2026-11-18 — Parakeet decoder stays on the host for integrated GPUs
+
+- The Parakeet TDT / RNN-T GPU decoder (`1f6df3c4`) no longer runs by
+  default on an integrated GPU (ggml's `IGPU` device type), where it was
+  slower than the host decoder (ZER0's A/B on Intel Iris Xe via Vulkan:
+  Nemotron decode 107 → 158 ms, Parakeet Redux, v3 and Ultra 3-9 % slower in
+  total). `TRANSCRIBE_PARAKEET_DEVICE_DECODER=1` still forces it. Discrete
+  CUDA, ROCm and Vulkan GPUs are unchanged. Verified on the same laptop:
+  Nemotron decode on the Iris Xe 156 → 92 ms, the RTX 4070 still on its GPU
+  decoder, transcripts identical.
+
 ## 2026-11-17 — fork audit checkpoint
 
 The whole-fork review in [audit-2026-11-17.md](audit-2026-11-17.md):

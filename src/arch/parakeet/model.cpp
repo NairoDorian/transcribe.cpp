@@ -994,29 +994,42 @@ static transcribe_status resolve_language_block_mask(const ParakeetModel *      
 }
 
 // The session's GPU transducer decoder (decoder.h), created on first use when
-// the model's primary backend is CUDA, ROCm or Vulkan — where the CPU decoder
-// was most of a run — and the head has a predictor (TDT / RNN-T).
+// the model's primary backend is a discrete CUDA, ROCm or Vulkan device —
+// where the CPU decoder was most of a run — and the head has a predictor
+// (TDT / RNN-T). An integrated GPU (ggml reports GGML_BACKEND_DEVICE_TYPE_IGPU)
+// keeps the CPU decoder: its small per-step launches lose to the host loop
+// (Intel Iris Xe on Vulkan, measured by ZER0 on 2026-11-18: Nemotron batch
+// 500 -> 540 ms, Parakeet Redux 264 -> 286 ms).
 // TRANSCRIBE_PARAKEET_DEVICE_DECODER=0 keeps every decode on the CPU; =1 also
-// allows the other GPU backends (Metal, SYCL, ...). Null = the CPU decoder.
+// allows integrated GPUs and the other GPU backends (Metal, SYCL, ...).
+// Null = the CPU decoder.
 static ParakeetDeviceDecoder * session_device_decoder(ParakeetSession * pc, const ParakeetModel * pm) {
     if (pc->device_decoder != nullptr || pc->device_decoder_tried) {
         return pc->device_decoder.get();
     }
     pc->device_decoder_tried = true;
-    const char * env         = transcribe::env::str("TRANSCRIBE_PARAKEET_DEVICE_DECODER");
-    const bool   forced_off  = env != nullptr && env[0] == '0';
-    const bool   forced_on   = env != nullptr && env[0] == '1';
-    const auto   kind        = pm->plan.primary_kind;
-    const bool   default_gpu = kind == transcribe::BackendKind::Cuda || kind == transcribe::BackendKind::Rocm ||
-                               kind == transcribe::BackendKind::Vulkan;
-    const bool   other_gpu   = kind == transcribe::BackendKind::Metal || kind == transcribe::BackendKind::Sycl ||
-                               kind == transcribe::BackendKind::OtherGpu;
-    if (forced_off || pm->plan.primary == nullptr || pm->host_decoder.head_kind == HostHeadKind::CTC ||
-        !(default_gpu || (forced_on && other_gpu))) {
+    if (pm->plan.primary == nullptr || pm->host_decoder.head_kind == HostHeadKind::CTC) {
         return nullptr;
     }
-    pc->device_decoder.reset(
-        parakeet_device_decoder_new(pm->host_decoder, ggml_backend_get_device(pm->plan.primary), &pm->weights));
+    const char *       env        = transcribe::env::str("TRANSCRIBE_PARAKEET_DEVICE_DECODER");
+    const bool         forced_off = env != nullptr && env[0] == '0';
+    const bool         forced_on  = env != nullptr && env[0] == '1';
+    ggml_backend_dev_t dev        = ggml_backend_get_device(pm->plan.primary);
+    const bool         integrated = dev != nullptr && ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_IGPU;
+    const auto         kind       = pm->plan.primary_kind;
+    const bool         default_gpu =
+        !integrated && (kind == transcribe::BackendKind::Cuda || kind == transcribe::BackendKind::Rocm ||
+                        kind == transcribe::BackendKind::Vulkan);
+    const bool other_gpu = integrated || kind == transcribe::BackendKind::Metal ||
+                           kind == transcribe::BackendKind::Sycl || kind == transcribe::BackendKind::OtherGpu;
+    if (forced_off || !(default_gpu || (forced_on && other_gpu))) {
+        if (integrated && !forced_off) {
+            log_msg(TRANSCRIBE_LOG_LEVEL_DEBUG,
+                    "parakeet: integrated GPU, CPU decoder (TRANSCRIBE_PARAKEET_DEVICE_DECODER=1 moves it to the GPU)");
+        }
+        return nullptr;
+    }
+    pc->device_decoder.reset(parakeet_device_decoder_new(pm->host_decoder, dev, &pm->weights));
     return pc->device_decoder.get();
 }
 

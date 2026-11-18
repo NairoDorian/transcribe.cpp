@@ -84,8 +84,43 @@ was removed. Before Silero integration the fork's Earshot files were also called
 - ZER0 feeds the gate exactly one 256-sample frame per `feed` and reads
   `voiced` / `last_score` / `audio`; it does not read the gate's own speech
   clock (its `SpeechClock` counts `voiced` with a per-recording pause hold) and
-  never calls `finish` (no partial frame). It passes `exit_threshold`
-  explicitly (`max(t - 0.15, 0.01)`).
+  never calls `finish` (no partial frame). Since 2026-11-18 (pin `8b27bc6b`)
+  it passes **no** `exit_threshold`: the gate derives `max(t - 0.15, 0.01)`
+  and re-derives it on every `set_threshold`, which is what ZER0's VAD slider
+  needs mid-recording. Until then it passed that value explicitly, and an
+  explicit exit is the caller's fixed edge across threshold changes
+  (`1f6df3c4`), so the slider moved only the entry edge. A change to
+  `derived_exit` changes ZER0: its `gate.rs` test
+  `the_exit_edge_follows_every_threshold_change` checks every verdict against
+  the rule.
+- Architecture plugins: ZER0 builds no `arch-dl` posture. Its
+  `arch_plugins.rs` registers, in order, `<exe>/arch`, `<exe>`,
+  `<exe>/plugins`, `<app data>/plugins`, `<app data>/arch`; since
+  2026-11-18 it no longer registers its models folder, which would have
+  undone the model-folder refusal of `502ce99c` (registered directories are
+  searched first).
+- **Fixed after `8b27bc6b` (2026-11-18), found by ZER0's A/B of `cfb07a12` →
+  `8b27bc6b`:** the Parakeet GPU decoder (`1f6df3c4`) was on for every Vulkan
+  device, and on an integrated GPU (Intel Iris Xe) it is slower than the host
+  decoder: Nemotron batch 490 → 540 ms (decode 107 → 158), Parakeet Redux
+  263 → 286, v3 317 → 331, Ultra 429 → 442. `session_device_decoder`
+  (`src/arch/parakeet/model.cpp`) now leaves any
+  `GGML_BACKEND_DEVICE_TYPE_IGPU` device on the host decoder unless
+  `TRANSCRIBE_PARAKEET_DEVICE_DECODER=1`, and logs that at DEBUG. Engine
+  check on the same laptop (fleurs-en, decoder stage, warm runs): Nemotron
+  Iris Xe default 92 ms vs 156 forced onto the GPU and 89 host; the TDT
+  models 36-42 vs 57-69; on the 35 s `dots.wav` the host still wins
+  (Nemotron 415 vs 708 ms, TDT 192-219 vs 244-286); the RTX's Vulkan
+  default still runs the GPU decoder (21-27 vs 37-49 host); transcripts
+  identical in every arm. The choice is per session from that model's own
+  device, so a Multi-STT set with one model on CUDA and one on the iGPU
+  gets each its own decoder. The app
+  needs only the pin bump. Also measured by ZER0: the step pipeline is
+  neutral on Vulkan (R2T2 streaming: event waits move into `tensor_get`, the
+  step loop is unchanged). Full tables in ZER0's `docs/STT_BENCHMARKS.md`.
+- ZER0's `build.rs` copies `share/licenses/transcribe/*` from the install
+  prefix (the parent of `DEP_TRANSCRIBE_CPP_INCLUDE_DIR`) into its bundle's
+  resources. Keep that install path, or tell the app when it moves.
 - RNNoise is optional, 48 kHz / 10 ms, framed by the app. Its probability gate
   is different from acoustic frame retention and semantic turn completion.
 - Correction to the 2026-11-14 measurement: at `cfb07a12` a headless Nemotron

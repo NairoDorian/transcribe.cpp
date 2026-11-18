@@ -42,7 +42,7 @@ An upstream caller that changes nothing sees these differences:
 |---|---|---|---|
 | Streaming silence | every slice reaches the model | `transcribe_stream_params::enable_vad` (default on): Earshot + an energy floor skip silence the model holds nothing for; skipped time is mapped back into every published timestamp | `enable_vad = false`, `TRANSCRIBE_DISABLE_ACTIVITY_GATE=1` |
 | CUDA graphs | off | on (`GGML_CUDA_GRAPHS=ON`) | `GGML_CUDA_DISABLE_GRAPHS=1` |
-| Parakeet TDT / RNN-T decoder on CUDA, ROCm, Vulkan | host CPU | the model's GPU (byte-identical transcripts) | `TRANSCRIBE_PARAKEET_DEVICE_DECODER=0` |
+| Parakeet TDT / RNN-T decoder on a discrete CUDA, ROCm or Vulkan GPU | host CPU | the model's GPU (byte-identical transcripts); an integrated GPU keeps the host decoder | `TRANSCRIBE_PARAKEET_DEVICE_DECODER=0` (`=1` forces it onto an integrated GPU) |
 | Greedy LLM steps (Granite, Qwen3-ASR, R2T2) on a GPU | launch, wait, read, repeat | pipelined: step i+1 launches while step i runs (same tokens) | `TRANSCRIBE_STEP_PIPELINE=0` |
 | Conformer attention on CUDA (Canary, Cohere, Sortformer, GigaAM) | flash kernel, which CUDA lacks for these shapes, so the op ran on the CPU | probed once per shape; the manual path stays on the GPU | `TRANSCRIBE_FORCE_FLASH=1` |
 | `transcribe_version()` | `"0.4.2"` | `"0.4.2 <commit> <branch> <build-time> <backend>"` (the leading field is unchanged) | — |

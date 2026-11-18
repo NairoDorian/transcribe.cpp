@@ -235,6 +235,7 @@ fn main() {
                 "cargo:warning=transcribe-cpp-sys: [CACHE HIT] Using persistent cached build from {} (0s compile time)",
                 cache_dir.display()
             );
+            clear_install_tree(&out_dir);
             let _ = copy_dir_all(&cache_dir, &out_dir);
             emit_link_lines(&out_dir, &manifest);
             return;
@@ -522,6 +523,9 @@ fn main() {
     }
 
     // Builds + installs into OUT_DIR; the returned path IS the install prefix.
+    // `cmake --install` only adds and overwrites, so the previous
+    // configuration's install goes first (the build tree itself is kept).
+    clear_install_tree(&out_dir);
     let prefix = cfg.build();
     // Emit downstream paths via the durable OUT_DIR, not the junction — cargo
     // caches them across builds, and the junction may be deleted between runs.
@@ -534,7 +538,10 @@ fn main() {
     let manifest = find_manifest(&prefix)
         .unwrap_or_else(|| panic!("transcribe-link.json not found under {}", prefix.display()));
 
-    // Cache build artifacts to persistent storage for all future builds.
+    // Cache build artifacts to persistent storage for all future builds. A
+    // partial entry under this key (an interrupted save has no manifest, so it
+    // was a miss) goes first, so the entry holds exactly this install.
+    let _ = std::fs::remove_dir_all(&cache_dir);
     if let Err(e) = copy_dir_all(&prefix, &cache_dir) {
         println!(
             "cargo:warning=transcribe-cpp-sys: failed to cache build to {}: {e}",
@@ -848,6 +855,25 @@ fn stage_windows_dlls(prefix: &Path) {
         for dll in &dlls {
             if let Some(name) = dll.file_name() {
                 let _ = std::fs::copy(dll, dest.join(name));
+            }
+        }
+        // The copy is additive, so a ggml backend module this configuration
+        // does not build (the CUDA build's ggml-cuda.dll, staged before a
+        // CPU-only one) would stay beside the executables and be loaded from
+        // there. The ggml DLLs are this library's own; any not in the current
+        // install goes.
+        if let Ok(entries) = std::fs::read_dir(&dest) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let Some(name) = name.to_str() else { continue };
+                let ours = name.starts_with("ggml") && name.ends_with(".dll");
+                if ours
+                    && !dlls
+                        .iter()
+                        .any(|d| d.file_name().and_then(|n| n.to_str()) == Some(name))
+                {
+                    let _ = std::fs::remove_file(entry.path());
+                }
             }
         }
     }
@@ -1291,6 +1317,32 @@ fn walk_mtimes(path: &Path, fp: &mut SourceFingerprint) {
                     continue;
                 }
                 walk_mtimes(&entry.path(), fp);
+            }
+        }
+    }
+}
+
+/// Remove the install tree a previous configuration left in OUT_DIR.
+///
+/// Cargo keeps one OUT_DIR per build of this crate, and a change of
+/// TRANSCRIBE_CMAKE_ARGS, the CUDA architectures or the cache root reruns this
+/// script in that same OUT_DIR. Neither a cache restore (a copy) nor
+/// `cmake --install` removes files the new configuration does not produce, so
+/// a CPU-only build after a CUDA one kept the CUDA build's `ggml-cuda.dll` in
+/// `bin/`: the library found it on its backend search path (a "CPU" build
+/// registered a CUDA device from another engine revision), downstream
+/// packaging staged it, and the next cache save stored it under the CPU key.
+/// Only the install directories go; the CMake build tree (`build/`) stays, so
+/// an incremental build is still incremental.
+fn clear_install_tree(out_dir: &Path) {
+    for sub in ["bin", "lib", "lib64", "include", "share"] {
+        let dir = out_dir.join(sub);
+        if dir.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                println!(
+                    "cargo:warning=transcribe-cpp-sys: could not clear {} ({e}); a file from a previous configuration may remain",
+                    dir.display()
+                );
             }
         }
     }

@@ -119,7 +119,13 @@ key copies it instead of running CMake. The key covers:
 - `TRANSCRIBE_MODELS`, the CMake args and the CUDA architecture;
 - a fingerprint of the native sources (newest mtime, file count, total size).
 
-So any change to those is a rebuild, never a stale hit.
+So any change to those is a rebuild, never a stale hit. Cargo keeps one
+`OUT_DIR` for this crate across those changes, so the install tree in it
+(`bin`, `lib`, `include`, `share`) is cleared before a cache restore or a
+`cmake --install`, and the cache entry before a save: a CPU-only build after a
+CUDA one must not keep, load, stage or cache the CUDA build's
+`ggml-cuda.dll`. On Windows the DLLs staged beside cargo's artifacts are
+pruned the same way.
 
 | Variable | Effect |
 |---|---|

@@ -1266,7 +1266,7 @@ fn evict_old_cache_entries(root: &Path, keep_dir: &Path) {
     if found.len() < keep {
         return;
     }
-    found.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
+    found.sort_by_key(|e| std::cmp::Reverse(e.0)); // newest first
     for (_, stale) in found.into_iter().skip(keep - 1) {
         if std::fs::remove_dir_all(&stale).is_ok() {
             println!(

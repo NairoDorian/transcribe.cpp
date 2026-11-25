@@ -29,6 +29,7 @@
 
 #include "ggml-backend.h"
 #include "ggml.h"
+#include "transcribe-phrase-boost.h"
 #include "transcribe.h"
 
 #include <cstdint>
@@ -249,14 +250,21 @@ void                    parakeet_device_decoder_trim(ParakeetDeviceDecoder * d) 
 //
 // Returns TRANSCRIBE_OK on success; cannot fail except via invalid args
 // (validated by the family driver before this is called).
-transcribe_status decode_tdt_greedy(const HostDecoderWeights &   w,
-                                    const float *                enc_out,
-                                    int                          T_enc,
-                                    int                          d_enc,
-                                    int                          n_threads,
-                                    std::vector<TdtToken> &      out_tokens,
-                                    const std::vector<uint8_t> * blocked_tokens = nullptr,
-                                    ParakeetDeviceDecoder *      device         = nullptr);
+//
+// `boost`, when non-null and non-empty, biases the token argmax toward the
+// caller's vocabulary terms (transcribe_run_params::vocabulary); see
+// transcribe-phrase-boost.h. Token confidences stay the model's own. The
+// device decoder honours it as well (re-ranking on the host inside a match),
+// and `blocked_tokens` stay unreachable under it.
+transcribe_status decode_tdt_greedy(const HostDecoderWeights &      w,
+                                    const float *                   enc_out,
+                                    int                             T_enc,
+                                    int                             d_enc,
+                                    int                             n_threads,
+                                    std::vector<TdtToken> &         out_tokens,
+                                    const std::vector<uint8_t> *    blocked_tokens = nullptr,
+                                    ParakeetDeviceDecoder *         device         = nullptr,
+                                    const transcribe::PhraseBoost * boost          = nullptr);
 
 // Run RNNT greedy decode end-to-end. Same predictor + joint code as TDT,
 // but the joint emits `vocab+1` logits (no duration extras) and the step
@@ -268,14 +276,16 @@ transcribe_status decode_tdt_greedy(const HostDecoderWeights &   w,
 // non-zero entry removes that token from every argmax (the language
 // allowlist: disallowed locale-tag tokens can never be emitted). Every other
 // score is untouched, so an empty mask is byte-identical to no mask.
-transcribe_status decode_rnnt_greedy(const HostDecoderWeights &   w,
-                                     const float *                enc_out,
-                                     int                          T_enc,
-                                     int                          d_enc,
-                                     int                          n_threads,
-                                     std::vector<TdtToken> &      out_tokens,
-                                     const std::vector<uint8_t> * blocked_tokens = nullptr,
-                                     ParakeetDeviceDecoder *      device         = nullptr);
+// `boost` is decode_tdt_greedy's vocabulary biasing.
+transcribe_status decode_rnnt_greedy(const HostDecoderWeights &      w,
+                                     const float *                   enc_out,
+                                     int                             T_enc,
+                                     int                             d_enc,
+                                     int                             n_threads,
+                                     std::vector<TdtToken> &         out_tokens,
+                                     const std::vector<uint8_t> *    blocked_tokens = nullptr,
+                                     ParakeetDeviceDecoder *         device         = nullptr,
+                                     const transcribe::PhraseBoost * boost          = nullptr);
 
 // Argmax over data[0, n) skipping ids whose blocked[] entry is non-zero.
 // Falls back to the plain argmax when `blocked` is null or empty.

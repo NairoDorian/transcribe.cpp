@@ -155,6 +155,7 @@ set(TRANSCRIBE_SRCS
     transcribe-model.cpp
     transcribe-tokenizer.cpp
     transcribe-prompting.cpp
+    transcribe-phrase-boost.cpp
     transcribe-unicode.cpp
     transcribe-unicode-data.cpp
     transcribe-debug.cpp

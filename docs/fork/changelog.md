@@ -5,6 +5,51 @@ the commits that carry the detail; `git show <sha>` has the measurements. Most
 upstream merges are not listed (`git log --merges upstream/main..HEAD`); the
 ones listed carry fork-side merge decisions. Overview: [README.md](README.md).
 
+## 2026-11-25 — upstream merge: Parakeet phrase boosting
+
+Upstream through `cfa237c2`, three commits:
+
+- Upstream #221: Parakeet's TDT and RNN-T decoders take
+  `transcribe_run_params::vocabulary` as phrase boosting
+  ([../prompting.md](../prompting.md#parakeet-vocabulary)), offline and in
+  batches. Streaming and CTC heads ignore the terms; streaming says so with a
+  WARN.
+- Upstream #264: Windows shared builds find their DLLs under Cargo 1.100's
+  build-dir layout.
+- Upstream #262: ggml 1.0.0. The fork has vendored it since 2026-11-14 (same
+  `417a024b`, same refreshed patch 0002), so `ggml/` and the patch series
+  stayed as they were.
+
+Merge decisions on the fork side:
+
+- The boost composes with the language allowlist. Both the model's own
+  argmax and the re-ranked one go through `argmax_range_masked`, so a blocked
+  locale tag stays unreachable after the re-rank.
+- The frame-batched joint keeps reading its window (`frame_logits`), not
+  the serial-only `logits` that upstream's line reads.
+- The GPU decoder honours the vocabulary as well. From the automaton's root,
+  the GPU's argmax is already the biased answer, because a term's first piece
+  earns no bonus. So only a token emitted inside a partial match fetches its
+  column's logits and is re-ranked on the host. That costs one extra
+  synchronize per such token, and nothing when there are no terms.
+
+Verification:
+
+- Without terms, transcripts are byte-identical to the pre-merge build on
+  CPU and CUDA. That covers Parakeet v3, Nemotron 3.5, Ultra, Redux TQ1 and
+  CTC on 16 clips, plus Nemotron streaming at 160 ms.
+- With `QuirkQuidQuill,RAPZ,Unifund` on `samples/product-names.wav`, both
+  heads write the terms as given, and the GPU decoder's transcript equals the
+  host decoder's on the same CUDA encoder output.
+- One upstream caveat seen on CUDA: Nemotron wrote a late "Quill" as "Quir".
+  The model started the term and the boost pulled the next piece, and then
+  the model ended the word.
+
+ZER0 effect: Parakeet models now report `Feature::Vocabulary`, so ZER0's
+batch runs send the custom words to Parakeet, Nemotron, Ultra and Redux and
+skip the fuzzy post-correction for those runs. Live streams still send no
+vocabulary.
+
 ## 2026-11-18 — Parakeet decoder stays on the host for integrated GPUs
 
 - The Parakeet TDT / RNN-T GPU decoder (`1f6df3c4`) no longer runs by

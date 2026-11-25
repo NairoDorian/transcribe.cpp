@@ -12,7 +12,7 @@ latest whole-fork audit is [audit-2026-11-17.md](audit-2026-11-17.md).
 | | |
 |---|---|
 | Upstream base | 0.4.2, merged through `cfa237c2` (2026-11-25) |
-| ggml | v1.0.0 (`417a024b`) + upstream patches `00xx` + fork patches `01xx` ([patches/ggml](../../patches/ggml)) |
+| ggml | master `d9fe7bff` (v1.0.0 + one examples-only commit) + upstream patches `00xx` + fork patches `01xx` ([patches/ggml](../../patches/ggml)) |
 | Divergence | ~120 fork commits plus 26 upstream merges; the public C ABI is additive only (`struct_size`-versioned fields, new entry points) |
 | Consumers | ZER0 (`Handy_V2`, desktop Multi-STT on CUDA, tracks `main`), FreeSpeech (Android arm64, Vulkan, pinned revision) |
 | Contract with ZER0 | [../zer0-engine-integration.md](../zer0-engine-integration.md) |

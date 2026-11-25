@@ -1,7 +1,7 @@
 repo: https://github.com/ggml-org/ggml.git
-sha:  417a024b4fb6bc3116d41af7c067166a039bdf12
+sha:  d9fe7bff3d2bf4d077e25c654486d02c321734aa
 version: 1.0.0
-date: 2026-11-13
+date: 2026-11-16
 patches:
   patches/ggml/0001-fix-threadpool-oversubscription.patch
   patches/ggml/0002-backend-reg-filter.patch

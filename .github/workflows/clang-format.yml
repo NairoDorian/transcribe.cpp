@@ -17,7 +17,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.3.3
+      - uses: astral-sh/setup-uv@v10.4.0
       - name: clang-format gate
         # Our C/C++ must match the pinned clang-format. Scope (vendored excluded)
         # and the pinned version both live in scripts/ci/clang-format.sh.

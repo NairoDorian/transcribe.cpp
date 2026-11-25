@@ -90,7 +90,7 @@ jobs:
       CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_28
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.3.3
+      - uses: astral-sh/setup-uv@v10.4.0
       - name: Cache the source-built Vulkan toolchain
         uses: actions/cache@v6.1.0
         with:
@@ -145,7 +145,7 @@ jobs:
       TRANSCRIBE_WHEEL_LANE: metal
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.3.3
+      - uses: astral-sh/setup-uv@v10.4.0
       - uses: ./.github/actions/fetch-canary
         with:
           hf-token: ${{ secrets.HF_TOKEN }}
@@ -193,7 +193,7 @@ jobs:
         CXX=/usr/bin/clang++
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.3.3
+      - uses: astral-sh/setup-uv@v10.4.0
       - uses: ./.github/actions/fetch-canary
         with:
           hf-token: ${{ secrets.HF_TOKEN }}
@@ -244,7 +244,7 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
           arch: x64
-      - uses: astral-sh/setup-uv@v10.3.3
+      - uses: astral-sh/setup-uv@v10.4.0
       - name: Install Vulkan SDK ${{ env.VULKAN_VERSION }}
         run: |
           curl.exe -o "$env:RUNNER_TEMP\vulkan_sdk.exe" -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkan_sdk.exe"
@@ -277,7 +277,7 @@ jobs:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.3.3
+      - uses: astral-sh/setup-uv@v10.4.0
       - uses: ./.github/actions/fetch-canary
         with:
           hf-token: ${{ secrets.HF_TOKEN }}
@@ -325,7 +325,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.3.3
+      - uses: astral-sh/setup-uv@v10.4.0
       - name: Build transcribe-cpp (pure wheel + sdist)
         run: |
           cd bindings/python
@@ -364,7 +364,7 @@ jobs:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.3.3
+      - uses: astral-sh/setup-uv@v10.4.0
       - name: Build, repair, packaging-smoke, and T4 runtime smoke (Modal)
         if: env.MODAL_TOKEN_ID != ''
         run: uvx --from modal modal run scripts/ci/modal_cuda_build.py
@@ -571,7 +571,7 @@ jobs:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.3.3
+      - uses: astral-sh/setup-uv@v10.4.0
       - uses: actions/download-artifact@v8.0.2
         with:
           pattern: dist-*
@@ -645,7 +645,7 @@ jobs:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.3.3  # for fetch-canary's uvx
+      - uses: astral-sh/setup-uv@v10.4.0  # for fetch-canary's uvx
       # setup-python's macOS downloads are built for GitHub's hosted images
       # (non-relocatable, hardcoded /Users/runner prefix) and cannot install
       # on a self-hosted runner under a different user (observed:

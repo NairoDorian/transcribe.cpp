@@ -1,5 +1,5 @@
 repo: https://github.com/mackron/dr_libs
-sha: f12e197fd462e4c22873fbd70d11b1d2f2c1dc3c
+sha: e381981afa52800b9a3864df548353ff67252fbc
 file: dr_wav.h
 
 Verbatim upstream header; re-vendor instead of editing or formatting.

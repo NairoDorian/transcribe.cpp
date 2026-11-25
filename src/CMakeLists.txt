@@ -22,6 +22,10 @@ endif()
 set(_has_blas FALSE)
 set(_transcribe_extra_libs "")
 set(_transcribe_blas_include_dirs "")
+# BLAS for the host decoder (cblas_sgemv in decoder.cpp). On Apple we
+# link Accelerate directly; elsewhere system BLAS is opt-in via
+# TRANSCRIBE_USE_SYSTEM_BLAS (default OFF; the fallback is within ~3%,
+# gigaam excepted, measured upstream 2026-11-25).
 if(APPLE)
     set(_has_blas TRUE)
     list(APPEND _transcribe_extra_libs "-framework Accelerate")
@@ -86,7 +90,7 @@ elseif(TRANSCRIBE_USE_SYSTEM_BLAS)
         message(STATUS "transcribe: no BLAS found — decoder uses scalar fallback")
     endif()
 else()
-    message(STATUS "transcribe: TRANSCRIBE_USE_SYSTEM_BLAS=OFF — decoder uses scalar fallback (official-wheel posture; no system BLAS vendored)")
+    message(STATUS "transcribe: TRANSCRIBE_USE_SYSTEM_BLAS=OFF — decoder uses scalar fallback (default)")
 endif()
 
 # -----------------------------------------------------------------------------

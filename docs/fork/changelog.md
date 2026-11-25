@@ -20,6 +20,11 @@ Upstream through `cfa237c2`, three commits:
   `417a024b`, same refreshed patch 0002), so `ggml/` and the patch series
   stayed as they were.
 
+- Upstream `a0729fa5` (merged the same day): `TRANSCRIBE_USE_SYSTEM_BLAS`
+  now defaults to OFF everywhere except Apple, which always uses
+  Accelerate. This changes nothing on the fork's Windows builds, where
+  CMake finds no BLAS.
+
 Merge decisions on the fork side:
 
 - The boost composes with the language allowlist. Both the model's own

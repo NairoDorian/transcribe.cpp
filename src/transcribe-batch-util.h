@@ -27,7 +27,8 @@ typedef struct ggml_backend_sched * ggml_backend_sched_t;
 
 namespace transcribe {
 
-// Create a normal-priority GGML pool without changing OS CPU placement.
+// Create a normal-priority GGML pool without changing OS CPU placement. The
+// pool starts paused: its workers sleep until its first graph (see the .cpp).
 struct ggml_threadpool_params make_threadpool_params(int n_threads);
 
 // Invoke `work(i)` for every i in [0, n) across up to `n_threads` worker
@@ -106,8 +107,14 @@ template <typename Thread = std::thread, typename Fn> void run_on_threads(int n_
 // when the caller passes n_threads <= 0. Counts the CPUs the process may
 // actually run on (the affinity mask via sched_getaffinity on Linux /
 // GetProcessAffinityMask on Windows), NOT the host's total core count, then
-// clamps to [1, cap].
-// Never exceeds the usable-CPU count.
+// clamps to [1, cap], so it never exceeds the usable-CPU count. This matters
+// under a constrained scheduler (taskset, cpuset, a CI runner pinned to N
+// vCPUs): hardware_concurrency() reports the full host, so a
+// `min(cap, hardware_concurrency())` default oversubscribes the usable cores
+// and ggml's spin-wait barriers livelock (tests/threadpool_oversubscription.c).
+// CAVEAT: the affinity mask reflects taskset/cpuset but NOT a CFS bandwidth
+// quota (`docker --cpus=N` without --cpuset) — that case still over-counts.
+// A cap <= 0 disables the clamp (use all usable CPUs).
 int default_n_threads(int cap = 8);
 
 // Resolve a CPU thread count and apply it to every CPU/BLAS backend in `sched`

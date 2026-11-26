@@ -80,7 +80,16 @@ int default_n_threads(int cap) {
 struct ggml_threadpool_params make_threadpool_params(int n_threads) {
     ggml_threadpool_params params;
     ggml_threadpool_params_init(&params, n_threads > 0 ? n_threads : default_n_threads());
-    // GGML defaults: normal priority, no affinity mask, adaptive polling.
+    // GGML defaults (normal priority, no affinity mask, adaptive polling),
+    // except that the pool starts paused. An unpaused pool's workers start
+    // busy-polling for work at once, for a few hundred ms each (poll = 50),
+    // and the pool of a GPU session's CPU fallback backend never gets any:
+    // on CUDA those spinning workers slowed Granite 5 CTC's host-side mel on
+    // the next runs, by up to 10x on a busy machine. Paused workers sleep
+    // until the first graph dispatch resumes them (ggml_graph_compute_kickoff),
+    // so a CPU session behaves as before from its first graph on.
+    // ggml_threadpool_params_match ignores `paused`.
+    params.paused = true;
     return params;
 }
 
@@ -100,8 +109,11 @@ struct ggml_threadpool_params make_threadpool_params(int n_threads) {
 // elementwise nodes read inflated. The accumulator is an unsynchronized
 // process global, so only the FIRST scheduler seen is instrumented (see
 // node_prof_attach); in a concurrent host the report therefore covers one
-// session, not the whole process. Inert (no callback installed) unless
-// requested.
+// session, not the whole process. Families that free their scheduler after
+// every run (the per-run GPU release) hand the next run a new one, so the
+// report may cover only the first run (later ones only when the allocator
+// happens to reuse the address): profile with a single run (or one stream).
+// Inert (no callback installed) unless requested.
 // ---------------------------------------------------------------------------
 namespace {
 

@@ -10,6 +10,7 @@ patches:
   patches/ggml/0101-export-cuda-pool-trim-and-graph-evict.patch
   patches/ggml/0102-tq1_g128-ternary.patch
   patches/ggml/0103-cuda-decode-kv-trim-and-mmvq-rows.patch
+  patches/ggml/0104-cpu-barrier-yield-only-when-oversubscribed.patch
 
 The `version` and `date` lines are conveniences for humans reviewing a pin bump:
 they are read from the vendored ggml/CMakeLists.txt and the upstream commit

@@ -1,0 +1,73 @@
+diff --git a/src/ggml-cpu/ggml-cpu.c b/src/ggml-cpu/ggml-cpu.c
+index a0fb0ad4..55224bdd 100644
+--- a/src/ggml-cpu/ggml-cpu.c
++++ b/src/ggml-cpu/ggml-cpu.c
+@@ -515,6 +515,7 @@ struct ggml_threadpool {
+     int          n_threads;   // Number of threads in the pool
+     int32_t      prio;        // Scheduling priority
+     uint32_t     poll;        // Polling level (0 - no polling)
++    int          n_cpus;      // CPUs this process may run on, at creation (barrier yield policy)
+ 
+     enum ggml_status ec;
+ };
+@@ -579,6 +580,35 @@ static inline void ggml_thread_yield(void) {
+ // small enough to recover quickly when a worker is being starved.
+ #define GGML_BARRIER_SPIN_BEFORE_YIELD 4096
+ 
++// Logical CPUs this process may run on (its affinity mask where the platform
++// has one), at least 1. 1 when unknown, which keeps the barrier's yield on.
++static int ggml_cpu_count_usable(void) {
++#if defined(_WIN32)
++    DWORD_PTR proc_mask = 0;
++    DWORD_PTR sys_mask  = 0;
++    if (GetProcessAffinityMask(GetCurrentProcess(), &proc_mask, &sys_mask) && proc_mask != 0) {
++        int n = 0;
++        for (; proc_mask != 0; proc_mask &= proc_mask - 1) {
++            n++;
++        }
++        return n;
++    }
++    return 1;
++#elif defined(__linux__) && defined(CPU_COUNT)
++    cpu_set_t set;
++    CPU_ZERO(&set);
++    if (sched_getaffinity(0, sizeof(set), &set) == 0 && CPU_COUNT(&set) > 0) {
++        return CPU_COUNT(&set);
++    }
++    return 1;
++#elif defined(_SC_NPROCESSORS_ONLN)
++    const long n = sysconf(_SC_NPROCESSORS_ONLN);
++    return n > 0 ? (int) n : 1;
++#else
++    return 1;
++#endif
++}
++
+ //
+ // NUMA support
+ //
+@@ -638,9 +668,15 @@ void ggml_barrier(struct ggml_threadpool * tp) {
+     }
+ 
+     // wait for other threads
++    // Yield only when the threads outnumber the CPUs this process may use: the
++    // self-oversubscription the yield exists for. Otherwise the yield hands the
++    // core to other processes' threads, and the waiter can lose a whole time
++    // slice at every barrier, which made inference several times slower on a
++    // machine loaded by other work; a pause-spin keeps the core.
++    const bool may_yield = n_threads > tp->n_cpus;
+     int spin = 0;
+     while (atomic_load_explicit(&tp->n_barrier_passed, memory_order_relaxed) == n_passed) {
+-        if (++spin < GGML_BARRIER_SPIN_BEFORE_YIELD) {
++        if (!may_yield || ++spin < GGML_BARRIER_SPIN_BEFORE_YIELD) {
+             ggml_thread_cpu_relax();
+         } else {
+             // Bounded pause-spin elapsed without release: yield so a worker that
+@@ -3382,6 +3418,7 @@ static struct ggml_threadpool * ggml_threadpool_new_impl(
+         threadpool->n_threads        = tpp->n_threads;
+         threadpool->poll             = tpp->poll;
+         threadpool->prio             = tpp->prio;
++        threadpool->n_cpus           = ggml_cpu_count_usable();
+         threadpool->ec               = GGML_STATUS_SUCCESS;
+     }
+ 

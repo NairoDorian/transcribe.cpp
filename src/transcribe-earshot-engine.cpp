@@ -398,10 +398,23 @@ struct V8 {
         m.v = _mm256_castsi256_ps(
             _mm256_add_epi32(_mm256_and_si256(bits, _mm256_set1_epi32(0x007fffff)), _mm256_set1_epi32(kSqrtHalfBits)));
     }
-    friend V8 operator+(const V8 & a, const V8 & b) { return {_mm256_add_ps(a.v, b.v)}; }
-    friend V8 operator-(const V8 & a, const V8 & b) { return {_mm256_sub_ps(a.v, b.v)}; }
-    friend V8 operator*(const V8 & a, const V8 & b) { return {_mm256_mul_ps(a.v, b.v)}; }
 };
+
+// Namespace-scope operators, not hidden friends: GCC before 13 does not apply
+// `#pragma GCC target` to a friend function defined inside a class, so the
+// intrinsics in such a body fail to inline ("target specific option mismatch",
+// GCC 12). Argument-dependent lookup finds these for V8 all the same.
+inline V8 operator+(const V8 & a, const V8 & b) {
+    return {_mm256_add_ps(a.v, b.v)};
+}
+
+inline V8 operator-(const V8 & a, const V8 & b) {
+    return {_mm256_sub_ps(a.v, b.v)};
+}
+
+inline V8 operator*(const V8 & a, const V8 & b) {
+    return {_mm256_mul_ps(a.v, b.v)};
+}
 
 inline void quantize_q15(const V8 & x, int16_t * out) {
     const __m256 v = _mm256_min_ps(_mm256_max_ps(x.v, _mm256_set1_ps(-32768.0f)), _mm256_set1_ps(32767.0f));
@@ -657,10 +670,23 @@ struct V16 {
         m.v = _mm512_castsi512_ps(
             _mm512_add_epi32(_mm512_and_si512(bits, _mm512_set1_epi32(0x007fffff)), _mm512_set1_epi32(kSqrtHalfBits)));
     }
-    friend V16 operator+(const V16 & a, const V16 & b) { return {_mm512_add_ps(a.v, b.v)}; }
-    friend V16 operator-(const V16 & a, const V16 & b) { return {_mm512_sub_ps(a.v, b.v)}; }
-    friend V16 operator*(const V16 & a, const V16 & b) { return {_mm512_mul_ps(a.v, b.v)}; }
 };
+
+// Namespace-scope operators, not hidden friends: GCC before 13 does not apply
+// `#pragma GCC target` to a friend function defined inside a class, so the
+// intrinsics in such a body fail to inline ("target specific option mismatch",
+// GCC 12). Argument-dependent lookup finds these for V16 all the same.
+inline V16 operator+(const V16 & a, const V16 & b) {
+    return {_mm512_add_ps(a.v, b.v)};
+}
+
+inline V16 operator-(const V16 & a, const V16 & b) {
+    return {_mm512_sub_ps(a.v, b.v)};
+}
+
+inline V16 operator*(const V16 & a, const V16 & b) {
+    return {_mm512_mul_ps(a.v, b.v)};
+}
 
 inline void quantize_q15(const V16 & x, int16_t * out) {
     const __m512 v = _mm512_min_ps(_mm512_max_ps(x.v, _mm512_set1_ps(-32768.0f)), _mm512_set1_ps(32767.0f));

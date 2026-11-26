@@ -179,6 +179,14 @@ float transcribe_vad_predict_frame(struct transcribe_vad * vad, const float * fr
     if (!vad || !frame_256) {
         return 0.0f;
     }
+    // The clamp below does not catch NaN (std::clamp passes it through), and
+    // one NaN reaching the network would poison its recurrent state for every
+    // later frame. Refuse the frame instead, as process_frame does.
+    for (size_t i = 0; i < transcribe::VoiceActivityDetector::FRAME_SAMPLES; ++i) {
+        if (!std::isfinite(frame_256[i])) {
+            return 0.0f;
+        }
+    }
     return vad->detector.predict_f32(std::span<const float, 256>(frame_256, 256));
 }
 
@@ -190,6 +198,9 @@ bool transcribe_vad_process_frame(struct transcribe_vad * vad, const float * fra
         return false;
     }
     auto res = vad->detector.process_frame(std::span<const float, 256>(frame_256, 256), out_score);
+    if (!res.has_value() && out_score) {
+        *out_score = 0.0f;  // a non-finite sample: the frame was not scored
+    }
     return res.value_or(false);
 }
 

@@ -25,13 +25,18 @@ pub struct StreamOptions {
     pub stable_prefix_agreement_n: u32,
     /// Optional family-specific stream extension.
     pub family: Option<StreamExtension>,
-    /// Enable engine-native Earshot VAD. Defaults to true.
+    /// Run the engine's Earshot VAD on every fed frame (the `vad_*` /
+    /// `audio_level_dbfs` telemetry on [`StreamUpdate`]) and skip feed slices
+    /// that are silence while the model holds no audio. Default true. With
+    /// `false` every slice reaches the model and the telemetry stays idle.
     pub enable_vad: bool,
-    /// VAD sensitivity threshold in [0.05, 0.95]. Default 0.50.
+    /// VAD threshold in [0.05, 0.95]; out of range takes the default 0.50.
     pub vad_threshold: f32,
-    /// VAD speech onset prefill in ms. Default 450.
+    /// Reserved, no effect (nothing audible is ever skipped, so there is no
+    /// onset to restore). Default 450.
     pub vad_prefill_ms: u32,
-    /// VAD hangover trailing duration in ms. Default 1200.
+    /// How long the VAD stays in speech after the last voiced frame, in ms.
+    /// Default 1200.
     pub vad_hangover_ms: u32,
 }
 
@@ -75,13 +80,15 @@ pub struct StreamUpdate {
     pub committed_changed: bool,
     /// `tentative_text` changed this call.
     pub tentative_changed: bool,
-    /// Voice activity detected on the latest fed audio chunk.
+    /// The stream VAD is in speech after the latest frame (hangover included).
+    /// Live only with `StreamOptions::enable_vad`.
     pub vad_speaking: bool,
-    /// Accumulated duration of speech in the current active burst (ms).
+    /// Speech time since the stream began, hangover included (ms).
     pub vad_speech_ms: u64,
-    /// Raw probability score [0.0, 1.0] from the latest Earshot VAD evaluation.
+    /// Earshot speech probability [0.0, 1.0] of the latest 16 ms frame.
     pub vad_last_score: f32,
-    /// Current audio RMS energy level in dBFS.
+    /// RMS level of the latest 16 ms frame in dBFS (-120 for digital silence,
+    /// -100 until a frame has been scored).
     pub audio_level_dbfs: f32,
 }
 

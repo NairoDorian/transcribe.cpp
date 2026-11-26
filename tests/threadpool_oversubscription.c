@@ -56,8 +56,11 @@ int main(int argc, char ** argv) {
     if (!SetProcessAffinityMask(GetCurrentProcess(), (DWORD_PTR) 0x3)) {
         fprintf(stderr, "warning: SetProcessAffinityMask failed (%lu)\n", GetLastError());
     }
-    // 15s watchdog -> converts a hang into exit code 2 instead of hanging CI.
-    CreateThread(NULL, 0, watchdog_main, (LPVOID) (uintptr_t) 15000, 0, NULL);
+    // Watchdog -> converts a hang into exit code 2 instead of hanging CI. A
+    // pass takes ~1.6 s on an idle 13th-gen laptop; the margin is for a loaded
+    // machine, where the two pinned CPUs are shared (a real deadlock never
+    // finishes, so any finite budget still catches it).
+    CreateThread(NULL, 0, watchdog_main, (LPVOID) (uintptr_t) 60000, 0, NULL);
 #endif
 
     struct ggml_init_params params = {

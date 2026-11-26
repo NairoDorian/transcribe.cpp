@@ -30,6 +30,24 @@
 # message in the build log. When uv is not installed at all, the
 # loader test is not registered — a skipped test is honest, a passed
 # test against stale fixtures is not.
+#
+# Model sets (TRANSCRIBE_MODEL_SET): a test that links a family's internals
+# gates on TRANSCRIBE_ACTIVE_MODELS (families compiled into the library); a
+# test that only loads fixture files through the public API gates on
+# TRANSCRIBE_LOADABLE_MODELS (the same families, plus under TRANSCRIBE_ARCH_DL
+# the plugins built beside the core). A test whose source branches per family
+# calls transcribe_test_family_defs for its TRANSCRIBE_ENABLE_ARCH_* defines.
+
+# A static build passes TRANSCRIBE_ENABLE_ARCH_<FAMILY> through the transcribe
+# target; an ARCH_DL core defines none, so name the loadable plugins instead.
+function(transcribe_test_family_defs tgt)
+    if(TRANSCRIBE_ARCH_DL)
+        foreach(_fam IN LISTS TRANSCRIBE_LOADABLE_MODELS)
+            string(TOUPPER "${_fam}" _fam_upper)
+            target_compile_definitions(${tgt} PRIVATE TRANSCRIBE_ENABLE_ARCH_${_fam_upper}=1)
+        endforeach()
+    endif()
+endfunction()
 
 # -----------------------------------------------------------------------------
 # Pure C ABI smoke
@@ -174,6 +192,9 @@ add_test(NAME transcribe_backend_probe_order_unit
 # always runs but exercises different branches depending on what the
 # build configured and what hardware is available.
 
+# Passes ggml device handles from its own registry to init_backends: same
+# single-ggml requirement as transcribe_log_unit.
+if(NOT TRANSCRIBE_SHARED_EMBED)
 add_executable(transcribe_backend_init_unit
     backend_init_unit.cpp)
 
@@ -186,6 +207,7 @@ transcribe_apply_warnings(transcribe_backend_init_unit)
 
 add_test(NAME transcribe_backend_init_unit
     COMMAND transcribe_backend_init_unit)
+endif()
 
 # -----------------------------------------------------------------------------
 # Parakeet chunked_limited_with_rc attention mask unit test
@@ -217,6 +239,8 @@ endif()
 # [window,chunk,n_chunks] representation reconstructs the original dense
 # [T,T] chunk topology and relative-position offsets for ragged geometries.
 
+# Both link Parakeet internals, so they need the family compiled in.
+if("parakeet" IN_LIST TRANSCRIBE_ACTIVE_MODELS)
 add_executable(transcribe_parakeet_chunked_limited_window_mask_unit
     parakeet_chunked_limited_window_mask_unit.cpp)
 
@@ -237,6 +261,7 @@ target_link_libraries(transcribe_parakeet_longform_unit PRIVATE transcribe ggml)
 target_include_directories(transcribe_parakeet_longform_unit PRIVATE ${CMAKE_SOURCE_DIR}/src)
 transcribe_apply_warnings(transcribe_parakeet_longform_unit)
 add_test(NAME transcribe_parakeet_longform_unit COMMAND transcribe_parakeet_longform_unit)
+endif()
 
 # -----------------------------------------------------------------------------
 # Variable-length batch mask and causal subsampling unit test
@@ -507,6 +532,15 @@ add_test(NAME transcribe_conv_pw_promote_unit
 # causal_lm::pack_gate_up: alias / copy / mismatch, no model needed
 # -----------------------------------------------------------------------------
 
+# causal_lm is compiled in only with a family that uses it (src/CMakeLists.txt).
+set(_causal_lm_families canary_qwen cohere funasr_nano granite moss qwen3_asr voxtral voxtral_realtime)
+set(_have_causal_lm FALSE)
+foreach(_fam IN LISTS _causal_lm_families)
+    if(_fam IN_LIST TRANSCRIBE_ACTIVE_MODELS)
+        set(_have_causal_lm TRUE)
+    endif()
+endforeach()
+if(_have_causal_lm)
 add_executable(transcribe_pack_gate_up_unit
     pack_gate_up_unit.cpp)
 
@@ -519,6 +553,7 @@ transcribe_apply_warnings(transcribe_pack_gate_up_unit)
 
 add_test(NAME transcribe_pack_gate_up_unit
     COMMAND transcribe_pack_gate_up_unit)
+endif()
 
 # -----------------------------------------------------------------------------
 # Dispatcher-level transcribe_run behavior
@@ -574,6 +609,10 @@ add_test(NAME transcribe_stream_dispatch_unit
 # Log sink contract (three states + ggml bridge level mapping)
 # -----------------------------------------------------------------------------
 
+# Drives ggml's logger state, which must be the library's own: under
+# TRANSCRIBE_SHARED_EMBED (and so TRANSCRIBE_ARCH_DL) ggml lives inside the
+# shared core and this executable would link a second, separate copy.
+if(NOT TRANSCRIBE_SHARED_EMBED)
 add_executable(transcribe_log_unit
     log_unit.cpp)
 
@@ -588,6 +627,7 @@ transcribe_apply_warnings(transcribe_log_unit)
 
 add_test(NAME transcribe_log_unit
     COMMAND transcribe_log_unit)
+endif()
 
 # -----------------------------------------------------------------------------
 # CPU thread-count helpers (affinity-aware default + sched resolution)
@@ -692,6 +732,10 @@ transcribe_apply_warnings(transcribe_threadpool_oversubscription)
 
 add_test(NAME transcribe_threadpool_oversubscription
     COMMAND transcribe_threadpool_oversubscription)
+# The test pins itself to 2 logical CPUs and times out on a watchdog, so other
+# tests loading those CPUs under `ctest -j` can starve it into a false
+# DEADLOCK (seen 2026-11-25: 1.6 s alone, > 15 s next to a parallel build).
+set_tests_properties(transcribe_threadpool_oversubscription PROPERTIES RUN_SERIAL TRUE)
 
 # -----------------------------------------------------------------------------
 # Synthetic GGUF fixtures (for the loader smoke test)
@@ -764,6 +808,7 @@ if(TRANSCRIBE_UV)
         loader_smoke.cpp)
 
     target_link_libraries(transcribe_loader_smoke PRIVATE transcribe)
+    transcribe_test_family_defs(transcribe_loader_smoke)
 
     target_compile_definitions(transcribe_loader_smoke PRIVATE
         "TRANSCRIBE_TEST_FIXTURES_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures\"")
@@ -973,7 +1018,7 @@ endif()
 # ecapa_tdnn (LANGID role) fixture smoke
 # -----------------------------------------------------------------------------
 
-if(TRANSCRIBE_UV)
+if(TRANSCRIBE_UV AND "ecapa_tdnn" IN_LIST TRANSCRIBE_LOADABLE_MODELS)
     add_executable(transcribe_ecapa_tdnn_smoke ecapa_tdnn_smoke.cpp)
     target_link_libraries(transcribe_ecapa_tdnn_smoke PRIVATE transcribe)
     target_compile_definitions(transcribe_ecapa_tdnn_smoke PRIVATE
@@ -1006,6 +1051,7 @@ endif()
 if(TRANSCRIBE_UV)
     add_executable(transcribe_weights_mmap_smoke weights_mmap_smoke.cpp)
     target_link_libraries(transcribe_weights_mmap_smoke PRIVATE transcribe)
+    transcribe_test_family_defs(transcribe_weights_mmap_smoke)
     target_compile_definitions(transcribe_weights_mmap_smoke PRIVATE
         "TRANSCRIBE_TEST_FIXTURES_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures\"")
     transcribe_apply_warnings(transcribe_weights_mmap_smoke)
@@ -1871,7 +1917,7 @@ if(TRANSCRIBE_BUILD_EXAMPLES)
     set_tests_properties(transcribe_cli_diarize_smoke PROPERTIES
         SKIP_REGULAR_EXPRESSION "SKIP:")
 
-    if(TRANSCRIBE_UV)
+    if(TRANSCRIBE_UV AND "ecapa_tdnn" IN_LIST TRANSCRIBE_LOADABLE_MODELS)
         add_test(NAME transcribe_cli_langid_smoke
             COMMAND ${CMAKE_COMMAND}
                 -DCLI=$<TARGET_FILE:transcribe-cli>

@@ -27,7 +27,9 @@ impl Drop for VoiceActivityDetector {
 }
 
 impl VoiceActivityDetector {
-    /// Create a new detector instance with the specified sensitivity threshold [0.05, 0.95].
+    /// Create a detector. `threshold` is the speech-entry score in
+    /// [0.05, 0.95]; out of range (or NaN) takes the default 0.5. `None` only
+    /// on an allocation failure.
     pub fn new(threshold: f32) -> Option<Self> {
         let ptr = unsafe { sys::transcribe_vad_init(threshold) };
         if ptr.is_null() {
@@ -37,14 +39,19 @@ impl VoiceActivityDetector {
         }
     }
 
-    /// Predict the raw speech probability score [0.0, 1.0] for a 256-sample frame (16 ms @ 16 kHz).
+    /// Speech probability [0.0, 1.0] of a 256-sample frame (16 ms @ 16 kHz).
+    /// Advances the detector's recurrent state, not the speech flag. A frame
+    /// with a non-finite sample scores 0 and leaves the state untouched.
     pub fn predict_frame(&mut self, frame_256: &[f32; 256]) -> f32 {
         unsafe { sys::transcribe_vad_predict_frame(self.ptr, frame_256.as_ptr()) }
     }
 
-    /// Score a 256-sample frame and advance the hysteresis state machine.
+    /// Score a 256-sample frame and advance the speech flag: speech starts
+    /// at a score >= threshold, continues while it stays >= 0.7 x threshold
+    /// and for 1200 ms after it drops.
     ///
-    /// Returns (is_speaking, frame_score).
+    /// Returns (is_speaking, frame_score); a frame with a non-finite sample
+    /// returns (false, 0.0) and leaves the state untouched.
     pub fn process_frame(&mut self, frame_256: &[f32; 256]) -> (bool, f32) {
         let mut score = 0.0f32;
         let speaking =
@@ -52,7 +59,8 @@ impl VoiceActivityDetector {
         (speaking, score)
     }
 
-    /// Update sensitivity threshold in place without resetting recurrent state.
+    /// Update the threshold in place without resetting recurrent state
+    /// (clamped to [0.05, 0.95]; NaN is ignored).
     pub fn set_threshold(&mut self, threshold: f32) {
         unsafe { sys::transcribe_vad_set_threshold(self.ptr, threshold) };
     }

@@ -574,13 +574,12 @@ int run_asr_batch(const cli_args & args, std::ofstream * output) {
                 }
                 run_st = transcribe_stream_begin(ctx, &rp, &sp);
                 if (run_st == TRANSCRIBE_OK) {
-                    const int    chunk_samples = std::max(1, args.stream_chunk_ms * 16000 / 1000);
                     // A feed carries at least one chunk: below that the
                     // library has nothing whole to decode and the extra
                     // calls would only re-split the same audio.
-                    const int    feed_ms       = std::max(args.stream_chunk_ms, args.stream_feed_ms);
-                    const size_t feed_samples  = static_cast<size_t>(feed_ms) * 16000 / 1000;
-                    size_t       pos           = 0;
+                    const int    feed_ms      = std::max(args.stream_chunk_ms, args.stream_feed_ms);
+                    const size_t feed_samples = static_cast<size_t>(feed_ms) * 16000 / 1000;
+                    size_t       pos          = 0;
                     while (pos < pcm.size()) {
                         const size_t                    take = std::min<size_t>(feed_samples, pcm.size() - pos);
                         struct transcribe_stream_update upd;

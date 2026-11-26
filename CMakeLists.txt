@@ -621,6 +621,25 @@ if(WIN32)
     endif()
 endif()
 
+# Compiler cache on MSVC. ggml's GGML_CCACHE (default ON) installs ccache /
+# sccache as a GLOBAL RULE_LAUNCH_COMPILE, which with the Ninja and Makefile
+# generators also wraps the resource compiler: a shared build (it compiles
+# transcribe-version.rc) then fails under sccache ("cmcldeps ... Couldn't parse
+# arguments", reproduced 2026-11-25). ggml installs that global launcher only
+# when no per-language one is set, and a per-language launcher never reaches
+# RC, so set C and C++ ones here, with ggml's preference (ccache, then
+# sccache). The Rust build.rs does the same. GGML_CCACHE is declared inside
+# ggml, so it is undefined on a first configure; treat that as its default ON.
+if(MSVC AND CMAKE_GENERATOR MATCHES "Ninja|Makefiles" AND (NOT DEFINED GGML_CCACHE OR GGML_CCACHE)
+   AND NOT CMAKE_C_COMPILER_LAUNCHER AND NOT CMAKE_CXX_COMPILER_LAUNCHER)
+    find_program(TRANSCRIBE_CCACHE_PROGRAM NAMES ccache sccache)
+    if(TRANSCRIBE_CCACHE_PROGRAM)
+        set(CMAKE_C_COMPILER_LAUNCHER "${TRANSCRIBE_CCACHE_PROGRAM}")
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${TRANSCRIBE_CCACHE_PROGRAM}")
+        message(STATUS "transcribe: compiler cache ${TRANSCRIBE_CCACHE_PROGRAM} (C/C++ launchers; RC not wrapped)")
+    endif()
+endif()
+
 # ggml's CMake declares its own warning flags; let it.
 add_subdirectory(ggml)
 

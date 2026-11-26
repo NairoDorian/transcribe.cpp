@@ -200,25 +200,6 @@ transcribe_status allocate_copied_weights(ggml_context *      ctx_meta,
                                           const char *        error_tag,
                                           WeightStorage &     out);
 
-// Stream tensor data from the GGUF data section on disk into
-// already-allocated backend buffer slots: read straight into host buffers,
-// uploaded through ggml_backend_tensor_set in bounded (16 MiB) chunks
-// otherwise. Tensors that `skip` maps are left alone (they already hold the
-// file bytes); with skip == nullptr every tensor in ctx_meta is streamed.
-//
-//   path:      filesystem path to the GGUF file, reopened fresh via
-//              std::ifstream. Stable for the life of the call.
-//   gguf_data: the full gguf_context from gguf_init_from_file with
-//              no_alloc=true. Used to resolve each tensor's data
-//              offset.
-//   ctx_meta:  the ggml_context that built_*_weights() populated
-//              (tensors with backend-bound data slots).
-//   error_tag: log prefix for diagnostics.
-//
-// Returns TRANSCRIBE_OK on success, TRANSCRIBE_ERR_GGUF on any
-// I/O or tensor-not-found failure. On failure ctx_meta's tensors
-// may be partially populated; the caller should discard the
-// whole model state on error.
 // Ternary weights are stored as GGML_TYPE_TQ1_G128 (1.75 bpw on disk) and
 // can run in one of three lossless in-memory layouts (same codes, same fp16
 // scales):
@@ -253,6 +234,32 @@ ggml_backend_buffer_t alloc_cpu_repack_weights(const BackendPlan & plan,
 // docs/tools/quantization.md "Native ternary weights").
 ggml_type ternary_runtime_default(const BackendPlan & plan);
 
+// Stream tensor data from the GGUF data section on disk into
+// already-allocated backend buffer slots: read straight into host buffers,
+// uploaded through ggml_backend_tensor_set in bounded (16 MiB) chunks
+// otherwise. Tensors that `skip` maps are left alone (they already hold the
+// file bytes); with skip == nullptr every tensor in ctx_meta is streamed.
+//
+// Two cases are read and uploaded as one whole tensor instead:
+//   - the planned dtype differs from the file's: TQ1_G128 re-laid out as
+//     Q4_0 / Q2_0 (retype_ternary_for_runtime), or a plain float format
+//     converted through f32 (e.g. a BF16 weight a graph needs as F32);
+//   - a CPU "extra" buffer such as CPU_REPACK (alloc_cpu_repack_weights),
+//     whose set_tensor re-lays the tensor out and accepts only whole writes.
+//
+//   path:      filesystem path to the GGUF file, reopened fresh via
+//              std::ifstream. Stable for the life of the call.
+//   gguf_data: the full gguf_context from gguf_init_from_file with
+//              no_alloc=true. Used to resolve each tensor's data
+//              offset.
+//   ctx_meta:  the ggml_context that built_*_weights() populated
+//              (tensors with backend-bound data slots).
+//   error_tag: log prefix for diagnostics.
+//
+// Returns TRANSCRIBE_OK on success, TRANSCRIBE_ERR_GGUF on any
+// I/O or tensor-not-found failure, or a dtype pair with no conversion. On
+// failure ctx_meta's tensors may be partially populated; the caller should
+// discard the whole model state on error.
 transcribe_status stream_tensor_data(const std::string &   path,
                                      const gguf_context *  gguf_data,
                                      ggml_context *        ctx_meta,

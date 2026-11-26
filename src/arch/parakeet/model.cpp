@@ -965,11 +965,6 @@ static const transcribe::PhraseBoost * vocabulary_boost(ParakeetSession *       
     return pc->boost.empty() ? nullptr : &pc->boost;
 }
 
-// Host-side TDT/RNNT/CTC decode + public result-hierarchy build for one
-// utterance's encoder output. `enc` is the row-major [T_enc, d_enc]
-// activation for ONE utterance; utt_index >= 0 tags the per-utterance
-// dump (-1 for single-shot). Writes the session result slot (tokens /
-// words / segments / full_text / result_kind / has_result).
 // Language allowlist -> blocked-token mask (token id -> 1 when the decoder
 // must never emit it). Empty when the request does not restrict detection:
 // an explicit `language`, or no list. Two layers:
@@ -1114,6 +1109,13 @@ static ParakeetDeviceDecoder * session_device_decoder(ParakeetSession * pc, cons
     return pc->device_decoder.get();
 }
 
+// Host-side TDT/RNNT/CTC decode + public result-hierarchy build for one
+// utterance's encoder output. `enc` is the row-major [T_enc, d_enc]
+// activation for ONE utterance; utt_index >= 0 tags the per-utterance
+// dump (-1 for single-shot). Writes the session result slot (tokens /
+// words / segments / full_text / result_kind / has_result). The transducer
+// heads decode on the session's device decoder when it has one
+// (session_device_decoder), else on the host.
 static transcribe_status decode_and_populate(ParakeetSession *             pc,
                                              ParakeetModel *               pm,
                                              const transcribe_run_params * params,

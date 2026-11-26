@@ -896,6 +896,23 @@ static void test_vad_abi(void) {
     speaking = transcribe_vad_process_frame(vad, audio, &frame_score);
     CHECK(fabsf(frame_score - nn_score) < 1e-4f);
 
+    /* A non-finite sample is refused by both calls without touching the
+     * detector: the next finite frame scores as if the bad one never came
+     * (a NaN reaching the network would poison its recurrent state). */
+    float bad[256];
+    for (int i = 0; i < 256; ++i) {
+        bad[i] = audio[i];
+    }
+    bad[100] = NAN;
+    transcribe_vad_reset(vad);
+    CHECK(fabsf(transcribe_vad_predict_frame(vad, bad)) < 1e-6f);
+    frame_score = -1.0f;
+    CHECK(transcribe_vad_process_frame(vad, bad, &frame_score) == false);
+    CHECK(fabsf(frame_score) < 1e-6f);
+    frame_score = -1.0f;
+    transcribe_vad_process_frame(vad, audio, &frame_score);
+    CHECK(fabsf(frame_score - nn_score) < 1e-6f);
+
     /* Change threshold and reset */
     transcribe_vad_set_threshold(vad, 0.35f);
     transcribe_vad_reset(vad);

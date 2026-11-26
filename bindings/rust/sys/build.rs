@@ -432,14 +432,25 @@ fn main() {
     // CMakeLists-forced OFF on every platform; `--features openmp` is the only
     // opt-in. See the "OpenMP — CENTRAL POLICY" block in the root CMakeLists.txt.
 
-    if feature("MINIMAL_MULTILINGUAL") {
-        cfg.define("TRANSCRIBE_MODEL_SET", "minimal-multilingual");
+    // Both are defined on every configure, defaults included. Cargo reruns
+    // this script in the same OUT_DIR when only an environment variable
+    // changes, and a CMake cache keeps any -D value it is not given again: a
+    // build after unsetting TRANSCRIBE_MODEL_SET would otherwise still build
+    // the old set (and save it under the new configuration's cache key). A
+    // family list on its own selects the custom set, the only one CMake reads
+    // TRANSCRIBE_MODELS for.
+    let models = models_env.as_deref().map(str::trim).unwrap_or_default();
+    let model_set = if feature("MINIMAL_MULTILINGUAL") {
+        "minimal-multilingual"
     } else if !model_set_env.is_empty() {
-        cfg.define("TRANSCRIBE_MODEL_SET", &model_set_env);
-    }
-    if let Ok(val) = env::var("TRANSCRIBE_MODELS") {
-        cfg.define("TRANSCRIBE_MODELS", val);
-    }
+        model_set_env.as_str()
+    } else if !models.is_empty() {
+        "custom"
+    } else {
+        "full"
+    };
+    cfg.define("TRANSCRIBE_MODEL_SET", model_set);
+    cfg.define("TRANSCRIBE_MODELS", models);
 
     // Escape hatch: forward arbitrary configure args so the curated features are
     // never a hard ceiling. Anything CMake accepts (-DGGML_*, a -DTRANSCRIBE_*

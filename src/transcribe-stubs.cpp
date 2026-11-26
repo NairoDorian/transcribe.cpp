@@ -6,6 +6,7 @@
 // of its family-specific extension initializers or query functions link
 // without unresolved external symbols.
 
+#include "transcribe-abi.h"
 #include "transcribe.h"
 #include "transcribe/moonshine_streaming.h"
 #include "transcribe/parakeet.h"
@@ -47,11 +48,24 @@ TRANSCRIBE_API int transcribe_get_whisper_chunk_count(const struct transcribe_se
     return 0;
 }
 
-TRANSCRIBE_API transcribe_status
-transcribe_get_whisper_chunk_trace(const struct transcribe_session * /*session*/,
-                                   int /*i*/,
-                                   struct transcribe_whisper_chunk_trace * /*out_trace*/) {
-    return TRANSCRIBE_ERR_UNSUPPORTED_ARCH;
+// The real accessor's answer for a session that is not Whisper's, which is
+// every session of a build without Whisper: the same argument checks, then an
+// all-zero trace and OK (the safe-sentinel contract api_smoke pins).
+TRANSCRIBE_API transcribe_status transcribe_get_whisper_chunk_trace(const struct transcribe_session * /*session*/,
+                                                                    int /*i*/,
+                                                                    struct transcribe_whisper_chunk_trace * out_trace) {
+    if (out_trace == nullptr) {
+        return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+    if (const auto st = transcribe::check_struct_size(
+            out_trace->struct_size, TRANSCRIBE_FIELD_END(transcribe_whisper_chunk_trace, n_fallbacks));
+        st != TRANSCRIBE_OK) {
+        return st;
+    }
+    transcribe_whisper_chunk_trace zero{};
+    zero.struct_size = out_trace->struct_size;
+    transcribe::copy_out_prefix(out_trace, &zero, out_trace->struct_size, sizeof(zero));
+    return TRANSCRIBE_OK;
 }
 
 }  // extern "C"

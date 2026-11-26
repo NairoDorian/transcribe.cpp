@@ -17,6 +17,10 @@
 //   - two models mapped from one file coexist and free in either order;
 //   - a model under a non-ASCII path maps (Windows wide-path conversion);
 //   - with Metal available, the same holds for Metal-mapped weights.
+//
+// Each case needs its fixture's family loadable: compiled in, or built as a
+// plugin (TRANSCRIBE_ENABLE_ARCH_*, see transcribe_test_family_defs). A build
+// with a smaller model set runs the cases it can and says which it skipped.
 
 #include "transcribe.h"
 #include "transcribe/langid.h"
@@ -38,6 +42,37 @@
 namespace {
 
 int g_failures = 0;
+
+// The fixture families this build can load.
+#if defined(TRANSCRIBE_ENABLE_ARCH_COHERE)
+constexpr bool k_cohere = true;
+#else
+constexpr bool k_cohere = false;
+#endif
+#if defined(TRANSCRIBE_ENABLE_ARCH_QWEN3_ASR)
+constexpr bool k_qwen3_asr = true;
+#else
+constexpr bool k_qwen3_asr = false;
+#endif
+#if defined(TRANSCRIBE_ENABLE_ARCH_GRANITE5_CTC)
+constexpr bool k_granite5_ctc = true;
+#else
+constexpr bool k_granite5_ctc = false;
+#endif
+#if defined(TRANSCRIBE_ENABLE_ARCH_SILERO_VAD)
+constexpr bool k_silero_vad = true;
+#else
+constexpr bool k_silero_vad = false;
+#endif
+#if defined(TRANSCRIBE_ENABLE_ARCH_ECAPA_TDNN)
+constexpr bool k_ecapa_tdnn = true;
+#else
+constexpr bool k_ecapa_tdnn = false;
+#endif
+
+void skipped(const char * what, const char * family) {
+    std::fprintf(stderr, "weights_mmap_smoke: %s skipped (%s is not in this build's model set)\n", what, family);
+}
 
 #define CHECK(cond)                                                              \
     do {                                                                         \
@@ -276,14 +311,19 @@ void test_load_only_families() {
     struct Fixture {
         const char * file;
         const char * tag;
+        bool         loadable;
     };
 
     const Fixture fixtures[] = {
-        { "arch_cohere_minimal.gguf",       "cohere"       },
-        { "arch_qwen3_asr_minimal.gguf",    "qwen3_asr"    },
-        { "arch_granite5_ctc_minimal.gguf", "granite5_ctc" },
+        { "arch_cohere_minimal.gguf",       "cohere",       k_cohere       },
+        { "arch_qwen3_asr_minimal.gguf",    "qwen3_asr",    k_qwen3_asr    },
+        { "arch_granite5_ctc_minimal.gguf", "granite5_ctc", k_granite5_ctc },
     };
     for (const Fixture & f : fixtures) {
+        if (!f.loadable) {
+            skipped(f.file, f.tag);
+            continue;
+        }
         for (Mode mode : k_modes) {
             transcribe_model * m = load_checked(fixture(f.file), mode, f.tag);
             transcribe_model_free(m);
@@ -450,13 +490,21 @@ int main() {
     transcribe_log_set(capture_log, nullptr);
 
     test_load_only_families();
-    test_silero_equivalence();
-    test_ecapa_equivalence();
-    test_misaligned_file();
-    test_truncated_file();
-    test_two_models_one_file();
-    test_utf8_path();
-    test_metal();
+    if constexpr (k_silero_vad) {
+        test_silero_equivalence();
+        test_misaligned_file();
+        test_truncated_file();
+        test_two_models_one_file();
+        test_utf8_path();
+    } else {
+        skipped("the Silero cases (equivalence, misaligned, truncated, two models, UTF-8 path)", "silero_vad");
+    }
+    if constexpr (k_ecapa_tdnn) {
+        test_ecapa_equivalence();
+        test_metal();
+    } else {
+        skipped("the ECAPA cases (equivalence, Metal)", "ecapa_tdnn");
+    }
 
     transcribe_log_set(nullptr, nullptr);
     if (g_failures != 0) {

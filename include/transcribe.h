@@ -2185,14 +2185,18 @@ struct transcribe_stream_params {
     transcribe_stream_commit_policy commit_policy;
     uint32_t                        stable_prefix_agreement_n;
     /* --- Voice Activity Detection (VAD) ---
-     * enable_vad: the silence fast path. A feed slice is skipped (never reaches
-     * the model, its time is kept in every published timestamp) only when the
-     * model holds no audio, Earshot is not in speech and no 16 ms window of the
-     * slice reaches -42 dBFS. Telemetry fields of transcribe_stream_update are
-     * filled either way. vad_threshold outside 0.05..0.95 (or NaN) takes the
-     * default. vad_prefill_ms is reserved and has no effect: nothing audible is
-     * ever skipped, so there is no onset to restore. vad_hangover_ms keeps the
-     * VAD in speech that long after the last voiced frame. */
+     * enable_vad: runs Earshot on every fed 16 ms frame (the telemetry fields
+     * of transcribe_stream_update) and enables the silence fast path: a feed
+     * slice is skipped (never reaches the model, its time is kept in every
+     * published timestamp) only when the model holds no audio, Earshot is not
+     * in speech and no 16 ms window of the slice reaches -42 dBFS. With
+     * enable_vad = false the detector does not run: every slice reaches the
+     * model and the telemetry fields keep their idle values. A family that
+     * re-encodes the whole stream every tick (R2T2) never skips, whatever this
+     * says. vad_threshold outside 0.05..0.95 (or NaN) takes the default.
+     * vad_prefill_ms is reserved and has no effect: nothing audible is ever
+     * skipped, so there is no onset to restore. vad_hangover_ms keeps the VAD
+     * in speech that long after the last voiced frame. */
     bool                            enable_vad;      /* Default: true */
     float                           vad_threshold;   /* Default: 0.50f (0.05f to 0.95f) */
     uint32_t                        vad_prefill_ms;  /* Reserved, no effect (default 450) */
@@ -2267,11 +2271,12 @@ struct transcribe_stream_update {
     int64_t  buffered_ms;
     bool     committed_changed;
     bool     tentative_changed;
-    /* --- VAD Telemetry to Host App / Overlay --- */
-    bool     vad_speaking;     /* Whether user is currently speaking */
-    uint64_t vad_speech_ms;    /* Accumulated speech duration (ms) */
-    float    vad_last_score;   /* Raw speech probability [0.0, 1.0] of latest frame */
-    float    audio_level_dbfs; /* Peak RMS audio level in dBFS */
+    /* --- Stream VAD telemetry (live only with stream params enable_vad) --- */
+    bool     vad_speaking;     /* in speech after the latest frame (hangover included) */
+    uint64_t vad_speech_ms;    /* speech time since stream begin, hangover included */
+    float    vad_last_score;   /* Earshot speech probability [0, 1] of the latest frame */
+    float    audio_level_dbfs; /* RMS level of the latest 16 ms frame (-120 = digital
+                                * silence; -100 until a frame is scored) */
 };
 
 TRANSCRIBE_API void transcribe_stream_update_init(struct transcribe_stream_update * out);
@@ -2500,7 +2505,25 @@ TRANSCRIBE_API transcribe_status transcribe_stream_set_vad_threshold(struct tran
 
 typedef struct transcribe_vad transcribe_vad;
 
-/* Standalone VAD instance for history re-analysis or custom pipelines */
+/*
+ * Standalone Earshot frame VAD (bundled weights, nothing to load), for history
+ * re-analysis or custom pipelines. Frames are 256 samples (16 ms) of 16 kHz
+ * mono; samples are clamped to [-1, 1] before scoring. Not thread-safe; one
+ * instance per audio source.
+ *
+ * transcribe_vad_init: NULL on allocation failure. A threshold outside
+ *   0.05..0.95 (or NaN) takes the default 0.5.
+ * transcribe_vad_predict_frame: the frame's speech probability [0, 1]. It
+ *   advances the detector's recurrent state but not the speech gate. 0 for a
+ *   NULL argument or a frame with a non-finite sample (state untouched).
+ * transcribe_vad_process_frame: scores the frame (*out_score, may be NULL) and
+ *   runs the gate: speech starts at a score >= threshold, continues while the
+ *   score stays >= 0.7 * threshold (at least 0.05) and for 1200 ms after it
+ *   drops. Returns whether the gate is in speech. A non-finite sample: false,
+ *   *out_score = 0, state untouched.
+ * transcribe_vad_set_threshold: clamped to 0.05..0.95 (NaN is ignored).
+ * transcribe_vad_reset: a new recording (detector and gate state).
+ */
 TRANSCRIBE_API struct transcribe_vad * transcribe_vad_init(float threshold);
 TRANSCRIBE_API void                    transcribe_vad_free(struct transcribe_vad * vad);
 TRANSCRIBE_API float transcribe_vad_predict_frame(struct transcribe_vad * vad, const float * frame_256);

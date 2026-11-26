@@ -143,6 +143,19 @@ else()
     message(FATAL_ERROR "Unknown TRANSCRIBE_MODEL_SET: '${TRANSCRIBE_MODEL_SET}'. Must be full, minimal-multilingual, none, or custom.")
 endif()
 
+# A family list is read only by the custom set; anywhere else it would be
+# silently ignored. A misspelt family would compile nothing and define a
+# TRANSCRIBE_ENABLE_ARCH_* nobody reads, so it is an error.
+if(TRANSCRIBE_MODELS AND NOT TRANSCRIBE_MODEL_SET STREQUAL "custom")
+    message(WARNING "TRANSCRIBE_MODELS='${TRANSCRIBE_MODELS}' is ignored: it applies only with "
+                    "TRANSCRIBE_MODEL_SET=custom (building '${TRANSCRIBE_MODEL_SET}').")
+endif()
+foreach(_fam IN LISTS _enabled_families)
+    if(NOT _fam IN_LIST _all_families)
+        message(FATAL_ERROR "TRANSCRIBE_MODELS: unknown family '${_fam}'. Known: ${_all_families}")
+    endif()
+endforeach()
+
 message(STATUS "transcribe model composite: ${TRANSCRIBE_MODEL_SET} [${_enabled_families}]")
 
 set(TRANSCRIBE_SRCS
@@ -466,6 +479,11 @@ else()
 endif()
 set(TRANSCRIBE_ACTIVE_MODELS "${TRANSCRIBE_ACTIVE_MODELS}" PARENT_SCOPE)
 
+# The families a model file can be LOADED for, through the public API: the
+# compiled-in ones, or under TRANSCRIBE_ARCH_DL the plugins built beside the
+# core. Tests that only load fixtures (no family symbols) gate on this one.
+set(TRANSCRIBE_LOADABLE_MODELS "${_enabled_families}" PARENT_SCOPE)
+
 add_library(transcribe ${_transcribe_lib_type} ${TRANSCRIBE_SRCS})
 
 if(NOT TRANSCRIBE_ARCH_DL)
@@ -491,13 +509,12 @@ target_include_directories(transcribe
 
 # The C++ standard is set globally (CMAKE_CXX_STANDARD in the top-level file), so
 # this is a no-op for the current build — but it is the difference between a
-# requirement the build *happens* to satisfy and one the target *declares*.
-# PUBLIC so it propagates to anything linking `transcribe` (the C++ tests and
-# examples) and travels with the target if it is ever exported via
-# install(EXPORT). transcribe.h uses C++17 in its public surface, so a consumer
-# that lowers the global standard for its own code now gets a correct error
-# instead of a header that fails to parse.
-target_compile_features(transcribe PUBLIC cxx_std_23)
+# requirement the build *happens* to satisfy and one the target *declares*: the
+# library's own sources use C++23 (std::expected, std::span). PRIVATE, because
+# the public headers are C (transcribe-plugin.h's C++ is plain C++98), so a
+# project embedding this one keeps its own standard for its own targets. The
+# in-tree C++ tests, examples and plugins get C++23 from the global setting.
+target_compile_features(transcribe PRIVATE cxx_std_23)
 
 if(TRANSCRIBE_ENABLE_EARSHOT)
     target_compile_definitions(transcribe PUBLIC TRANSCRIBE_ENABLE_EARSHOT=1)

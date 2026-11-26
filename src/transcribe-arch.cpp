@@ -11,6 +11,7 @@
 #include "transcribe-env.h"
 #include "transcribe-log.h"
 #include "transcribe-model.h"
+#include "transcribe-path.h"
 #include "transcribe-plugin.h"
 
 #include <algorithm>
@@ -265,7 +266,10 @@ const Arch * load_plugin_file(const std::filesystem::path & file_path, const cha
     auto entry_fn = reinterpret_cast<transcribe_arch_plugin_entry_fn>(
         GetProcAddress(static_cast<HMODULE>(module_handle), TRANSCRIBE_ARCH_PLUGIN_ENTRY_NAME));
 #else
-    module_handle = dlopen(file_path.c_str(), RTLD_NOW | RTLD_LOCAL);
+    // The absolute path, for the same reason: dlopen treats a name without a
+    // '/' as a library to look up (LD_LIBRARY_PATH, the system directories),
+    // not as the file is_regular_file() just found in the current directory.
+    module_handle = dlopen(canonical.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (module_handle == nullptr) {
         return nullptr;
     }
@@ -314,8 +318,10 @@ const Arch * load_plugin_file(const std::filesystem::path & file_path, const cha
     loaded.handle = module_handle;
     loaded.arch   = arch;
 
+    // path_to_utf8, not path::string(): on Windows the latter converts to the
+    // ANSI code page and throws for a character it cannot represent.
     transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_INFO, "transcribe: loaded dynamic architecture plugin '%s' from %s\n",
-                        loaded.name.c_str(), file_path.string().c_str());
+                        loaded.name.c_str(), transcribe::path_to_utf8(canonical).c_str());
 
     g_loaded_plugins.push_back(std::move(loaded));
     return arch;
@@ -323,17 +329,23 @@ const Arch * load_plugin_file(const std::filesystem::path & file_path, const cha
 
 }  // namespace
 
+// Paths crossing the public API are UTF-8 (transcribe-path.h): built with
+// path_from_utf8, so a non-ASCII folder works on Windows too.
 transcribe_status register_arch_dir(const char * dir) {
     if (dir == nullptr || dir[0] == '\0') {
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
-    std::filesystem::path p(dir);
-    std::error_code       ec;
+    const std::filesystem::path p = transcribe::path_from_utf8(dir);
+    std::error_code             ec;
     if (!std::filesystem::is_directory(p, ec)) {
         return TRANSCRIBE_ERR_FILE_NOT_FOUND;
     }
+    std::filesystem::path canonical = std::filesystem::canonical(p, ec);
+    if (ec) {
+        canonical = p;  // is_directory just succeeded; keep the caller's spelling
+    }
     std::lock_guard<std::mutex> lock(g_plugin_mutex);
-    g_custom_dirs.push_back(std::filesystem::canonical(p, ec));
+    g_custom_dirs.push_back(std::move(canonical));
     return TRANSCRIBE_OK;
 }
 
@@ -341,8 +353,8 @@ transcribe_status load_arch_plugin(const char * path) {
     if (path == nullptr || path[0] == '\0') {
         return TRANSCRIBE_ERR_INVALID_ARG;
     }
-    std::filesystem::path p(path);
-    std::error_code       ec;
+    const std::filesystem::path p = transcribe::path_from_utf8(path);
+    std::error_code             ec;
     if (!std::filesystem::is_regular_file(p, ec)) {
         return TRANSCRIBE_ERR_FILE_NOT_FOUND;
     }
@@ -461,11 +473,16 @@ const Arch * find_arch(const char * name, const char * model_hint_path) {
         search_dirs.push_back(cd);
     }
 
-    if (const char * env_dir = std::getenv("TRANSCRIBE_ARCH_DIR")) {
-        if (env_dir[0] != '\0') {
-            search_dirs.emplace_back(env_dir);
-        }
+    // Read wide on Windows: getenv() would hand back the ANSI code page.
+#if defined(_WIN32)
+    if (const wchar_t * env_dir = _wgetenv(L"TRANSCRIBE_ARCH_DIR"); env_dir != nullptr && env_dir[0] != L'\0') {
+        search_dirs.emplace_back(env_dir);
     }
+#else
+    if (const char * env_dir = std::getenv("TRANSCRIBE_ARCH_DIR"); env_dir != nullptr && env_dir[0] != '\0') {
+        search_dirs.emplace_back(env_dir);
+    }
+#endif
 
     std::filesystem::path sdir = self_dir();
     if (!sdir.empty()) {
@@ -475,8 +492,8 @@ const Arch * find_arch(const char * name, const char * model_hint_path) {
 
     if (model_hint_path != nullptr && model_hint_path[0] != '\0' &&
         transcribe::env::flag("TRANSCRIBE_ARCH_SEARCH_MODEL_DIR")) {
-        std::filesystem::path mp(model_hint_path);
-        std::filesystem::path mdir = mp.parent_path();
+        const std::filesystem::path mp   = transcribe::path_from_utf8(model_hint_path);
+        const std::filesystem::path mdir = mp.parent_path();
         if (!mdir.empty()) {
             search_dirs.push_back(mdir);
             search_dirs.push_back(mdir / "arch");

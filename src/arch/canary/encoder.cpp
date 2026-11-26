@@ -22,11 +22,25 @@ namespace {
 
 namespace conf = transcribe::conformer;
 
-// Direct dw on every backend for the in-block site; im2col for pre-encode
-// (canary's encoder geometry matches parakeet's at the dw site).
+// Direct dw on every backend for the in-block site (canary's encoder geometry
+// matches parakeet's at the dw site).
 bool detect_direct_dw_in_block(const char * /*backend*/) {
     return conf::resolve_conv_direct("TRANSCRIBE_CONV_DIRECT_DW", "TRANSCRIBE_CONV_NO_DIRECT_DW",
                                      /*backend_default=*/true);
+}
+
+// The pre-encode's two stride-2 3x3 depthwise convs (256 channels): the direct
+// op on the CPU, im2col elsewhere. On the CPU im2col copies the activation 9
+// times to feed a 9-tap matmul, and that copy was 13-17% of the CPU graph
+// (2026-11-26); the direct op's output is bit-identical there (F32 kernels,
+// the taps summed in the same order, as in sanm::detect_direct_dw). GPUs keep
+// im2col, which rounds differently from the direct op, so their transcripts
+// stay as they were. TRANSCRIBE_CONV_DIRECT_DW / TRANSCRIBE_CONV_NO_DIRECT_DW
+// override both sites.
+bool detect_direct_dw_in_pre_encode(const char * backend) {
+    const bool is_cpu = backend != nullptr && std::strcmp(backend, "CPU") == 0;
+    return conf::resolve_conv_direct("TRANSCRIBE_CONV_DIRECT_DW", "TRANSCRIBE_CONV_NO_DIRECT_DW",
+                                     /*backend_default=*/is_cpu);
 }
 
 conf::PreEncodeView to_view(const CanaryPreEncode & pe) {
@@ -106,7 +120,7 @@ EncoderBuild build_encoder_graph(ggml_context *        ctx,
     policy.direct_pw               = conf::detect_direct_pw(backend_name);
     const bool direct_dw           = detect_direct_dw_in_block(backend_name);
     policy.direct_dw_in_block      = direct_dw;
-    policy.direct_dw_in_pre_encode = false;  // parakeet-style: im2col here
+    policy.direct_dw_in_pre_encode = detect_direct_dw_in_pre_encode(backend_name);
 
     EncoderBuild eb{};
 

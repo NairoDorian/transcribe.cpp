@@ -31,6 +31,10 @@ ggml patch 0104.
   xcframework carry all eight license texts of `THIRD-PARTY-LICENSES.md`.
   They lacked cJSON, Earshot, RNNoise and (all but the default wheel)
   audio.cpp.
+- Canary on the CPU: the pre-encode's stride-2 depthwise convs take the
+  direct op instead of im2col (13-17% of the CPU graph). Every dumped
+  tensor is byte-identical on 3 clips; encode 7-12% faster (4 threads,
+  machine partly loaded). GPUs keep im2col; CUDA transcripts unchanged.
 - `TRANSCRIBE_CONV_DIRECT_CONV0` / `_NO_DIRECT_CONV0` now also apply to a
   causal Parakeet stem (Nemotron), which ignored them; its default is
   unchanged.

@@ -7,13 +7,14 @@ speech gate, noise suppression) that needs no model files, GPU-resident decoding
 lower per-step latency, a language allowlist, two model ports, and a leaner,
 cached build. This page lists what differs from upstream and where each piece is
 documented. The dated history is in [changelog.md](changelog.md); the
-latest whole-fork audit is [audit-2026-11-17.md](audit-2026-11-17.md).
+latest whole-fork audit is [audit-2026-11-25.md](audit-2026-11-25.md)
+(previous: [audit-2026-11-17.md](audit-2026-11-17.md)).
 
 | | |
 |---|---|
 | Upstream base | 0.4.2, merged through `a0729fa5` (2026-11-25) |
 | ggml | master `d9fe7bff` (v1.0.0 + one examples-only commit) + upstream patches `00xx` + fork patches `01xx` ([patches/ggml](../../patches/ggml)) |
-| Divergence | ~120 fork commits plus 27 upstream merges; the public C ABI is additive only (`struct_size`-versioned fields, new entry points) |
+| Divergence | 122 fork commits and 35 merges (16 of them from upstream); the public C ABI is additive only (`struct_size`-versioned fields, new entry points) |
 | Consumers | ZER0 (`Handy_V2`, desktop Multi-STT on CUDA, tracks `main`), FreeSpeech (Android arm64, Vulkan, pinned revision) |
 | Contract with ZER0 | [../zer0-engine-integration.md](../zer0-engine-integration.md) |
 | Roadmap | [../plans/2026-11-fork-master-plan.md](../plans/2026-11-fork-master-plan.md) |
@@ -22,7 +23,8 @@ latest whole-fork audit is [audit-2026-11-17.md](audit-2026-11-17.md).
 
 Measured 2026-11-17 against upstream at the merge base, built with its own
 defaults (RTX 4070 Laptop, i9-13900H, interleaved runs, mean of 3). Details
-and method are in [audit-2026-11-17.md](audit-2026-11-17.md).
+and method are in [audit-2026-11-17.md](audit-2026-11-17.md); the transcript
+column is updated by the 21-model A/B of [audit-2026-11-25.md](audit-2026-11-25.md).
 
 | Workload | Fork speed-up | Transcripts |
 |---|---:|---|
@@ -30,8 +32,8 @@ and method are in [audit-2026-11-17.md](audit-2026-11-17.md).
 | Nemotron 3.5 0.6B, CUDA, offline | 3.5-4.0x | identical |
 | Granite Speech 4.1 2B, CUDA (wall clock) | 1.6-1.9x | identical |
 | Qwen3-ASR 1.7B, CUDA | 1.06-1.21x | identical |
-| Nemotron 3.5 streaming, 160 ms chunks, CUDA / CPU | 1.4-2.5x / 1.3-1.4x | identical, or one comma (ggml 1.0 vs upstream's older ggml) |
-| Parakeet / Nemotron, CPU, offline | 1.13-1.28x | identical |
+| Nemotron 3.5 streaming, 160 ms chunks, CUDA / CPU | 1.4-2.5x / 1.3-1.4x | identical, or one comma (on CPU: CPU_REPACK, see the 2026-11-25 audit) |
+| Parakeet / Nemotron, CPU, offline | 1.13-1.28x | identical on `jfk` and `dots`; a word or a comma on some other clips (CPU_REPACK) |
 | Qwen3-ASR 1.7B, CPU | parity | identical |
 
 ## Behaviour that differs from upstream by default
@@ -45,6 +47,8 @@ An upstream caller that changes nothing sees these differences:
 | Parakeet TDT / RNN-T decoder on a discrete CUDA, ROCm or Vulkan GPU | host CPU | the model's GPU (byte-identical transcripts); an integrated GPU keeps the host decoder | `TRANSCRIBE_PARAKEET_DEVICE_DECODER=0` (`=1` forces it onto an integrated GPU) |
 | Greedy LLM steps (Granite, Qwen3-ASR, R2T2) on a GPU | launch, wait, read, repeat | pipelined: step i+1 launches while step i runs (same tokens) | `TRANSCRIBE_STEP_PIPELINE=0` |
 | Conformer attention on CUDA (Canary, Cohere, Sortformer, GigaAM) | flash kernel, which CUDA lacks for these shapes, so the op ran on the CPU | probed once per shape; the manual path stays on the GPU | `TRANSCRIBE_FORCE_FLASH=1` |
+| Parakeet-family encoder on a CPU primary | weights in the file layout | ggml's repacked GEMM (CPU_REPACK), about 1.7x faster; not bit-exact, so a word or a comma can differ from upstream | `TRANSCRIBE_NO_CPU_REPACK=1` |
+| GPU memory between runs (Parakeet, Granite, Whisper, SenseVoice, Canary, ...) | the scheduler (and KV caches) stay allocated and only grow | released after every run and streaming finalize; a transcript no longer depends on what the session ran before (upstream's Granite sizes its KV window from the longest earlier clip) | — |
 | `transcribe_version()` | `"0.4.2"` | `"0.4.2 <commit> <branch> <build-time> <backend>"` (the leading field is unchanged) | — |
 
 Every switch is listed in [../environment-variables.md](../environment-variables.md).
@@ -84,9 +88,12 @@ working. Rust wrappers live in `bindings/rust/transcribe-cpp/src/`
 - **Noise suppression** `transcribe_denoise_*`: classic RNNoise (the
   nnnoiseless 0.5.2 algorithm), about 1.4x faster on x86-64. It adds ZER0's
   wet/dry mix and speech-probability gate.
-- **Stream VAD** (see the table above): every stream update carries telemetry
-  (`vad_speaking`, `vad_speech_ms`, `vad_last_score`, `audio_level_dbfs`), and
-  `transcribe_stream_set_vad_threshold` retunes it mid-stream.
+- **Stream VAD** (see the table above): with `enable_vad` (the default) every
+  stream update carries telemetry (`vad_speaking`, `vad_speech_ms`,
+  `vad_last_score`, `audio_level_dbfs`), and
+  `transcribe_stream_set_vad_threshold` retunes it mid-stream. With
+  `enable_vad = false` (how ZER0 opens its streams) the detector does not run
+  and the fields stay idle.
 
 Contracts: [../vad.md](../vad.md) and
 [../plans/2026-10-audio-frontend-contract.md](../plans/2026-10-audio-frontend-contract.md).
@@ -109,7 +116,12 @@ Contracts: [../vad.md](../vad.md) and
 Mid-sentence switching is allowed, and the model is held to their union both in
 its language decision and in the letters it may write.
 `allowlist_letters = ANY` restricts the decision only. Detect support with
-`TRANSCRIBE_FEATURE_LANGUAGE_ALLOWLIST`. Every multilingual family has it.
+`TRANSCRIBE_FEATURE_LANGUAGE_ALLOWLIST`. Five families have it: Parakeet
+(Nemotron 3.5 through its locale tags; the multilingual TDT models v3, ultra and
+redux through the alphabet only), Qwen3-ASR (R2T2 included), Granite, Whisper
+and SenseVoice. The others (Canary, Cohere, Voxtral, Moonshine, ...) do not: a
+non-empty list there is
+`TRANSCRIBE_ERR_UNSUPPORTED_LANGUAGE`, never silently ignored.
 
 ### Speed: GPU
 
@@ -124,15 +136,47 @@ its language decision and in the letters it may write.
   the last CPU nodes the local models had on CUDA. Check with
   `GGML_SCHED_DEBUG` split counts.
 
-### Speed: CPU (bit-exact)
+Not bit-exact on GPUs: attention computed on the device instead of on the
+CPU (the flash probe), Granite's direct depthwise convolution, and the im2col
+`conv0` of a causal Parakeet stem each move a word or a comma against
+upstream's CUDA text. All are on by default. Each has a switch that gives
+upstream's text: `TRANSCRIBE_FORCE_FLASH=1`, `TRANSCRIBE_CONV_NO_DIRECT_DW=1`,
+`TRANSCRIBE_CONV_DIRECT_CONV0=1` (2026-11-26 CUDA A/B,
+[audit-2026-11-25.md](audit-2026-11-25.md)).
+
+### Speed: CPU
+
+Bit-exact (same transcripts as upstream):
 
 - A persistent ggml threadpool per CPU backend (OpenMP stays off), parked while
-  its session is idle, so a Multi-STT host's idle models do not spin. The
-  default thread count is the usable cores, capped at 8.
+  its session is idle, so a Multi-STT host's idle models do not spin. Pools
+  start paused, so a GPU session's CPU fallback pool never spins at all. The
+  default thread count (the usable cores, capped at 8) is upstream's.
+- The CPU barrier yields its core only when the pool's threads outnumber the
+  CPUs the process may use (ggml patch `0104`). Upstream's patch `0001`
+  yields after every 4096 spins, which on a machine loaded by other work
+  loses a time slice per graph node: SenseVoice took 21-28 s instead of
+  3-6 s next to 12 busy processes. Unloaded runs are unchanged.
 - A frame-batched RNN-T joint. Transposed predictor/joint and CTC-head weights
   let the matvecs vectorize while each output keeps its summation order.
 - Kaldi fbank sums each mel band over its nonzero span only, and the mel power
   spectrum uses SIMD.
+- Granite's depthwise convolution is one direct op instead of im2col plus a
+  matmul (2.2 s less on a 29 s clip's CPU encode). Its encoder, projector and
+  prefill outputs are bit-identical to upstream's on CPU (2026-11-25 tensor
+  dumps).
+- SenseVoice's and Fun-ASR-Nano's SAN-M depthwise convolution takes the same
+  direct op on the CPU: encode 14-18% and 24-25% faster, every dumped stage
+  byte-identical to the im2col path (2026-11-26). GPUs keep im2col, where the
+  op is not bit-exact; `TRANSCRIBE_CONV_DIRECT_DW=1` opts them in.
+
+Not bit-exact, on by default:
+
+- The Parakeet-family encoder runs ggml's repacked GEMM (CPU_REPACK, about
+  1.7x faster). A word or a comma can differ from upstream, but FLEURS-en WER
+  does not move (CTC 5.46% vs 5.46%, v3 4.66% vs 4.63% without it, 150
+  utterances; [audit-2026-11-25.md](audit-2026-11-25.md)).
+  `TRANSCRIBE_NO_CPU_REPACK=1` turns it off.
 
 ### Memory
 
@@ -144,7 +188,10 @@ its language decision and in the letters it may write.
 ### Build and packaging
 
 - **Model sets**: `TRANSCRIBE_MODEL_SET=full | minimal-multilingual | none |
-  custom`, or a list in `TRANSCRIBE_MODELS="parakeet;granite"`.
+  custom`; `custom` takes the list in `TRANSCRIBE_MODELS="parakeet;granite"`
+  (source folder names; an unknown one is a configure error, and a list
+  without `custom` is ignored with a warning). The Rust build treats a
+  `TRANSCRIBE_MODELS` list on its own as `custom`.
   `minimal-multilingual` builds `parakeet`, `granite` and `qwen3_asr`.
   Excluded families keep their C ABI symbols as safe stubs
   (`src/transcribe-stubs.cpp`), so bindings always link. The Rust feature
@@ -209,8 +256,8 @@ Ship them with any binary.
 
 ## How changes are verified
 
-- `cmake --build build --target transcribe-cli`, `ctest` (72 tests), `cargo test`
-  (80), `scripts/ci/clang-format.sh --check`, and
+- `cmake --build build --target transcribe-cli`, `ctest` (73 tests), `cargo test`
+  (79), `scripts/ci/clang-format.sh --check`, and
   `cmake -DSRC_DIR=src -P tests/lint_teardown.cmake`.
 - **Transcripts, not just tests.** A change that can touch numerics is A/B'd
   against the previous build on FLEURS and the `samples/` clips, and must come

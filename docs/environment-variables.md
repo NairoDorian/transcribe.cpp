@@ -47,10 +47,10 @@ of tests.
 | `TRANSCRIBE_QWEN3_ASR_ENC_NO_WINDOW` | Qwen3-ASR encoder: one full-attention block instead of windowed (`cu_seqlens`) attention. Diagnostic; the R2T2 encoder prefix cache needs the windowed form. |
 | `TRANSCRIBE_RNNT_BATCH_W=<n>` | Parakeet CPU decoder: frames per batched joint pass (`<= 1` forces the serial loop). Defaults: 16 for RNN-T, 1 for TDT. Ignored while tensor dumps are on. |
 | `TRANSCRIBE_RNNT_BATCH_CHECK` | Parakeet CPU decoder: cross-check every batched joint column against the serial n=1 GEMV and log mismatches. Debug; disables the GPU decoder. |
-| `TRANSCRIBE_CONV_DIRECT_CONV0` / `TRANSCRIBE_CONV_NO_DIRECT_CONV0` | Parakeet non-causal pre-encode: force conv0 to the direct `conv_2d` path / to im2col (default direct except on Metal). |
+| `TRANSCRIBE_CONV_DIRECT_CONV0` / `TRANSCRIBE_CONV_NO_DIRECT_CONV0` | Parakeet pre-encode: force conv0 to the direct `conv_2d` path / to im2col. Defaults: direct except on Metal; for a causal stem (Nemotron), direct on the CPU only. Upstream takes the direct path everywhere: on CUDA, `TRANSCRIBE_CONV_DIRECT_CONV0=1` with `TRANSCRIBE_FORCE_FLASH=1` reproduces upstream's Nemotron output byte for byte. |
 | `TRANSCRIBE_DISABLE_STATIC_DECODE` | Cohere on a CPU primary: build a per-step decoder graph sized to the current KV length instead of the static step graph. Ignored on GPUs. |
 | `TRANSCRIBE_DISABLE_MEL_SIMD` | Compute the mel power spectrum with the scalar loop instead of the SIMD one (the SIMD path fuses a multiply-add, so features can differ in the last bit). For A/B. |
-| `TRANSCRIBE_NO_CPU_REPACK` | CPU primary: keep weights in their file layout instead of the CPU backend's repacked GEMM layout (e.g. `q4_K_8x8`). For A/B; repacking is several times faster on x86. |
+| `TRANSCRIBE_NO_CPU_REPACK` | CPU primary (Parakeet family): keep the encoder weights in their file layout instead of the CPU backend's repacked GEMM layout (e.g. `q4_K_8x8`). The repacked GEMM made the CPU encode about 1.7x faster (Ultra Q4_K_M 1.88 → 1.13 s, `c20c4bfa`), but it sums in a different order, so it is not bit-exact: a word or a comma can differ. Setting this gives upstream's CPU transcripts. |
 | `TRANSCRIBE_TERNARY_RUNTIME=q4_0\|q2_0\|native` | Layout TQ1_G128 ternary weights (parakeet-redux) run in. Defaults: `q2_0` on CUDA (fastest and least VRAM), `q4_0` elsewhere; `native` keeps TQ1_G128. |
 | `TRANSCRIBE_DISABLE_POOL_RECLAIM` | On a device allocation failure, fail at once instead of trimming this backend's idle CUDA pool and graph cache and retrying once. |
 | `TRANSCRIBE_GRAPH_OPTIMIZER` | Run the audio.cpp redundant-copy pass on inference graphs before allocation (opt-in: no consistent wall-time win, see [`cuda-graph-experiments.md`](cuda-graph-experiments.md)). Reports itself only when it changed a graph. |
@@ -109,8 +109,8 @@ Each one is a `rerun-if-env-changed` trigger.
 | --- | --- |
 | `TRANSCRIBE_DIR` (alias `TRANSCRIBE_PREBUILT_DIR`) | Link an existing `cmake --install` prefix instead of building. Cargo features are then inert. |
 | `TRANSCRIBE_CMAKE_ARGS` / `CMAKE_ARGS` | Extra CMake configure arguments, applied after the feature-derived ones (a user `-D` wins). Part of the cache key. |
-| `TRANSCRIBE_MODEL_SET` | `full` (default), `minimal-multilingual`, `none` or `custom`. Part of the cache key. |
-| `TRANSCRIBE_MODELS` | Explicit family list for `custom` (e.g. `parakeet;granite`). Part of the cache key. |
+| `TRANSCRIBE_MODEL_SET` | `full` (default), `minimal-multilingual`, `none` or `custom`. Passed to CMake on every build, so unsetting it really returns to `full`. The `minimal-multilingual` feature wins over it. Part of the cache key. |
+| `TRANSCRIBE_MODELS` | Explicit family list for `custom` (e.g. `parakeet;granite`, source folder names). Set without `TRANSCRIBE_MODEL_SET`, it selects `custom`. Part of the cache key. |
 | `TRANSCRIBE_CUDA_ARCHITECTURES` / `CMAKE_CUDA_ARCHITECTURES` | CUDA targets: an explicit list, `auto` (probe this GPU with `nvidia-smi`) or `default` (the distribution set). Unset: `auto` for debug builds, the distribution set for release. |
 | `TRANSCRIBE_CACHE_DIR` | Root of the persistent native-build cache (default `%LOCALAPPDATA%\handy\transcribe_cpp_cache`, or `$XDG_CACHE_HOME`/`~/.cache` `/handy/transcribe_cpp_cache`). Give each build lane its own. |
 | `TRANSCRIBE_CACHE_KEEP=<n>` | Cache entries kept per root after a save, newest first (default 6). Only directories named like a cache key are removed. |

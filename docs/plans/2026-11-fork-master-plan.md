@@ -53,7 +53,8 @@ commit message):
    plugin ABI 2 → 3.
 5. **ggml patches**: upstream owns `00xx`, the fork owns `01xx`
    (`0101` CUDA pool trim + graph evict, `0102` TQ1_G128 ternary, `0103` CUDA
-   decode KV-trim + MMVQ rows). Refresh notes for v1.0 are in §H.1.
+   decode KV-trim + MMVQ rows, `0104` CPU barrier yields only when the threads
+   outnumber the usable CPUs). Refresh notes for v1.0 are in §H.1.
 
 Verification on this machine (Windows 11, MSVC 14.52, CPU): full build incl.
 tests, CTest 66/66, Rust 28/28, ABI/bindgen/Swift drift gates, teardown lint,
@@ -718,13 +719,10 @@ The app-side recipe is in ZER0's `docs/2026-11-transcribe-fork-handoff.md`.
 
 ### H.2 Pending local items
 
-- `cmake/transcribe_utf8.manifest` + its CMake wiring (UTF-8 process code page
-  for the Windows executables) is still uncommitted local work; finish it as
-  its own commit.
-- `main`'s working tree also holds two untracked drafts: an older v6.0.0 copy
-  of the three-tier VAD plan (superseded by revision 9 on this branch — delete
-  it before merging, or the merge refuses to overwrite it) and the Nemotron-3
-  diarization port draft (separate work, not part of this plan).
+Resolved (checked 2026-11-25): the UTF-8 manifest
+(`cmake/transcribe_utf8.manifest`) is committed (`abf9afef`), the v6.0.0 VAD
+plan copy was deleted in the 2026-11-17 audit, and `main`'s working tree holds
+no untracked drafts.
 
 ---
 

@@ -5,6 +5,104 @@ the commits that carry the detail; `git show <sha>` has the measurements. Most
 upstream merges are not listed (`git log --merges upstream/main..HEAD`); the
 ones listed carry fork-side merge decisions. Overview: [README.md](README.md).
 
+## 2026-11-26 — audit follow-ups
+
+Continues [audit-2026-11-25.md](audit-2026-11-25.md) (items 14-19 and the CUDA A/B there):
+
+Commits: `3db20e2f` SAN-M direct conv, `90a6fc89` alphabet filter, `edc09283`
+license texts, `709b0ca4` conv0 switches, `97820460` paused pools, `9bc76e39`
+ggml patch 0104.
+
+- SenseVoice and Fun-ASR-Nano on the CPU: a single utterance's SAN-M
+  depthwise convolution takes the direct op, as batches already did, instead
+  of im2col plus a matmul. Every dumped stage is byte-identical to the im2col
+  path's (4 clips per model). Encode is 14-18% faster for SenseVoice and
+  24-25% for Fun-ASR-Nano, whose compute buffer shrinks by a third. GPUs keep
+  im2col: the direct op is faster there too, but not bit-identical, and on
+  CUDA it changed 3 of 47 SenseVoice and 8 of 47 Fun-ASR-Nano transcripts
+  (Vulkan: 0 and 1). `TRANSCRIBE_CONV_DIRECT_DW=1` takes it on a GPU anyway.
+- Language allowlist: the alphabet filter judged a character cut at a token's
+  end by the smallest code point it could become. Lead byte 0xD4 starts
+  Cyrillic or Armenian letters and 0xD6 Armenian letters or Hebrew points, so
+  an Armenian allowlist blocked the capitals U+0531-053F whenever the
+  tokenizer split them, and a Hebrew one the vowel points. Such a prefix now
+  passes, as a cut Latin letter already did.
+- The native Python wheels, the npm platform packages and the Swift
+  xcframework carry all eight license texts of `THIRD-PARTY-LICENSES.md`.
+  They lacked cJSON, Earshot, RNNoise and (all but the default wheel)
+  audio.cpp.
+- `TRANSCRIBE_CONV_DIRECT_CONV0` / `_NO_DIRECT_CONV0` now also apply to a
+  causal Parakeet stem (Nemotron), which ignored them; its default is
+  unchanged.
+- ggml patch `0104`: the CPU barrier yields only when the threads outnumber
+  the CPUs the process may use. Patch `0001`'s unconditional yield cost a
+  time slice per graph node when other processes loaded the CPU (SenseVoice
+  next to 12 busy processes: 21-28 s, now 3-6 s; unloaded runs and the
+  2-CPU deadlock test unchanged). Found by the speech.cpp hand-off's
+  audio.cpp measurements.
+- CPU threadpools start paused. A GPU session's CPU fallback pool used to
+  busy-poll about 7 cores for a few hundred ms after it was created, and
+  that slowed the host-side mel of the next runs: Granite 5 CTC on CUDA ran
+  2-6x slower than upstream on back-to-back runs. It now matches upstream,
+  four CUDA runs use 1.5 s of CPU time instead of 7.9 s, and transcripts are
+  unchanged.
+
+CUDA A/B against upstream `a0729fa5`, 22 models x 11 clips: 186 of 215
+comparable pairs identical. The 29 differences come from three
+documented GPU-side changes (on-device attention, Granite's direct depthwise
+conv, Nemotron's causal `conv0`), each with a switch that gives upstream's
+text exactly, plus the fork's Qwen3 encoder and Whisper's random seed on
+silence. Streaming matches upstream partial for partial.
+
+## 2026-11-25 — second whole-fork audit
+
+Record: [audit-2026-11-25.md](audit-2026-11-25.md), commit `dc9788ee`. A 21-model A/B against
+upstream `a0729fa5`, clang-tidy over every fork-changed C/C++ file, and code
+review. Fixes:
+
+- Rust `build.rs` defines `TRANSCRIBE_MODEL_SET` / `TRANSCRIBE_MODELS` on
+  every configure. Before, unsetting one kept the old set in the CMake cache,
+  and the library built from it was cached under the new key. A family list on
+  its own now selects `custom`. CMake warns about a list without `custom` and
+  rejects an unknown family name.
+- Plugin loader: `dlopen` takes the absolute path, as `LoadLibraryExW` does,
+  so a bare name is not looked up on `LD_LIBRARY_PATH`. Paths follow the UTF-8
+  contract on Windows.
+- `transcribe_vad_predict_frame` / `_process_frame` refuse a non-finite
+  frame: a NaN used to poison the detector's recurrent state.
+- The `transcribe_get_whisper_chunk_trace` stub, in builds without Whisper,
+  now follows the real accessor's contract.
+- The public C++23 requirement is private; the public headers are C.
+- Windows shared builds with Ninja and sccache: per-language compiler
+  launchers keep ggml's global one from wrapping the resource compiler,
+  which broke `transcribe-version.rc`.
+- Tests: three unit tests are gated on the families they link, so plugin and
+  minimal builds compile their test suites. The threadpool oversubscription
+  test runs serially with a 60 s watchdog.
+- Docs: the stream VAD telemetry and the frame VAD API are documented as they
+  behave; CPU_REPACK is documented as not bit-exact, and its WER
+  is measured (FLEURS-en, 150 utterances: no change).
+  Also corrected: allowlist coverage, test counts, and the stale VAD-branch
+  and master-plan items.
+
+Follow-ups the same day:
+
+- Test setup for builds without every model family: fixture tests gate on the
+  new `TRANSCRIBE_LOADABLE_MODELS` (compiled-in families, or the plugins of an
+  `ARCH_DL` build), `weights_mmap_smoke` runs the cases its families allow and
+  names the rest, and the two tests that drive ggml state directly skip a
+  shared core with embedded ggml. An `ARCH_DL` + minimal tree now passes
+  52/52 (was 50/56), a static minimal tree 64/64.
+- The two merged local branches (`feat/vad-frontend`,
+  `codex/upstream-sync-2026-10-06`) were deleted.
+
+Finding: upstream's Granite sizes its KV window from the longest clip a
+session ran before, so its transcript of the same audio depends on session
+history. The fork's per-run release removed that, which is why batch A/Bs show
+Granite differences that vanish clip by clip. Also: ggml's CPU text is not
+thread-count invariant for every graph (Granite 4.0 1B on `fleurs-fr`:
+"semblait" at 8 threads, "semblerait" at 3), so A/Bs pin `--threads`.
+
 ## 2026-11-25 — upstream merge: Parakeet phrase boosting
 
 Upstream through `cfa237c2`, three commits:

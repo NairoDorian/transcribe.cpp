@@ -1,7 +1,8 @@
 # ZER0 and transcribe.cpp: paired development contract
 
-Last audited: 2026-10-16. This is durable project context, not a claim that two
-working trees, branch tips, dependency locks or built binaries are identical.
+Last audited: 2026-11-25 (baseline traps; the research follow-up below is dated
+2026-10-16). This is durable project context, not a claim that two working
+trees, branch tips, dependency locks or built binaries are identical.
 
 ZER0 (`Handy_V2`) and this transcribe.cpp fork are complementary projects. The
 engine supplies speech inference and reusable audio primitives; ZER0 supplies
@@ -20,8 +21,9 @@ Try the sibling `../Handy_V2` in a normal checkout. In a managed worktree it may
 not be a sibling: use the local path above or an explicit user-provided path.
 Run `git worktree list` and `git status --short --branch` in both repositories.
 Find the worktree for the intended feature branch instead of assuming the
-canonical folder is the active implementation. The VAD work uses
-`codex/vad-integration`; main and benchmark checkouts may have different code.
+canonical folder is the active implementation. The VAD work is on `main` (the
+`codex/vad-integration` branch was merged as `49c5765a` on 2026-11-14 and
+deleted); benchmark checkouts may have different code.
 Do not switch, reset, merge or overwrite the peer's unrelated changes just to
 inspect it. If the peer is unavailable, state what could not be verified.
 
@@ -135,13 +137,12 @@ was removed. Before Silero integration the fork's Earshot files were also called
 - R2T2 has an explicit silence-skip opt-out. Preprocessing must preserve that
   family constraint and compare transcripts before changing audio retention.
 
-## Scope of the VAD branch
+## History of the VAD branch
 
-`codex/vad-integration` starts from fork main `692350de` and prepares upstream
-VAD `de75ca13` as an uncommitted merge. Fork main is therefore already included.
-Latest upstream main was inspected at `b61b7f93`; unrelated later upstream
-features are not silently treated as part of this VAD-only merge. Recheck remote
-tips and compare histories before a future synchronization.
+`codex/vad-integration` started from fork main `692350de` and carried upstream
+VAD `de75ca13` as a merge. It landed on `main` as `49c5765a` (2026-11-14) and
+was deleted; upstream is merged through `a0729fa5` since. Recheck remote tips
+and compare histories before a future synchronization.
 
 The [September plan](plans/2026-09-native-earshot-vad-and-zer0-integration-plan.md)
 is historical. The [revised VAD plan](plans/2026-10-three-tier-super-vad-and-firered-architecture-plan.md)

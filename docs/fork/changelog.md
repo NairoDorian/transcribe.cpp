@@ -31,6 +31,10 @@ ggml patch 0104.
   xcframework carry all eight license texts of `THIRD-PARTY-LICENSES.md`.
   They lacked cJSON, Earshot, RNNoise and (all but the default wheel)
   audio.cpp.
+- MedASR single runs honor `n_threads`. Only its batch path applied the
+  session's thread count; a single run kept the CPU backend's default, so
+  encode took the same time at 1, 2 and 8 threads (now 5.3 / 2.5 / 1.4 s on
+  `dots`). Transcripts unchanged (11 clips, at 4 and 8 threads).
 - Canary on the CPU: the pre-encode's stride-2 depthwise convs take the
   direct op instead of im2col (13-17% of the CPU graph). Every dumped
   tensor is byte-identical on 3 clips; encode 7-12% faster (4 threads,

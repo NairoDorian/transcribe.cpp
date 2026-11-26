@@ -525,6 +525,10 @@ transcribe_status run(transcribe_session * session, const float * pcm, int n_sam
     }
 
     // ----- Compute ------------------------------------------------------
+    // Apply the session's thread count (and its persistent pool) as the batch
+    // path does. Without this a single run kept the CPU backend's ggml default
+    // and ignored n_threads: encode took the same time at 1, 2 and 8 threads.
+    transcribe::configure_sched_n_threads(gc->sched, gc->n_threads);
     const int64_t t_enc_start = ggml_time_us();
     if (ggml_backend_sched_graph_compute(gc->sched, eb.graph) != GGML_STATUS_SUCCESS) {
         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "medasr: graph_compute failed");

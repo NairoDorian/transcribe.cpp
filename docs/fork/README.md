@@ -169,6 +169,9 @@ Bit-exact (same transcripts as upstream):
   direct op on the CPU: encode 14-18% and 24-25% faster, every dumped stage
   byte-identical to the im2col path (2026-11-26). GPUs keep im2col, where the
   op is not bit-exact; `TRANSCRIBE_CONV_DIRECT_DW=1` opts them in.
+- Canary's pre-encode depthwise convolutions take the direct op on the CPU
+  too (they were 13-17% of its CPU graph as im2col): encode 7-12% faster,
+  every dumped tensor byte-identical. GPUs keep im2col.
 
 Not bit-exact, on by default:
 

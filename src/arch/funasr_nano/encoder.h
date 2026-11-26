@@ -45,9 +45,12 @@ struct EncoderBuild {
     ggml_cgraph * graph = nullptr;
 };
 
+// direct_dw: sanm::detect_direct_dw for the primary backend (the FSMN
+// depthwise conv of a single utterance).
 EncoderBuild build_encoder_graph(ggml_context *            compute_ctx,
                                  const FunAsrNanoWeights & weights,
                                  const FunAsrNanoHParams & hp,
-                                 int                       n_lfr_frames);
+                                 int                       n_lfr_frames,
+                                 bool                      direct_dw);
 
 }  // namespace transcribe::funasr_nano

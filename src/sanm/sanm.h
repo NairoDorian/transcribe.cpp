@@ -72,7 +72,18 @@ struct SanmBlockParams {
     ggml_tensor * attn_pad_mask = nullptr;
     ggml_tensor * conv_pad_mask = nullptr;
     bool          use_flash     = true;
+    bool          direct_dw     = false;  // single utterances: see detect_direct_dw
 };
+
+// Whether a single utterance's FSMN depthwise conv takes the direct op
+// (batches always do; im2col cannot carry a batch axis). On by default on the
+// CPU, where it is bit-identical to the im2col path and faster: both add the
+// taps in order, in F32. Off on GPUs: faster there too, but not bit-identical,
+// and the difference flips some transcripts (2026-11-26, CUDA: 3 of 47
+// SenseVoice and 8 of 47 Fun-ASR-Nano clips). TRANSCRIBE_CONV_DIRECT_DW=1 /
+// TRANSCRIBE_CONV_NO_DIRECT_DW=1 force it on / off. `backend` is the primary
+// backend's name.
+bool detect_direct_dw(const char * backend);
 
 // LayerNorm with kLayerNormEps. `beta` is optional (may be nullptr).
 ggml_tensor * sv_layer_norm(ggml_context * ctx, ggml_tensor * x, ggml_tensor * gamma, ggml_tensor * beta);
@@ -81,11 +92,13 @@ ggml_tensor * sv_layer_norm(ggml_context * ctx, ggml_tensor * x, ggml_tensor * g
 // + V residual. Input layout `v_pre` ne=[d_model, T, B]; output same shape
 // (B derived from v_pre->ne[2]). `conv_pad_mask` (nullable, ne=[1, T, B])
 // zeros padded frames before the conv for variable-length batches.
+// `direct_dw` takes the direct depthwise op at B == 1 (detect_direct_dw).
 ggml_tensor * fsmn_branch(ggml_context * ctx,
                           ggml_tensor *  v_pre,
                           ggml_tensor *  fsmn_w,
                           int            kernel,
-                          ggml_tensor *  conv_pad_mask = nullptr);
+                          ggml_tensor *  conv_pad_mask = nullptr,
+                          bool           direct_dw     = false);
 
 // SAN-M attention sub-block: fused QKV, FSMN parallel branch on V,
 // SDPA over the QKV split. Returns ne=[d_model, T, B] (post-projection

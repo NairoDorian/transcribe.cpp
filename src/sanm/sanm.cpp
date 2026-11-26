@@ -8,6 +8,7 @@
 #include "ggml.h"
 
 #include <cmath>
+#include <cstring>
 
 namespace transcribe::sanm {
 
@@ -32,12 +33,18 @@ ggml_tensor * sv_layer_norm(ggml_context * ctx, ggml_tensor * x, ggml_tensor * g
     return y;
 }
 
+bool detect_direct_dw(const char * backend) {
+    const bool is_cpu = backend != nullptr && std::strcmp(backend, "CPU") == 0;
+    return transcribe::conformer::resolve_conv_direct("TRANSCRIBE_CONV_DIRECT_DW", "TRANSCRIBE_CONV_NO_DIRECT_DW",
+                                                      /*backend_default=*/is_cpu);
+}
+
 ggml_tensor * fsmn_branch(ggml_context * ctx,
                           ggml_tensor *  v_pre,          // [d_model, T, B]
                           ggml_tensor *  fsmn_w,         // ne=[K, 1, d_model]
                           int            kernel,
-                          ggml_tensor *  conv_pad_mask)  // [1, T, B] or null
-{
+                          ggml_tensor *  conv_pad_mask,  // [1, T, B] or null
+                          bool           direct_dw) {
     namespace conf = transcribe::conformer;
 
     const int64_t B       = v_pre->ne[2];
@@ -58,22 +65,29 @@ ggml_tensor * fsmn_branch(ggml_context * ctx,
     // transpose back.
     ggml_tensor * v_t = ggml_cont(ctx, ggml_transpose(ctx, v_in));  // [T, d_model, B]
 
+    // The direct depthwise-2D op (W=T, H=1, C=d_model, N=B) threads the
+    // utterance batch at ne[3], which conv_1d_dw_f32's im2col path collapses,
+    // and it skips im2col's [kernel, T, d_model] copy: 11x the activation for
+    // SAN-M's kernel of 11. Measured 2026-11-26 on the CPU (i9-13900H, 8
+    // threads): SenseVoice encode 14-18% faster, Fun-ASR-Nano 24-25%, the
+    // latter's compute buffer 35% smaller. There its output is bit-identical
+    // to the im2col path's: both add the taps one by one, in order, in F32 (a
+    // K < 32 dot product is ggml_vec_dot_f32's scalar tail), and the zero
+    // padding im2col adds changes no sum. Single utterances take it where
+    // detect_direct_dw says so.
     ggml_tensor * fsmn;
-    if (B > 1) {
-        // Batched depthwise conv. conv_1d_dw_f32 (im2col) collapses the
-        // batch axis, so use the direct depthwise-2D op (W=T, H=1, C=d_model,
-        // N=B), which threads the utterance batch at ne[3]. Kernel
-        // [K, 1, d_model] -> [K, 1, 1, d_model].
+    if (B > 1 || direct_dw) {
+        // Kernel [K, 1, d_model] -> [K, 1, 1, d_model].
         ggml_tensor * knl  = ggml_reshape_4d(ctx, fsmn_w, kernel, 1, 1, d_model);
         ggml_tensor * data = ggml_reshape_4d(ctx, v_t, v_t->ne[0], 1, d_model, B);
-        fsmn               = ggml_conv_2d_dw_direct(ctx, knl, data,
-                                                    /*s0=*/1, /*s1=*/1,
-                                                    /*p0=*/padding, /*p1=*/0,
-                                                    /*d0=*/1, /*d1=*/1);
+        fsmn               = conf::conv_2d_dw_direct_f32(ctx, knl, data,
+                                                         /*s0=*/1, /*s1=*/1,
+                                                         /*p0=*/padding, /*p1=*/0,
+                                                         /*d0=*/1, /*d1=*/1);
         // [T, 1, d_model, B] -> [T, d_model, B].
         fsmn               = ggml_reshape_3d(ctx, fsmn, fsmn->ne[0], d_model, B);
     } else {
-        // Single-shot: im2col path.
+        // Single utterance, im2col path (GPUs by default).
         fsmn = conf::conv_1d_dw_f32(ctx, fsmn_w, v_t,
                                     /*stride=*/1, /*padding=*/padding,
                                     /*dilation=*/1);
@@ -124,7 +138,7 @@ ggml_tensor * sanm_attention(ggml_context *          ctx,
     ggml_tensor * v_pre = ggml_cont(ctx, v);
 
     // FSMN branch (parallel to SDPA).
-    ggml_tensor * fsmn = fsmn_branch(ctx, v_pre, b.attn_fsmn_w, kernel, p.conv_pad_mask);
+    ggml_tensor * fsmn = fsmn_branch(ctx, v_pre, b.attn_fsmn_w, kernel, p.conv_pad_mask, p.direct_dw);
 
     // SDPA. Reshape Q,K,V to [head_dim, n_heads, T, B]. The fused QKV split
     // is non-contiguous along the channel axis, so cont each before reshape.

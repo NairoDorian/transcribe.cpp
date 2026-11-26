@@ -534,7 +534,8 @@ transcribe_status run(transcribe_session *          session,
     }
 
     // ---------- Build the encoder graph -------------------------------
-    EncoderBuild eb = build_encoder_graph(cc->compute_ctx, cm->weights, hp, T_lfr);
+    EncoderBuild eb =
+        build_encoder_graph(cc->compute_ctx, cm->weights, hp, T_lfr, sanm::detect_direct_dw(cm->backend.c_str()));
     if (eb.out == nullptr || eb.graph == nullptr) {
         return TRANSCRIBE_ERR_GGUF;
     }
@@ -791,7 +792,8 @@ static transcribe_status run_batch_encode(
         }
     }
 
-    EncoderBuild eb = build_encoder_graph(cc->compute_ctx, cm->weights, hp, T_max_lfr, /*n_batch=*/n,
+    EncoderBuild eb = build_encoder_graph(cc->compute_ctx, cm->weights, hp, T_max_lfr,
+                                          sanm::detect_direct_dw(cm->backend.c_str()), /*n_batch=*/n,
                                           /*batch_var_len=*/var_len);
     if (eb.out == nullptr || eb.graph == nullptr || eb.frontend_in == nullptr) {
         return TRANSCRIBE_ERR_GGUF;

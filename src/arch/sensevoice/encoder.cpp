@@ -66,6 +66,7 @@ EncoderBuild build_encoder_graph(ggml_context *            ctx,
                                  const SenseVoiceWeights & w,
                                  const SenseVoiceHParams & hp,
                                  int                       n_lfr_frames,
+                                 bool                      direct_dw,
                                  int                       n_batch,
                                  bool                      batch_var_len) {
     EncoderBuild eb{};
@@ -90,6 +91,7 @@ EncoderBuild build_encoder_graph(ggml_context *            ctx,
         /*d_model=*/d_model,
         /*kernel=*/hp.enc_kernel,
     };
+    block_params.direct_dw = direct_dw;
 
     // ----- inputs ----------------------------------------------------
     // Batch axis at ne[2]. B == 1 collapses to the pre-batch [d_input, T_in]

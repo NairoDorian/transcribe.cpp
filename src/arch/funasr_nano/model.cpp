@@ -567,7 +567,8 @@ transcribe_status run(transcribe_session *          session,
     }
 
     // ---- Build encoder graph ----
-    EncoderBuild eb = build_encoder_graph(cc->compute_ctx, cm->weights, hp, T_lfr);
+    EncoderBuild eb =
+        build_encoder_graph(cc->compute_ctx, cm->weights, hp, T_lfr, sanm::detect_direct_dw(cm->backend.c_str()));
     if (eb.graph == nullptr || eb.out == nullptr) {
         return TRANSCRIBE_ERR_GGUF;
     }
@@ -1062,7 +1063,8 @@ transcribe_status audio_embed_one(FunAsrNanoSession *        cc,
     if (const transcribe_status st = reset_ctx(cc, 32); st != TRANSCRIBE_OK) {
         return st;
     }
-    EncoderBuild eb = build_encoder_graph(cc->compute_ctx, cm->weights, hp, T_lfr);
+    EncoderBuild eb =
+        build_encoder_graph(cc->compute_ctx, cm->weights, hp, T_lfr, sanm::detect_direct_dw(cm->backend.c_str()));
     if (eb.graph == nullptr || eb.out == nullptr) {
         return TRANSCRIBE_ERR_GGUF;
     }

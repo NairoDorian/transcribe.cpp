@@ -99,10 +99,13 @@ struct EncoderBuild {
 // packed utterance to share n_lfr_frames (same-length batch) unless
 // batch_var_len is set, in which case the caller pads each mel to a common
 // n_lfr_frames and the two masks above gate the padded tail.
+// direct_dw: sanm::detect_direct_dw for the primary backend (the FSMN
+// depthwise conv of a single utterance).
 EncoderBuild build_encoder_graph(ggml_context *            compute_ctx,
                                  const SenseVoiceWeights & weights,
                                  const SenseVoiceHParams & hp,
                                  int                       n_lfr_frames,
+                                 bool                      direct_dw,
                                  int                       n_batch       = 1,
                                  bool                      batch_var_len = false);
 

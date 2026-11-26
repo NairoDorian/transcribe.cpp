@@ -183,14 +183,19 @@ inline const std::vector<LanguageAlphabet> & alphabets() {
 }
 
 // Decode one UTF-8 code point at s[i]. Returns the byte length consumed (>= 1)
-// and sets `cp`; `complete` is false when the sequence runs past the end (the
-// missing continuation bytes are taken as 0x80, the smallest).
-inline size_t utf8_next(std::string_view s, size_t i, uint32_t & cp, bool & complete) {
+// and sets `cp`; `complete` is false when the sequence runs past the end. A
+// cut sequence sets `cp` to the smallest code point it can still become (the
+// missing continuation bytes taken as 0x80) and `cp_max`, when given, to the
+// largest (taken as 0xBF); otherwise `cp_max` is `cp`.
+inline size_t utf8_next(std::string_view s, size_t i, uint32_t & cp, bool & complete, uint32_t * cp_max = nullptr) {
     const auto b0 = static_cast<unsigned char>(s[i]);
     size_t     len;
     if (b0 < 0x80) {
         cp       = b0;
         complete = true;
+        if (cp_max != nullptr) {
+            *cp_max = cp;
+        }
         return 1;
     }
     if ((b0 & 0xE0) == 0xC0) {
@@ -205,18 +210,29 @@ inline size_t utf8_next(std::string_view s, size_t i, uint32_t & cp, bool & comp
     } else {
         cp       = 0;  // a stray continuation byte: neutral
         complete = true;
+        if (cp_max != nullptr) {
+            *cp_max = cp;
+        }
         return 1;
     }
     complete = true;
     for (size_t k = 1; k < len; ++k) {
         if (i + k >= s.size() || (static_cast<unsigned char>(s[i + k]) & 0xC0) != 0x80) {
-            // Cut short: the missing continuation bits are zeros, which gives
-            // the smallest code point the sequence can still become.
-            complete = false;
-            cp <<= 6 * (len - k);
+            // Cut short: the missing continuation bits are all zeros for the
+            // smallest code point the sequence can still become, all ones for
+            // the largest.
+            complete               = false;
+            const uint32_t missing = static_cast<uint32_t>(6 * (len - k));
+            cp <<= missing;
+            if (cp_max != nullptr) {
+                *cp_max = cp | ((1u << missing) - 1u);
+            }
             return k;
         }
         cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3Fu);
+    }
+    if (cp_max != nullptr) {
+        *cp_max = cp;
     }
     return len;
 }
@@ -232,16 +248,19 @@ struct AlphabetFilter {
     // True when every letter of `bytes` (a token's decoded bytes) may be
     // written. A sequence cut at the token's end (byte-level BPE splits
     // characters across tokens) is judged by its script when the leading
-    // bytes determine it, and passes when it is a Latin letter (its exact
-    // letter is not known yet; the next token completes it).
+    // bytes determine it, and passes when they do not (lead byte 0xD4 starts
+    // Cyrillic U+0500-052F and Armenian U+0531-053F, 0xD6 Armenian and
+    // Hebrew points) or when it is a Latin letter: its exact letter is not
+    // known yet, and the next token completes it.
     bool allows(std::string_view bytes) const {
         for (size_t i = 0; i < bytes.size();) {
             uint32_t     cp       = 0;
+            uint32_t     cp_max   = 0;
             bool         complete = true;
-            const size_t n        = utf8_next(bytes, i, cp, complete);
+            const size_t n        = utf8_next(bytes, i, cp, complete, &cp_max);
             i += n;
             const uint16_t s = letter_script(cp);
-            if (s == 0) {
+            if (s == 0 || (!complete && letter_script(cp_max) != s)) {
                 continue;
             }
             if (s == k_script_latin) {

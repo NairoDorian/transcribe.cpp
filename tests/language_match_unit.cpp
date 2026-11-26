@@ -122,6 +122,22 @@ void test_alphabet_partial_utf8() {
     CHECK(!fr_en.allows("\xE4\xB8"));  // Han, two of three bytes
     CHECK(fr_en.allows("\xC3"));       // some Latin-1 letter
     CHECK(fr_en.allows("\xA9"));       // a stray continuation byte
+
+    // Lead bytes that do not fix the script pass. 0xD4 starts Cyrillic
+    // (U+0500-052F) or Armenian (U+0531-053F) letters; 0xD6 Armenian
+    // (U+0580-058F) or Hebrew points (U+0591-05BF).
+    const AlphabetFilter hy = alpha({ "hy" }, usable);
+    CHECK(usable);
+    CHECK(hy.allows("\xD4"));       // cut "Ա" (U+0531)
+    CHECK(hy.allows("\xD4\xB1"));   // "Ա"
+    CHECK(!hy.allows("\xD0\xB0"));  // Cyrillic "а"
+    const AlphabetFilter he = alpha({ "he" }, usable);
+    CHECK(usable);
+    CHECK(he.allows("\xD6"));       // cut niqqud (U+05B0-05BC)
+    CHECK(he.allows("\xD7\x90"));   // "א"
+    CHECK(!he.allows("\xD5\xA1"));  // Armenian "ա" (U+0561)
+    CHECK(he.allows("\xD7"));       // lead byte of U+05C0-05FF: Hebrew only
+    CHECK(!he.allows("\xD0"));      // lead byte of U+0400-043F: Cyrillic only
 }
 
 // Cyrillic neighbours: Ukrainian and Russian share most letters but not all.

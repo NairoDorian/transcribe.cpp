@@ -68,20 +68,24 @@ bool detect_direct_dw_in_pre_encode(const char * backend) {
                                      /*backend_default=*/!is_metal);
 }
 
-// Pre-encode conv0 direct dispatch:
-// Causal padding uses ggml_pad_ext which produces non-contiguous strides;
-// ggml-cuda rejects non-contiguous CONV_2D and falls back to CPU.
-// On CPU backend it is native; on CUDA/Metal keep false to use ggml_conv_2d (im2col).
+// Pre-encode conv0 direct dispatch. Non-causal: the direct conv_2d path
+// except on Metal. Causal (Nemotron): the direct path on the CPU only, and
+// ggml_conv_2d (im2col) elsewhere. That default dates from a causal stem that
+// padded with ggml_pad_ext, whose non-contiguous result ggml-cuda's CONV_2D
+// rejects; upstream's padding rework removed that, and upstream now takes the
+// direct path everywhere. The fork keeps im2col because switching moves
+// causal models' GPU transcripts (2026-11-26, CUDA: the pre-encode output
+// shifts by ~7e-3 relative, as far from the CPU result as before, and
+// Nemotron's punctuation follows) for no speed-up worth measuring.
+// TRANSCRIBE_CONV_DIRECT_CONV0 / TRANSCRIBE_CONV_NO_DIRECT_CONV0 override
+// both cases.
 bool detect_direct_conv0_in_pre_encode(const char * backend, bool causal_pe) {
-    if (causal_pe) {
-        const bool is_cpu =
-            backend == nullptr || (std::strstr(backend, "CPU") != nullptr || std::strstr(backend, "cpu") != nullptr);
-        return is_cpu;
-    }
+    const bool is_cpu =
+        backend == nullptr || (std::strstr(backend, "CPU") != nullptr || std::strstr(backend, "cpu") != nullptr);
     const bool is_metal =
         backend != nullptr && (std::strstr(backend, "Metal") != nullptr || std::strstr(backend, "metal") != nullptr);
     return conf::resolve_conv_direct("TRANSCRIBE_CONV_DIRECT_CONV0", "TRANSCRIBE_CONV_NO_DIRECT_CONV0",
-                                     /*backend_default=*/!is_metal);
+                                     /*backend_default=*/causal_pe ? is_cpu : !is_metal);
 }
 
 // ----- Views ------------------------------------------------------

@@ -15,9 +15,11 @@ reproduced here for convenience.
 | RNNoise model and algorithm, via nnnoiseless | BSD-3-Clause | [`licenses/rnnoise-nnnoiseless-BSD-3-Clause.txt`](licenses/rnnoise-nnnoiseless-BSD-3-Clause.txt) | nnnoiseless 0.5.2 (`src/rnnoise-weights.inl`, `src/transcribe-rnnoise.*`) |
 | audio.cpp (Earshot SIMD kernels, graph-optimizer subset) | Apache-2.0 | [`licenses/audio-cpp-Apache-2.0.txt`](licenses/audio-cpp-Apache-2.0.txt) | 0xShug0/audio.cpp #1095 / #1102 (`src/transcribe-earshot-engine.cpp`, `src/transcribe-earshot-kernels.inc`, `src/transcribe-graph-opt.h`) |
 
-Prebuilt artifacts (the Swift xcframework, the native Python wheels, and the
-npm platform packages) carry these same texts alongside the binaries — see each
-binding's packaging for the bundled `LICENSE.ggml` / `LICENSE.miniz` / `LICENSE.silero_vad` files.
+Prebuilt artifacts carry these same texts alongside the binaries:
+`cmake --install` stages them under `share/licenses/transcribe/`, the native
+Python wheels list them as `license-files`, the npm platform packages copy them
+into `licenses/`, and the Swift xcframework zip holds them as `LICENSE.<name>`
+files. When a component is added here, add its text to all four.
 
 Conversion-time tooling also includes `scripts/lib/phonon.py`, adapted from
 Fermion Research's Apache-2.0 container reader at

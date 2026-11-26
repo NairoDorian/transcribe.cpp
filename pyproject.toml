@@ -36,7 +36,7 @@ requires-python = ">=3.11"
 license = "MIT"
 # Wheels vendor native code, so third-party license texts ship in the wheel
 # (settled decision: license inclusion is part of provider packaging tests).
-license-files = ["LICENSE", "ggml/LICENSE", "src/third_party/miniz/LICENSE", "licenses/audio-cpp-Apache-2.0.txt", "src/third_party/silero_vad/LICENSE"]
+license-files = ["LICENSE", "ggml/LICENSE", "src/third_party/miniz/LICENSE", "src/third_party/silero_vad/LICENSE", "src/third_party/cJSON/LICENSE", "licenses/earshot-MIT.txt", "licenses/rnnoise-nnnoiseless-BSD-3-Clause.txt", "licenses/audio-cpp-Apache-2.0.txt"]
 authors = [{ name = "The transcribe.cpp authors" }]
 keywords = ["transcription", "speech-to-text", "asr", "ggml", "native"]
 classifiers = [

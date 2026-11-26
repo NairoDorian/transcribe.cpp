@@ -83,13 +83,18 @@ const contract = fs.existsSync(srcContract)
 fs.writeFileSync(path.join(pkgDir, "contract.json"), JSON.stringify(contract, null, 2) + "\n");
 files.push("contract.json");
 
-// 3) Third-party license texts (ggml + miniz + Silero VAD) — required by §5.
+// 3) License texts: the repo's and every third-party one compiled into the
+// library (THIRD-PARTY-LICENSES.md) — required by §5.
 fs.mkdirSync(path.join(pkgDir, "licenses"), { recursive: true });
 for (const [name, rel] of [
   ["LICENSE", "LICENSE"],
   ["LICENSE.ggml", "ggml/LICENSE"],
   ["LICENSE.miniz", "src/third_party/miniz/LICENSE"],
   ["LICENSE.silero_vad", "src/third_party/silero_vad/LICENSE"],
+  ["LICENSE.cjson", "src/third_party/cJSON/LICENSE"],
+  ["LICENSE.earshot", "licenses/earshot-MIT.txt"],
+  ["LICENSE.rnnoise", "licenses/rnnoise-nnnoiseless-BSD-3-Clause.txt"],
+  ["LICENSE.audio-cpp", "licenses/audio-cpp-Apache-2.0.txt"],
 ]) {
   const p = path.join(REPO, rel);
   if (fs.existsSync(p)) fs.cpSync(p, path.join(pkgDir, "licenses", name));

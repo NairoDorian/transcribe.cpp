@@ -28,6 +28,10 @@ cp "${REPO_ROOT}/LICENSE" "${XCFRAMEWORK}/LICENSE"
 cp "${REPO_ROOT}/ggml/LICENSE" "${XCFRAMEWORK}/LICENSE.ggml"
 cp "${REPO_ROOT}/src/third_party/miniz/LICENSE" "${XCFRAMEWORK}/LICENSE.miniz"
 cp "${REPO_ROOT}/src/third_party/silero_vad/LICENSE" "${XCFRAMEWORK}/LICENSE.silero_vad"
+cp "${REPO_ROOT}/src/third_party/cJSON/LICENSE" "${XCFRAMEWORK}/LICENSE.cjson"
+cp "${REPO_ROOT}/licenses/earshot-MIT.txt" "${XCFRAMEWORK}/LICENSE.earshot"
+cp "${REPO_ROOT}/licenses/rnnoise-nnnoiseless-BSD-3-Clause.txt" "${XCFRAMEWORK}/LICENSE.rnnoise"
+cp "${REPO_ROOT}/licenses/audio-cpp-Apache-2.0.txt" "${XCFRAMEWORK}/LICENSE.audio-cpp"
 
 # Deterministic zip from the output dir (store the path as
 # "TranscribeCpp.xcframework/..." so SwiftPM unpacks it correctly).

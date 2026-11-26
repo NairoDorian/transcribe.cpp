@@ -37,9 +37,10 @@ readme = "README.md"
 # Same floor and same rationale as the default provider (repo-root pyproject.toml).
 requires-python = ">=3.11"
 license = "MIT"
-# Copies of the repo + ggml + miniz + Silero VAD licenses (PEP 639 paths cannot escape the
-# project directory; texts are static).
-license-files = ["LICENSE", "LICENSE-ggml", "LICENSE-miniz", "LICENSE-silero_vad"]
+# Copies of the repo's license and of every third-party text compiled into the library
+# (THIRD-PARTY-LICENSES.md): PEP 639 paths cannot escape the project directory; the texts are
+# static.
+license-files = ["LICENSE", "LICENSE-ggml", "LICENSE-miniz", "LICENSE-silero_vad", "LICENSE-cjson", "LICENSE-earshot", "LICENSE-rnnoise", "LICENSE-audio-cpp"]
 authors = [{ name = "The transcribe.cpp authors" }]
 keywords = ["transcription", "speech-to-text", "asr", "ggml", "cuda"]
 classifiers = [

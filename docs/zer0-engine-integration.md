@@ -1,6 +1,6 @@
 # ZER0 and transcribe.cpp: paired development contract
 
-Last audited: 2026-11-25 (baseline traps; the research follow-up below is dated
+Last audited: 2026-11-26 (baseline traps; the research follow-up below is dated
 2026-10-16). This is durable project context, not a claim that two working
 trees, branch tips, dependency locks or built binaries are identical.
 
@@ -74,6 +74,13 @@ was removed. Before Silero integration the fork's Earshot files were also called
 
 ## Baseline traps future agents must recheck
 
+- Since fork `cd790da1` (2026-11-26) the engine's CPU thread pools start
+  paused, and ggml's barrier yields only when the pool's threads outnumber
+  the usable CPUs (patch `0104`). For ZER0: on CUDA, a model's CPU fallback
+  pool no longer spins at load, and CPU-mode dictation next to other CPU
+  load (a build, TTS, a game) is several times faster. No ZER0 change is
+  needed. When timing CPU inference, test with outside load as well as on
+  an idle machine (`docs/fork/audit-2026-11-25.md`, item 19).
 - Since ZER0 `a12ca902` (2026-11-17) the app's capture runs this engine's
   `VadGate` (wrapped as `SpeechGate`) and `Denoiser`; the Rust `earshot` /
   `nnnoiseless` copies, `Hysteresis` and `SmoothedVad` are gone from the app.

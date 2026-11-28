@@ -137,6 +137,16 @@ non-empty list there is
 - The conformer flash probe and Granite's dequantize-once `proj.query` removed
   the last CPU nodes the local models had on CUDA. Check with
   `GGML_SCHED_DEBUG` split counts.
+- Decode-step graphs keep their CUDA graphs across runs and stream ticks
+  (`transcribe::GraphArena`): ggml-cuda keys a graph by its first node's
+  host address, and a step graph built in fresh memory was captured and
+  instantiated anew on every call. Per short utterance about 8.7 ms less
+  host CUDA work for Granite 4.1 2B and 5.7 ms for Qwen3-ASR 1.7B; R2T2
+  stream ticks at 160 ms 3-5% shorter.
+- Cache-aware streaming rotates its per-layer caches with one synchronize
+  per encoder step instead of one per copy; R2T2 does not clear its KV
+  cache before a fresh prefill (235 MB per tick); flash attention reads its
+  permuted Q/K/V views instead of copies.
 
 Not bit-exact on GPUs: attention computed on the device instead of on the
 CPU (the flash probe), Granite's direct depthwise convolution, and the im2col

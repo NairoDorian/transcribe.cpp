@@ -57,7 +57,11 @@ ones listed carry fork-side merge decisions. Overview: [README.md](README.md).
   Moonshine tiny 9-11 -> 1 (0.3-0.9 ms per call). This is the cost a live dictation
   host pays on every utterance with a non-streaming model. Transcripts are
   unchanged on CUDA, Vulkan and CPU, for repeated runs, eight different
-  utterances in one session, and R2T2 streams at 80 and 160 ms.
+  utterances in one session, and R2T2 streams at 80 and 160 ms. An R2T2
+  stream (`jfk`, 160 ms) instantiates 52 -> 4 graphs and launches 55,600
+  fewer kernels one by one (each tick's first step used to warm up without a
+  graph); mean tick 47.9 -> 45.7 ms (`jfk`) and 46.4 -> 45.0 ms (`german`),
+  4 interleaved runs each.
 
 ## 2026-11-26 — audit follow-ups
 

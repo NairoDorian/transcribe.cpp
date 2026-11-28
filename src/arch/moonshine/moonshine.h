@@ -85,21 +85,28 @@ struct MoonshineKvCache {
     }
 };
 
+// Self cache [d_model·n_ctx·n_layer]; cross cache [cross_d·T_enc·n_layer]
+// with cross_d = n_heads·head_dim_pad: each layer's cross K/V stored per head
+// with the head size already padded for attention ([head_dim_pad, T_enc,
+// n_heads]), so the decoder steps view it instead of re-copying and padding it.
 bool kv_cache_init(MoonshineKvCache & cache,
                    ggml_backend_t     backend,
                    int                n_ctx,
                    int                T_enc,
                    int                d_model,
+                   int                cross_d,
                    int                n_layer,
                    ggml_type          kv_type);
 
 // Batched variant: self [d_model·n_ctx·n_batch·n_layer], cross
-// [d_model·T_enc·n_batch·n_layer]. n_batch == 1 is layout-identical.
+// [cross_d·T_enc·n_batch·n_layer] (per layer [head_dim_pad, T_enc, n_heads,
+// n_batch]). n_batch == 1 is layout-identical.
 bool kv_cache_init_batched(MoonshineKvCache & cache,
                            ggml_backend_t     backend,
                            int                n_ctx,
                            int                T_enc,
                            int                d_model,
+                           int                cross_d,
                            int                n_layer,
                            int                n_batch,
                            ggml_type          kv_type);

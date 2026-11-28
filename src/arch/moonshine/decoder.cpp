@@ -362,16 +362,15 @@ ggml_tensor * mha_cross_cached(ggml_context *           ctx,
     Q                  = ggml_cont(ctx, Q);
     Q                  = pad_head_dim(ctx, Q, pad);
 
-    const size_t  k_elem = ggml_element_size(kv_cache.cross_k);
-    ggml_tensor * K = ggml_view_3d(ctx, kv_cache.cross_k, head_dim, T_enc, n_heads, k_elem * d_model, k_elem * head_dim,
-                                   k_elem * static_cast<size_t>(static_cast<int64_t>(il) * T_enc * d_model));
-
-    const size_t  v_elem = ggml_element_size(kv_cache.cross_v);
-    ggml_tensor * V = ggml_view_3d(ctx, kv_cache.cross_v, head_dim, T_enc, n_heads, v_elem * d_model, v_elem * head_dim,
-                                   v_elem * static_cast<size_t>(static_cast<int64_t>(il) * T_enc * d_model));
-
-    ggml_tensor * K_p = pad_head_dim(ctx, ggml_cont(ctx, K), pad);
-    ggml_tensor * V_p = pad_head_dim(ctx, ggml_cont(ctx, V), pad);
+    // The cross cache already holds this layer's K/V per head, padded:
+    // [head_dim_pad, T_enc, n_heads] (build_cross_kv_graph). View it.
+    const size_t  k_elem    = ggml_element_size(kv_cache.cross_k);
+    const size_t  v_elem    = ggml_element_size(kv_cache.cross_v);
+    const int64_t layer_len = static_cast<int64_t>(head_dim_pad) * T_enc * n_heads;
+    ggml_tensor * K_p       = ggml_view_3d(ctx, kv_cache.cross_k, head_dim_pad, T_enc, n_heads, k_elem * head_dim_pad,
+                                           k_elem * head_dim_pad * T_enc, k_elem * static_cast<size_t>(il * layer_len));
+    ggml_tensor * V_p       = ggml_view_3d(ctx, kv_cache.cross_v, head_dim_pad, T_enc, n_heads, v_elem * head_dim_pad,
+                                           v_elem * head_dim_pad * T_enc, v_elem * static_cast<size_t>(il * layer_len));
 
     ggml_tensor * o;
     if (use_flash) {
@@ -426,6 +425,23 @@ DecoderBuild build_cross_kv_graph(ggml_context *           ctx,
         return db;
     }
 
+    const int     n_heads      = hp.dec_n_heads;
+    const int     head_dim     = d_model / n_heads;
+    const int     head_dim_pad = hp.dec_head_dim_padded();
+    const int     pad          = head_dim_pad - head_dim;
+    const int64_t layer_len    = static_cast<int64_t>(head_dim_pad) * T_enc * n_heads;
+
+    // Store each layer's cross K/V as every decoder step's attention reads
+    // them: per head, head size padded ([head_dim_pad, T_enc, n_heads]). The
+    // steps used to re-copy and pad the [d_model, T_enc] rows at every token;
+    // the padded values are the same (the zeros convert exactly), so attention
+    // sees identical inputs.
+    auto to_cache_layout = [&](ggml_tensor * t) {              // [d_model, T_enc]
+        t = ggml_reshape_3d(ctx, t, head_dim, n_heads, T_enc);
+        t = ggml_cont(ctx, ggml_permute(ctx, t, 0, 2, 1, 3));  // [head_dim, T_enc, n_heads]
+        return pad_head_dim(ctx, t, pad);                      // [head_dim_pad, T_enc, n_heads]
+    };
+
     const int n_layers = static_cast<int>(w.dec_blocks.size());
     for (int il = 0; il < n_layers; ++il) {
         const auto & blk = w.dec_blocks[il];
@@ -438,13 +454,13 @@ DecoderBuild build_cross_kv_graph(ggml_context *           ctx,
         const size_t k_elem = ggml_element_size(kv_cache.cross_k);
         const size_t v_elem = ggml_element_size(kv_cache.cross_v);
 
-        ggml_tensor * k_dst = ggml_view_1d(ctx, kv_cache.cross_k, static_cast<int64_t>(T_enc) * d_model,
-                                           k_elem * static_cast<size_t>(static_cast<int64_t>(il) * T_enc * d_model));
-        ggml_tensor * v_dst = ggml_view_1d(ctx, kv_cache.cross_v, static_cast<int64_t>(T_enc) * d_model,
-                                           v_elem * static_cast<size_t>(static_cast<int64_t>(il) * T_enc * d_model));
+        ggml_tensor * k_dst =
+            ggml_view_1d(ctx, kv_cache.cross_k, layer_len, k_elem * static_cast<size_t>(il * layer_len));
+        ggml_tensor * v_dst =
+            ggml_view_1d(ctx, kv_cache.cross_v, layer_len, v_elem * static_cast<size_t>(il * layer_len));
 
-        ggml_build_forward_expand(db.graph, ggml_cpy(ctx, Kcross, k_dst));
-        ggml_build_forward_expand(db.graph, ggml_cpy(ctx, Vcross, v_dst));
+        ggml_build_forward_expand(db.graph, ggml_cpy(ctx, to_cache_layout(Kcross), k_dst));
+        ggml_build_forward_expand(db.graph, ggml_cpy(ctx, to_cache_layout(Vcross), v_dst));
     }
 
     return db;
@@ -808,14 +824,16 @@ ggml_tensor * mha_cross_step_batched(ggml_context *           ctx,
     ggml_tensor * Q_att = ggml_cont(ctx, ggml_permute(ctx, Q, 0, 2, 3, 1));
     ggml_tensor * Qp    = pad_head_dim(ctx, Q_att, pad);
 
-    const size_t  off_k = k_elem * static_cast<size_t>(il) * T_enc_max * d_model * B;
-    const size_t  off_v = v_elem * static_cast<size_t>(il) * T_enc_max * d_model * B;
-    ggml_tensor * K     = ggml_view_4d(ctx, kv_cache.cross_k, head_dim, T_enc_max, n_heads, B, k_elem * d_model,
-                                       k_elem * head_dim, k_elem * d_model * T_enc_max, off_k);
-    ggml_tensor * V     = ggml_view_4d(ctx, kv_cache.cross_v, head_dim, T_enc_max, n_heads, B, v_elem * d_model,
-                                       v_elem * head_dim, v_elem * d_model * T_enc_max, off_v);
-    ggml_tensor * Kp    = pad_head_dim(ctx, ggml_cont(ctx, K), pad);
-    ggml_tensor * Vp    = pad_head_dim(ctx, ggml_cont(ctx, V), pad);
+    // Per layer [head_dim_pad, T_enc_max, n_heads, B], already padded
+    // (build_cross_kv_graph_batched). View it.
+    const size_t  hdp       = static_cast<size_t>(head_dim_pad);
+    const size_t  layer_len = hdp * T_enc_max * n_heads * B;
+    ggml_tensor * Kp =
+        ggml_view_4d(ctx, kv_cache.cross_k, head_dim_pad, T_enc_max, n_heads, B, k_elem * hdp, k_elem * hdp * T_enc_max,
+                     k_elem * hdp * T_enc_max * n_heads, k_elem * static_cast<size_t>(il) * layer_len);
+    ggml_tensor * Vp =
+        ggml_view_4d(ctx, kv_cache.cross_v, head_dim_pad, T_enc_max, n_heads, B, v_elem * hdp, v_elem * hdp * T_enc_max,
+                     v_elem * hdp * T_enc_max * n_heads, v_elem * static_cast<size_t>(il) * layer_len);
 
     ggml_tensor * o = ggml_flash_attn_ext(ctx, Qp, Kp, Vp, cross_mask, scale, 0.0f, 0.0f);
     o               = ggml_cont(ctx, unpad_head_dim_4d(ctx, o, head_dim, pad));
@@ -853,20 +871,30 @@ DecoderBuild build_cross_kv_graph_batched(ggml_context *           ctx,
     const size_t k_elem = ggml_element_size(kv_cache.cross_k);
     const size_t v_elem = ggml_element_size(kv_cache.cross_v);
 
+    // Same layout as build_cross_kv_graph, with the batch outermost: per layer
+    // [head_dim_pad, T_enc_max, n_heads, B].
+    const int     n_heads         = hp.dec_n_heads;
+    const int     head_dim        = d_model / n_heads;
+    const int     head_dim_pad    = hp.dec_head_dim_padded();
+    const int     pad             = head_dim_pad - head_dim;
+    const int64_t layer_len       = static_cast<int64_t>(head_dim_pad) * T_enc_max * n_heads * B;
+    auto          to_cache_layout = [&](ggml_tensor * t) {     // [d_model, T_enc_max, B]
+        t = ggml_reshape_4d(ctx, t, head_dim, n_heads, T_enc_max, B);
+        t = ggml_cont(ctx, ggml_permute(ctx, t, 0, 2, 1, 3));  // [head_dim, T_enc_max, n_heads, B]
+        return pad_head_dim(ctx, t, pad);                      // [head_dim_pad, T_enc_max, n_heads, B]
+    };
+
     const int n_layers = static_cast<int>(w.dec_blocks.size());
     for (int il = 0; il < n_layers; ++il) {
-        const auto &  blk   = w.dec_blocks[il];
-        ggml_tensor * Kc    = ggml_mul_mat(ctx, blk.cross_k_w, db.encoder_out_in);
-        ggml_tensor * Vc    = ggml_mul_mat(ctx, blk.cross_v_w, db.encoder_out_in);
-        // [d_model, T_enc_max, B].
-        const size_t  off_k = k_elem * static_cast<size_t>(il) * T_enc_max * d_model * B;
-        const size_t  off_v = v_elem * static_cast<size_t>(il) * T_enc_max * d_model * B;
-        ggml_tensor * k_dst = ggml_view_3d(ctx, kv_cache.cross_k, d_model, T_enc_max, B, k_elem * d_model,
-                                           k_elem * d_model * T_enc_max, off_k);
-        ggml_tensor * v_dst = ggml_view_3d(ctx, kv_cache.cross_v, d_model, T_enc_max, B, v_elem * d_model,
-                                           v_elem * d_model * T_enc_max, off_v);
-        ggml_build_forward_expand(db.graph, ggml_cpy(ctx, Kc, k_dst));
-        ggml_build_forward_expand(db.graph, ggml_cpy(ctx, Vc, v_dst));
+        const auto &  blk = w.dec_blocks[il];
+        ggml_tensor * Kc  = ggml_mul_mat(ctx, blk.cross_k_w, db.encoder_out_in);
+        ggml_tensor * Vc  = ggml_mul_mat(ctx, blk.cross_v_w, db.encoder_out_in);
+        ggml_tensor * k_dst =
+            ggml_view_1d(ctx, kv_cache.cross_k, layer_len, k_elem * static_cast<size_t>(il * layer_len));
+        ggml_tensor * v_dst =
+            ggml_view_1d(ctx, kv_cache.cross_v, layer_len, v_elem * static_cast<size_t>(il * layer_len));
+        ggml_build_forward_expand(db.graph, ggml_cpy(ctx, to_cache_layout(Kc), k_dst));
+        ggml_build_forward_expand(db.graph, ggml_cpy(ctx, to_cache_layout(Vc), v_dst));
     }
     return db;
 }

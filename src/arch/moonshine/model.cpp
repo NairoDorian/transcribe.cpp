@@ -87,6 +87,7 @@ bool kv_cache_init(MoonshineKvCache & cache,
                    int                n_ctx,
                    int                T_enc,
                    int                d_model,
+                   int                cross_d,
                    int                n_layer,
                    ggml_type          kv_type) {
     if (kv_type != GGML_TYPE_F16 && kv_type != GGML_TYPE_F32) {
@@ -105,8 +106,12 @@ bool kv_cache_init(MoonshineKvCache & cache,
         return false;
     }
 
+    // The cross cache holds each layer's K/V per head with the head size
+    // padded for attention ([head_dim_pad, T_enc, n_heads], cross_d =
+    // n_heads * head_dim_pad), written once per utterance by
+    // build_cross_kv_graph; the decoder steps only view it.
     const int64_t self_elements  = static_cast<int64_t>(d_model) * n_layer * n_ctx;
-    const int64_t cross_elements = static_cast<int64_t>(d_model) * n_layer * T_enc;
+    const int64_t cross_elements = static_cast<int64_t>(cross_d) * n_layer * T_enc;
 
     cache.self_k  = ggml_new_tensor_1d(cache.ctx, kv_type, self_elements);
     cache.self_v  = ggml_new_tensor_1d(cache.ctx, kv_type, self_elements);
@@ -141,11 +146,12 @@ bool kv_cache_init_batched(MoonshineKvCache & cache,
                            int                n_ctx,
                            int                T_enc,
                            int                d_model,
+                           int                cross_d,
                            int                n_layer,
                            int                n_batch,
                            ggml_type          kv_type) {
     if (n_batch <= 1) {
-        if (!kv_cache_init(cache, backend, n_ctx, T_enc, d_model, n_layer, kv_type)) {
+        if (!kv_cache_init(cache, backend, n_ctx, T_enc, d_model, cross_d, n_layer, kv_type)) {
             return false;
         }
         cache.n_batch = 1;
@@ -163,7 +169,7 @@ bool kv_cache_init_batched(MoonshineKvCache & cache,
     }
 
     const int64_t self_elements  = static_cast<int64_t>(d_model) * n_layer * n_ctx * n_batch;
-    const int64_t cross_elements = static_cast<int64_t>(d_model) * n_layer * T_enc * n_batch;
+    const int64_t cross_elements = static_cast<int64_t>(cross_d) * n_layer * T_enc * n_batch;
     cache.self_k                 = ggml_new_tensor_1d(cache.ctx, kv_type, self_elements);
     cache.self_v                 = ggml_new_tensor_1d(cache.ctx, kv_type, self_elements);
     cache.cross_k                = ggml_new_tensor_1d(cache.ctx, kv_type, cross_elements);
@@ -439,7 +445,8 @@ transcribe_status run(transcribe_session *          session,
             if (cache_type == GGML_TYPE_COUNT) {
                 cache_type = GGML_TYPE_F32;
             }
-            if (!kv_cache_init(cc->kv_cache, cm->plan.primary, n_ctx, T_enc, d_model, hp.dec_n_layers, cache_type)) {
+            if (!kv_cache_init(cc->kv_cache, cm->plan.primary, n_ctx, T_enc, d_model,
+                               hp.dec_n_heads * hp.dec_head_dim_padded(), hp.dec_n_layers, cache_type)) {
                 transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                     "moonshine run: KV cache allocation failed — out of memory.");
                 return TRANSCRIBE_ERR_OOM;
@@ -969,7 +976,8 @@ transcribe_status run_batch(transcribe_session *          session,
         cc->kv_cache.free();
     }
     if (cc->kv_cache.buffer == nullptr) {
-        if (!kv_cache_init_batched(cc->kv_cache, cm->plan.primary, max_n_kv, T_enc_max, d_model, n_layer, n, kv_type)) {
+        if (!kv_cache_init_batched(cc->kv_cache, cm->plan.primary, max_n_kv, T_enc_max, d_model,
+                                   hp.dec_n_heads * hp.dec_head_dim_padded(), n_layer, n, kv_type)) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "moonshine run_batch: batched KV cache allocation failed — "
                                 "out of memory.");

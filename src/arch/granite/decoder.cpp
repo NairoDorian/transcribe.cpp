@@ -20,6 +20,7 @@
 #include "causal_lm/causal_lm.h"
 #include "ggml.h"
 #include "transcribe-debug.h"
+#include "transcribe-flash-policy.h"
 #include "transcribe-log.h"
 
 #include <cmath>
@@ -125,7 +126,7 @@ ggml_tensor * block_prefill(ggml_context *                   ctx,
     ggml_tensor * V_att             = ggml_view_3d(ctx, kv_cache.self_v, head_dim, T_seq, n_kv_heads, v_elem * kv_dim,
                                                    v_elem * head_dim, layer_off_bytes_v);
 
-    ggml_tensor * Q_att = ggml_cont(ctx, ggml_permute(ctx, Q, 0, 2, 1, 3));
+    ggml_tensor * Q_att = transcribe::flash::attn_input(ctx, ggml_permute(ctx, Q, 0, 2, 1, 3), use_flash);
 
     ggml_tensor * o;
     if (use_flash) {
@@ -231,7 +232,7 @@ ggml_tensor * block_step(ggml_context *                   ctx,
     ggml_tensor * V_att = ggml_view_3d(ctx, kv_cache.self_v, head_dim, max_n_kv, n_kv_heads, v_elem * kv_dim,
                                        v_elem * head_dim, layer_off_bytes_v);
 
-    ggml_tensor * Q_att = ggml_cont(ctx, ggml_permute(ctx, Q, 0, 2, 1, 3));
+    ggml_tensor * Q_att = transcribe::flash::attn_input(ctx, ggml_permute(ctx, Q, 0, 2, 1, 3), use_flash);
 
     ggml_tensor * o;
     if (use_flash) {
@@ -341,7 +342,7 @@ ggml_tensor * block_prefill_batched(ggml_context *                   ctx,
                                        k_elem * head_dim, k_elem * kv_dim * n_ctx, off_k);
     ggml_tensor * V_att = ggml_view_4d(ctx, kv_cache.self_v, head_dim, T, n_kv_heads, B, v_elem * kv_dim,
                                        v_elem * head_dim, v_elem * kv_dim * n_ctx, off_v);
-    ggml_tensor * Q_att = ggml_cont(ctx, ggml_permute(ctx, Q, 0, 2, 1, 3));
+    ggml_tensor * Q_att = ggml_permute(ctx, Q, 0, 2, 1, 3);
     ggml_tensor * o     = ggml_flash_attn_ext(ctx, Q_att, K_att, V_att, mask, scale_attn, 0.0f, 0.0f);
     o                   = ggml_reshape_3d(ctx, o, q_dim, T, B);
     o                   = ggml_mul_mat(ctx, view.attn_o_w, o);
@@ -425,7 +426,7 @@ ggml_tensor * block_step_batched(ggml_context *                   ctx,
                                        k_elem * head_dim, k_elem * kv_dim * n_ctx, off_k);
     ggml_tensor * V_att = ggml_view_4d(ctx, kv_cache.self_v, head_dim, max_n_kv, n_kv_heads, B, v_elem * kv_dim,
                                        v_elem * head_dim, v_elem * kv_dim * n_ctx, off_v);
-    ggml_tensor * Q_att = ggml_cont(ctx, ggml_permute(ctx, Q, 0, 2, 3, 1));
+    ggml_tensor * Q_att = ggml_permute(ctx, Q, 0, 2, 3, 1);
     ggml_tensor * o     = ggml_flash_attn_ext(ctx, Q_att, K_att, V_att, mask, scale_attn, 0.0f, 0.0f);
     o                   = ggml_reshape_2d(ctx, o, q_dim, B);
     o                   = ggml_mul_mat(ctx, view.attn_o_w, o);

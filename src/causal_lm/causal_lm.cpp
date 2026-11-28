@@ -7,6 +7,7 @@
 #include "ggml.h"
 #include "transcribe-backend.h"
 #include "transcribe-env.h"
+#include "transcribe-flash-policy.h"
 #include "transcribe-log.h"
 #include "transcribe-repetition-guard.h"
 #include "transcribe-session.h"
@@ -389,7 +390,7 @@ ggml_tensor * block_prefill(ggml_context *      ctx,
                                            v_elem * head_dim, v_elem * slab_off);
 
     // Permute Q for attention: [D, H, T_seq, 1] → [D, T_seq, H, 1].
-    ggml_tensor * Q_att = ggml_cont(ctx, ggml_permute(ctx, Q, 0, 2, 1, 3));
+    ggml_tensor * Q_att = transcribe::flash::attn_input(ctx, ggml_permute(ctx, Q, 0, 2, 1, 3), opts.use_flash);
 
     ggml_tensor * o;
     if (opts.use_flash) {
@@ -520,7 +521,7 @@ ggml_tensor * block_step(ggml_context *      ctx,
     ggml_tensor * V_att = ggml_view_3d(ctx, kv_cache.self_v, head_dim, max_n_kv, n_kv_heads, v_elem * kv_dim,
                                        v_elem * head_dim, v_elem * static_cast<size_t>(layer_idx) * n_ctx * kv_dim);
 
-    ggml_tensor * Q_att = ggml_cont(ctx, ggml_permute(ctx, Q, 0, 2, 1, 3));
+    ggml_tensor * Q_att = transcribe::flash::attn_input(ctx, ggml_permute(ctx, Q, 0, 2, 1, 3), use_flash);
 
     ggml_tensor * o;
     if (use_flash) {
@@ -635,7 +636,7 @@ ggml_tensor * block_step_n(ggml_context *      ctx,
                                        v_elem * head_dim, v_elem * static_cast<size_t>(layer_idx) * n_ctx * kv_dim);
 
     // Q permute: [head_dim, n_heads, T_seq, 1] → [head_dim, T_seq, n_heads, 1]
-    ggml_tensor * Q_att = ggml_cont(ctx, ggml_permute(ctx, Q, 0, 2, 1, 3));
+    ggml_tensor * Q_att = transcribe::flash::attn_input(ctx, ggml_permute(ctx, Q, 0, 2, 1, 3), use_flash);
 
     ggml_tensor * o;
     if (use_flash) {
@@ -759,7 +760,7 @@ ggml_tensor * block_step_batched(ggml_context *      ctx,
                                        v_elem * head_dim, v_elem * kv_dim * n_ctx, layer_off_bytes_v);
 
     // Q for flash: [head_dim, n_heads, B, 1] → [head_dim, 1, n_heads, B].
-    ggml_tensor * Q_att = ggml_cont(ctx, ggml_permute(ctx, Q, 0, 2, 3, 1));
+    ggml_tensor * Q_att = transcribe::flash::attn_input(ctx, ggml_permute(ctx, Q, 0, 2, 3, 1), use_flash);
 
     ggml_tensor * o;
     if (use_flash) {
@@ -867,7 +868,7 @@ ggml_tensor * block_prefill_batched(ggml_context *      ctx,
                                                    v_elem * head_dim, v_elem * kv_dim * n_ctx, layer_off_bytes_v);
 
     // Q -> [head_dim, T, n_heads, B].
-    ggml_tensor * Q_att = ggml_cont(ctx, ggml_permute(ctx, Q, 0, 2, 1, 3));
+    ggml_tensor * Q_att = transcribe::flash::attn_input(ctx, ggml_permute(ctx, Q, 0, 2, 1, 3), use_flash);
 
     ggml_tensor * o;
     if (use_flash) {

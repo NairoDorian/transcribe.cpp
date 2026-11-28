@@ -24,6 +24,7 @@
 #include "ggml.h"
 #include "moonshine.h"
 #include "transcribe-debug.h"
+#include "transcribe-flash-policy.h"
 #include "transcribe-log.h"
 #include "weights.h"
 
@@ -165,7 +166,7 @@ ggml_tensor * mha_self_cached(ggml_context *           ctx,
     // Q needs [head_dim, n_tokens, n_heads, 1] for attention. K/V are
     // already in [head_dim, n_heads, n_tokens] cache memory order after
     // reshape + (optional) RoPE, so they're written straight to the cache.
-    ggml_tensor * Q_unpad = ggml_cont(ctx, ggml_permute(ctx, Q_rope, 0, 2, 1, 3));
+    ggml_tensor * Q_unpad = ggml_permute(ctx, Q_rope, 0, 2, 1, 3);
 
     // Write K_rope / Vcur into the cache, each head padded: rows of
     //   row = n_heads * head_dim_pad,  offset il * n_ctx * row + n_past * row.
@@ -197,7 +198,10 @@ ggml_tensor * mha_self_cached(ggml_context *           ctx,
     // Pad head_dim on Q before attention (HF behavior); K and V are stored
     // padded. Flash attention reads the views as they are; the manual path
     // wants them contiguous.
-    ggml_tensor * Q   = pad_head_dim(ctx, Q_unpad, pad);
+    // pad_head_dim writes a contiguous copy when it pads, and flash attention
+    // reads a strided Q, so only the manual path on an unpadded head copies.
+    ggml_tensor * Q =
+        pad > 0 ? pad_head_dim(ctx, Q_unpad, pad) : transcribe::flash::attn_input(ctx, Q_unpad, use_flash);
     ggml_tensor * K_p = use_flash ? K : ggml_cont(ctx, K);
     ggml_tensor * V_p = use_flash ? V : ggml_cont(ctx, V);
 
@@ -276,7 +280,7 @@ ggml_tensor * mha_self_step(ggml_context *           ctx,
     ggml_tensor * K_rope = apply_partial_rope(ctx, Kcur, pos_ids, hp, head_dim_rot);
 
     // Q for attention: [head_dim, 1, n_heads, 1]
-    ggml_tensor * Q_unpad = ggml_cont(ctx, ggml_permute(ctx, Q_rope, 0, 2, 1, 3));
+    ggml_tensor * Q_unpad = ggml_permute(ctx, Q_rope, 0, 2, 1, 3);
 
     // KV cache write via ggml_set_rows. Per-layer view spans [row, n_ctx]
     // (row = n_heads * head_dim_pad, every head padded); we write one row at
@@ -314,7 +318,10 @@ ggml_tensor * mha_self_step(ggml_context *           ctx,
     // Pad head_dim on Q before attention (HF behavior); K and V are stored
     // padded. Flash attention reads the views as they are; the manual path
     // wants them contiguous.
-    ggml_tensor * Q   = pad_head_dim(ctx, Q_unpad, pad);
+    // pad_head_dim writes a contiguous copy when it pads, and flash attention
+    // reads a strided Q, so only the manual path on an unpadded head copies.
+    ggml_tensor * Q =
+        pad > 0 ? pad_head_dim(ctx, Q_unpad, pad) : transcribe::flash::attn_input(ctx, Q_unpad, use_flash);
     ggml_tensor * K_p = use_flash ? K : ggml_cont(ctx, K);
     ggml_tensor * V_p = use_flash ? V : ggml_cont(ctx, V);
 
@@ -790,7 +797,7 @@ ggml_tensor * mha_self_step_batched(ggml_context *           ctx,
                                        v_elem * head_dim_pad, v_elem * row * n_ctx, off_v);
 
     // Q for flash: [head_dim, n_heads, B] -> [head_dim, 1, n_heads, B].
-    ggml_tensor * Q_att = ggml_cont(ctx, ggml_permute(ctx, Q, 0, 2, 3, 1));
+    ggml_tensor * Q_att = ggml_permute(ctx, Q, 0, 2, 3, 1);
     ggml_tensor * Qp    = pad_head_dim(ctx, Q_att, pad);
     // K/V are stored padded; flash attention reads the views as they are.
     ggml_tensor * Kp    = K_att;
@@ -827,7 +834,7 @@ ggml_tensor * mha_cross_step_batched(ggml_context *           ctx,
 
     ggml_tensor * Q     = ggml_mul_mat(ctx, q_w, x);  // [d_model, B]
     Q                   = ggml_reshape_3d(ctx, Q, head_dim, n_heads, B);
-    ggml_tensor * Q_att = ggml_cont(ctx, ggml_permute(ctx, Q, 0, 2, 3, 1));
+    ggml_tensor * Q_att = ggml_permute(ctx, Q, 0, 2, 3, 1);
     ggml_tensor * Qp    = pad_head_dim(ctx, Q_att, pad);
 
     // Per layer [head_dim_pad, T_enc_max, n_heads, B], already padded

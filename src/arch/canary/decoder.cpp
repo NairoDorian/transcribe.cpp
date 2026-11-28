@@ -689,7 +689,7 @@ ggml_tensor * mha_self_step_batched(ggml_context *  ctx,
     ggml_tensor * V     = ggml_view_4d(ctx, kv_cache.self_v, head_dim, max_n_kv, n_heads, B, v_elem * hidden,
                                        v_elem * head_dim, v_elem * hidden * n_ctx, off_v);
 
-    ggml_tensor * Q_att = ggml_cont(ctx, ggml_permute(ctx, Q, 0, 2, 3, 1));
+    ggml_tensor * Q_att = ggml_permute(ctx, Q, 0, 2, 3, 1);
     ggml_tensor * o     = ggml_flash_attn_ext(ctx, Q_att, K, V, mask, scale, 0.0f, 0.0f);
     o                   = ggml_reshape_2d(ctx, o, hidden, B);
 
@@ -724,7 +724,7 @@ ggml_tensor * mha_cross_step_batched(ggml_context *  ctx,
         Qcur = ggml_add(ctx, Qcur, q_b);
     }
     ggml_tensor * Q     = ggml_reshape_3d(ctx, Qcur, head_dim, n_heads, B);
-    ggml_tensor * Q_att = ggml_cont(ctx, ggml_permute(ctx, Q, 0, 2, 3, 1));
+    ggml_tensor * Q_att = ggml_permute(ctx, Q, 0, 2, 3, 1);
 
     const size_t  off_k = k_elem * static_cast<size_t>(il) * T_enc_max * hidden * B;
     const size_t  off_v = v_elem * static_cast<size_t>(il) * T_enc_max * hidden * B;

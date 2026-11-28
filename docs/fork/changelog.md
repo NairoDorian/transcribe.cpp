@@ -32,6 +32,17 @@ ones listed carry fork-side merge decisions. Overview: [README.md](README.md).
   which the KV-continuation path already relied on. Every partial,
   committed and final text is unchanged (9 clips at 80 ms, 160 ms and
   offline plus `dots` on CUDA; 3 clips on Vulkan; `jfk` on CPU).
+- Flash attention takes its permuted Q (and, where they were copied too, K
+  and V) as views. ggml_flash_attn_ext reads its inputs through their
+  strides on every backend, so the `ggml_cont` in front of it was a copy per
+  layer per step; on a decode step the permute only moves a size-1 axis and
+  the copy was a byte-for-byte duplicate. Manual attention paths keep their
+  copies (`transcribe::flash::attn_input`). Covers the shared causal-LM
+  blocks (Qwen3-ASR, R2T2), Granite, Granite NAR, Moonshine and Moonshine
+  streaming, the batched Canary / Cohere / Whisper steps and the opt-in
+  Qwen3 encoder flash path. Granite 4.1 2B `jfk` on CUDA: 1120 fewer GPU
+  nodes per run (one per layer per token plus the prefill's). Transcripts
+  are unchanged on CUDA, Vulkan and CPU, offline, batched and streaming.
 
 ## 2026-11-26 — audit follow-ups
 

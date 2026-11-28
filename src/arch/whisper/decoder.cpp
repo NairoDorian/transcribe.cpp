@@ -963,7 +963,7 @@ ggml_tensor * mha_self_step_batched(ggml_context *   ctx,
                                              v_elem * head_dim, v_elem * d_model * n_ctx, layer_off_v);
 
     // Q [head_dim, n_heads, B] -> [head_dim, 1, n_heads, B] for flash.
-    ggml_tensor * Q_att = ggml_cont(ctx, ggml_permute(ctx, Q, 0, 2, 3, 1));
+    ggml_tensor * Q_att = ggml_permute(ctx, Q, 0, 2, 3, 1);
     ggml_tensor * o     = ggml_flash_attn_ext(ctx, Q_att, K, V, mask, scale, 0.0f, 0.0f);
     o                   = ggml_reshape_2d(ctx, o, d_model, B);
 
@@ -1000,7 +1000,7 @@ ggml_tensor * mha_cross_step_batched(ggml_context *   ctx,
         Qcur = ggml_add(ctx, Qcur, q_b);
     }
     ggml_tensor * Q     = ggml_reshape_3d(ctx, Qcur, head_dim, n_heads, B);
-    ggml_tensor * Q_att = ggml_cont(ctx, ggml_permute(ctx, Q, 0, 2, 3, 1));
+    ggml_tensor * Q_att = ggml_permute(ctx, Q, 0, 2, 3, 1);
 
     const size_t  layer_off_k = k_elem * static_cast<size_t>(il) * T_enc_max * d_model * B;
     const size_t  layer_off_v = v_elem * static_cast<size_t>(il) * T_enc_max * d_model * B;

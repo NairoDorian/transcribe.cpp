@@ -10,6 +10,7 @@
 #include "ggml.h"
 #include "granite_nar.h"
 #include "transcribe-debug.h"
+#include "transcribe-flash-policy.h"
 #include "transcribe-log.h"
 
 #include <algorithm>
@@ -92,9 +93,9 @@ ggml_tensor * block_bidi(ggml_context *             ctx,
 
     // Permute to [head_dim, T_total, n_kv_heads] (effective layout for
     // mul_mat with q permuted to [head_dim, T_total, n_heads]).
-    ggml_tensor * Q_att = ggml_cont(ctx, ggml_permute(ctx, Q, 0, 2, 1, 3));
-    ggml_tensor * K_att = ggml_cont(ctx, ggml_permute(ctx, K, 0, 2, 1, 3));
-    ggml_tensor * V_att = ggml_cont(ctx, ggml_permute(ctx, V, 0, 2, 1, 3));
+    ggml_tensor * Q_att = transcribe::flash::attn_input(ctx, ggml_permute(ctx, Q, 0, 2, 1, 3), use_flash);
+    ggml_tensor * K_att = transcribe::flash::attn_input(ctx, ggml_permute(ctx, K, 0, 2, 1, 3), use_flash);
+    ggml_tensor * V_att = transcribe::flash::attn_input(ctx, ggml_permute(ctx, V, 0, 2, 1, 3), use_flash);
 
     ggml_tensor * o = nullptr;
     if (use_flash) {

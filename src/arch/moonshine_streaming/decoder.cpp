@@ -20,6 +20,7 @@
 #include "ggml.h"
 #include "moonshine_streaming.h"
 #include "transcribe-debug.h"
+#include "transcribe-flash-policy.h"
 #include "transcribe-log.h"
 #include "weights.h"
 
@@ -143,7 +144,7 @@ ggml_tensor * mha_self_cached(ggml_context *                    ctx,
     // Q needs [head_dim, n_tokens, n_heads, 1] for attention. K/V are
     // already in cache memory order [head_dim, n_heads, n_tokens, 1] after
     // RoPE (or reshape, for V), so they're written straight to the cache.
-    ggml_tensor * Q_unpad = ggml_cont(ctx, ggml_permute(ctx, Q_rope, 0, 2, 1, 3));
+    ggml_tensor * Q_unpad = ggml_permute(ctx, Q_rope, 0, 2, 1, 3);
 
     {
         const size_t k_elem = ggml_element_size(kv_cache.self_k);
@@ -168,7 +169,10 @@ ggml_tensor * mha_self_cached(ggml_context *                    ctx,
     ggml_tensor * V = ggml_view_3d(ctx, kv_cache.self_v, head_dim, n_kv, n_heads, v_elem * d_model, v_elem * head_dim,
                                    v_elem * static_cast<size_t>(static_cast<int64_t>(il) * n_ctx * d_model));
 
-    ggml_tensor * Q   = pad_head_dim(ctx, Q_unpad, pad);
+    // pad_head_dim writes a contiguous copy when it pads, and flash attention
+    // reads a strided Q, so only the manual path on an unpadded head copies.
+    ggml_tensor * Q =
+        pad > 0 ? pad_head_dim(ctx, Q_unpad, pad) : transcribe::flash::attn_input(ctx, Q_unpad, use_flash);
     ggml_tensor * K_p = kv_for_attention(ctx, K, pad, use_flash);
     ggml_tensor * V_p = kv_for_attention(ctx, V, pad, use_flash);
 
@@ -691,7 +695,7 @@ ggml_tensor * mha_self_step_batched(ggml_context *                    ctx,
     ggml_tensor * V_att = ggml_view_4d(ctx, kv_cache.self_v, head_dim, max_n_kv, n_heads, B, v_elem * d_model,
                                        v_elem * head_dim, v_elem * d_model * n_ctx, off_v);
 
-    ggml_tensor * Q_att = ggml_cont(ctx, ggml_permute(ctx, Q, 0, 2, 3, 1));
+    ggml_tensor * Q_att = ggml_permute(ctx, Q, 0, 2, 3, 1);
     ggml_tensor * Qp    = pad_head_dim(ctx, Q_att, pad);
     ggml_tensor * Kp    = kv_for_attention(ctx, K_att, pad, /*use_flash=*/true);
     ggml_tensor * Vp    = kv_for_attention(ctx, V_att, pad, /*use_flash=*/true);
@@ -725,7 +729,7 @@ ggml_tensor * mha_cross_step_batched(ggml_context *                    ctx,
 
     ggml_tensor * Q     = ggml_mul_mat(ctx, q_w, x);
     Q                   = ggml_reshape_3d(ctx, Q, head_dim, n_heads, B);
-    ggml_tensor * Q_att = ggml_cont(ctx, ggml_permute(ctx, Q, 0, 2, 3, 1));
+    ggml_tensor * Q_att = ggml_permute(ctx, Q, 0, 2, 3, 1);
     ggml_tensor * Qp    = pad_head_dim(ctx, Q_att, pad);
 
     const size_t  off_k = k_elem * static_cast<size_t>(il) * T_enc_max * d_model * B;

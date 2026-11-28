@@ -8,6 +8,7 @@
 #include "ggml.h"
 #include "transcribe-debug.h"
 #include "transcribe-env.h"
+#include "transcribe-flash-policy.h"
 #include "transcribe-log.h"
 
 #include <algorithm>
@@ -267,9 +268,9 @@ ggml_tensor * build_enc_block(ggml_context *          ctx,
 
     // Permute to [head_dim, T, n_heads, B] for attention (heads ne[2],
     // batch ne[3] — matches flash_attn_ext / batched soft_max_ext).
-    q = ggml_cont(ctx, ggml_permute(ctx, q, 0, 2, 1, 3));
-    k = ggml_cont(ctx, ggml_permute(ctx, k, 0, 2, 1, 3));
-    v = ggml_cont(ctx, ggml_permute(ctx, v, 0, 2, 1, 3));
+    q = transcribe::flash::attn_input(ctx, ggml_permute(ctx, q, 0, 2, 1, 3), use_flash);
+    k = transcribe::flash::attn_input(ctx, ggml_permute(ctx, k, 0, 2, 1, 3), use_flash);
+    v = transcribe::flash::attn_input(ctx, ggml_permute(ctx, v, 0, 2, 1, 3), use_flash);
 
     ggml_tensor * o;
     if (use_flash) {

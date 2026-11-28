@@ -1312,14 +1312,16 @@ transcribe_status run_decode_pass(transcribe_session *          session,
             return TRANSCRIBE_ERR_OOM;
         }
     } else if (kv_reuse_len == 0) {
-        // Clear stale positions for a fresh prefill. Skipped when the pass is
-        // extending the cache: the rows [0, kv_reuse_len) are the whole point,
-        // and everything past them is overwritten by the prefill's own writes
-        // (the mask never lets a query see past `head`, so rows the step loop
-        // left beyond the prompt cannot leak in).
-        if (cc->kv_cache.buffer != nullptr) {
-            ggml_backend_buffer_clear(cc->kv_cache.buffer, 0);
-        }
+        // A fresh prefill only rewinds the cache; it does not clear it. Every
+        // row a query can see is written by this pass before it is read, and
+        // the rest of the [0, max_n_kv) window the graphs attend over is
+        // -inf-masked, so its softmax weight is exactly zero. A masked row only
+        // has to hold finite values, and it does: kv_init zeroed the buffer and
+        // every later write is a real K/V row. This is the same argument the
+        // continuation path above relies on for the rows past kv_reuse_len.
+        // Clearing here wrote the whole cache (235 MB for 2048 positions of a
+        // 28-layer decoder) on every tick of a stream shorter than one encoder
+        // window, with the host waiting on it.
         cc->kv_cache.n    = 0;
         cc->kv_cache.head = 0;
     }

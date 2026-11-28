@@ -5,7 +5,7 @@ the commits that carry the detail; `git show <sha>` has the measurements. Most
 upstream merges are not listed (`git log --merges upstream/main..HEAD`); the
 ones listed carry fork-side merge decisions. Overview: [README.md](README.md).
 
-## 2026-11-28 — GPU decoder speed (Parakeet family, Nemotron)
+## 2026-11-28 — GPU decoder and streaming speed (Parakeet family, Nemotron, R2T2)
 
 - The Parakeet device decoder (TDT and RNN-T loops, offline and streaming)
   computes an emitted token's confidence while the next joint step runs. That
@@ -23,6 +23,15 @@ ones listed carry fork-side merge decisions. Overview: [README.md](README.md).
   synchronize per copy. A `dots` stream at 160 ms chunks makes 3601 -> 1329
   stream synchronizations; partials, final text and every token's time and
   confidence are unchanged (6 clips on CUDA, 3 on Vulkan).
+- R2T2 streaming: a tick that prefills from scratch (every tick until the
+  first encoder window completes, so every tick of an utterance under ~8 s)
+  no longer clears the whole KV cache first. That clear wrote 235 MB
+  (2048 positions x 28 layers) with the host waiting, about 0.9 ms on the
+  RTX 4070 per tick; `jfk` at 160 ms went from 12.2 GB of memsets to the
+  one 235 MB clear at allocation. Masked rows only have to be finite,
+  which the KV-continuation path already relied on. Every partial,
+  committed and final text is unchanged (9 clips at 80 ms, 160 ms and
+  offline plus `dots` on CUDA; 3 clips on Vulkan; `jfk` on CPU).
 
 ## 2026-11-26 — audit follow-ups
 

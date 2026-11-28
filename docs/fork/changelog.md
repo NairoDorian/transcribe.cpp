@@ -44,7 +44,8 @@ ones listed carry fork-side merge decisions. Overview: [README.md](README.md).
   nodes per run (one per layer per token plus the prefill's). Transcripts
   are unchanged on CUDA, Vulkan and CPU, offline, batched and streaming.
 - Decode-step graphs keep their CUDA graphs from run to run (Granite,
-  Qwen3-ASR, R2T2; also across R2T2 stream ticks). ggml-cuda keys a captured
+  Qwen3-ASR, R2T2, Canary, Cohere, Whisper, Moonshine; also across R2T2
+  stream ticks). ggml-cuda keys a captured
   graph by the address of its first node, and the step graph was built in a
   freshly allocated context every run, so every run looked like a new graph:
   one step without a CUDA graph, then a capture and a full instantiate per
@@ -52,7 +53,8 @@ ones listed carry fork-side merge decisions. Overview: [README.md](README.md).
   (`transcribe::GraphArena`), so later runs find their graph and update it
   in place. 11 runs of a 2.5 s clip on CUDA: Granite 4.1 2B 33 -> 3
   instantiations (about 8.7 ms of host CUDA API time per call), Qwen3-ASR
-  1.7B 20 -> 2 (about 5.7 ms per call). This is the cost a live dictation
+  1.7B 20 -> 2 (about 5.7 ms per call); Canary, Cohere, Whisper base and
+  Moonshine tiny 9-11 -> 1 (0.3-0.9 ms per call). This is the cost a live dictation
   host pays on every utterance with a non-streaming model. Transcripts are
   unchanged on CUDA, Vulkan and CPU, for repeated runs, eight different
   utterances in one session, and R2T2 streams at 80 and 160 ms.

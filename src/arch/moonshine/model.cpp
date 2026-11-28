@@ -300,10 +300,16 @@ void apply_thread_policy(MoonshineSession * cc) {
     transcribe::configure_sched_n_threads(cc->sched, cc->n_threads);
 }
 
-bool ensure_compute_ctx(MoonshineSession * cc, size_t mem_size) {
+// `arena`: build in it instead of fresh memory (the step graph, see
+// transcribe::GraphArena).
+bool ensure_compute_ctx(MoonshineSession * cc, size_t mem_size, transcribe::GraphArena * arena = nullptr) {
     if (cc->compute_ctx != nullptr) {
         ggml_free(cc->compute_ctx);
         cc->compute_ctx = nullptr;
+    }
+    if (arena != nullptr) {
+        cc->compute_ctx = arena->init(mem_size);
+        return cc->compute_ctx != nullptr;
     }
     ggml_init_params init_params{};
     init_params.mem_size   = mem_size;
@@ -664,7 +670,7 @@ transcribe_status run(transcribe_session *          session,
             max_n_kv = cc->kv_cache.n_ctx;
         }
 
-        if (!ensure_compute_ctx(cc, 8 * 1024 * 1024)) {
+        if (!ensure_compute_ctx(cc, 8 * 1024 * 1024, &cc->step_arena)) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "moonshine run: compute context allocation failed (step) — "
                                 "out of memory.");

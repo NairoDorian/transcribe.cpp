@@ -128,6 +128,10 @@ struct CanarySession final : public transcribe_session {
 
     CanaryKvCache kv_cache;
 
+    // The decode-step graph's metadata, kept across runs so the step graph
+    // keeps its CUDA graph from run to run (transcribe::GraphArena).
+    transcribe::GraphArena step_arena;
+
     std::vector<float> mel_buf;
     std::vector<float> pos_buf;
     std::vector<float> pos_div_term;

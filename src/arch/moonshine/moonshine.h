@@ -140,6 +140,10 @@ struct MoonshineSession final : public transcribe_session {
 
     MoonshineKvCache kv_cache;
 
+    // The decode-step graph's metadata, kept across runs so the step graph
+    // keeps its CUDA graph from run to run (transcribe::GraphArena).
+    transcribe::GraphArena step_arena;
+
     // Flash-attention defaults — finalized per-backend in init_context.
     // Encoder: ON everywhere (~2x on long audio). Decoder: ON except Metal
     // (Vulkan ~15% faster: jfk q8_0 tiny 112→98, base 165→143 ms). Metal

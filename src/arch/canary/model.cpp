@@ -1062,12 +1062,18 @@ transcribe_status run(transcribe_session *          session,
         }
     };
 
-    auto new_compute_ctx = [&](size_t mem_size) -> bool {
+    // `arena`: build in it instead of fresh memory (the step graph, see
+    // transcribe::GraphArena).
+    auto new_compute_ctx = [&](size_t mem_size, transcribe::GraphArena * arena = nullptr) -> bool {
         if (cc->compute_ctx != nullptr) {
             ggml_free(cc->compute_ctx);
             cc->compute_ctx = nullptr;
         }
         cc->encoder_out = nullptr;
+        if (arena != nullptr) {
+            cc->compute_ctx = arena->init(mem_size);
+            return cc->compute_ctx != nullptr;
+        }
         ggml_init_params ip{};
         ip.mem_size     = mem_size;
         ip.mem_buffer   = nullptr;
@@ -1314,7 +1320,7 @@ transcribe_status run(transcribe_session *          session,
                 max_n_kv = cc->kv_cache.n_ctx;
             }
 
-            if (!new_compute_ctx(8 * 1024 * 1024)) {
+            if (!new_compute_ctx(8 * 1024 * 1024, &cc->step_arena)) {
                 transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                     "canary run: step compute context allocation failed — "
                                     "out of memory.");

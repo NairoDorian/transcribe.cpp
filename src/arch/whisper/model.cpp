@@ -269,7 +269,17 @@ constexpr const char k_default_variant[] = "whisper";
 // Prepare cc->compute_ctx for a graph build of capacity at most `mem`. If a
 // context already exists and is large enough, ggml_reset clears its metadata
 // in-place (cheap); only a too-small context triggers ggml_free + ggml_init.
-bool ensure_compute_ctx(WhisperSession * cc, size_t mem) {
+// `arena`: always build in it instead (the step graph, see
+// transcribe::GraphArena); later calls may reset that context in place.
+bool ensure_compute_ctx(WhisperSession * cc, size_t mem, transcribe::GraphArena * arena = nullptr) {
+    if (arena != nullptr) {
+        if (cc->compute_ctx != nullptr) {
+            ggml_free(cc->compute_ctx);
+        }
+        cc->compute_ctx      = arena->init(mem);
+        cc->compute_ctx_size = cc->compute_ctx != nullptr ? mem : 0;
+        return cc->compute_ctx != nullptr;
+    }
     if (cc->compute_ctx != nullptr) {
         if (cc->compute_ctx_size >= mem) {
             ggml_reset(cc->compute_ctx);
@@ -1568,8 +1578,8 @@ transcribe_status whisper_run(transcribe_session *          session,
         }
     }
 
-    auto new_compute_ctx = [&](size_t mem) -> bool {
-        return ensure_compute_ctx(cc, mem);
+    auto new_compute_ctx = [&](size_t mem, transcribe::GraphArena * arena = nullptr) -> bool {
+        return ensure_compute_ctx(cc, mem, arena);
     };
     auto suppress_in_place = [&](std::vector<float> & logits) {
         for (int32_t id : cm->hparams.suppress_tokens) {
@@ -2403,7 +2413,7 @@ transcribe_status whisper_run(transcribe_session *          session,
             const ggml_fp16_t        mask_neg_inf = ggml_fp32_to_fp16(-INFINITY);
 
             if (use_step_graph) {
-                if (!new_compute_ctx(8 * 1024 * 1024)) {
+                if (!new_compute_ctx(8 * 1024 * 1024, &cc->step_arena)) {
                     cleanup_gpu();
                     return TRANSCRIBE_ERR_OOM;
                 }

@@ -295,6 +295,10 @@ struct WhisperSession final : public transcribe_session {
     // and ggml_free + ggml_init (only when more space is needed).
     size_t compute_ctx_size = 0;
 
+    // The decode-step graph's metadata, kept across runs so the step graph
+    // keeps its CUDA graph from run to run (transcribe::GraphArena).
+    transcribe::GraphArena step_arena;
+
     // Persistent backend-resident encoder output (see WhisperEncOut).
     WhisperEncOut enc_out;
 

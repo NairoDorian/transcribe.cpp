@@ -1386,6 +1386,12 @@ struct ParakeetDeviceDecoder {
     float *               col_pin   = nullptr;  // [n_token_cls] one column's token logits
     float *               state_pin = nullptr;  // [2 * L * H] h then c per layer
 
+    // Marks the end of the last col_pin copy, so the host can wait for that
+    // copy alone while later steps run (device_wait_token_logits). Created on
+    // first use; null when the backend has no events (a full synchronize then).
+    ggml_backend_event_t col_event       = nullptr;
+    bool                 col_event_tried = false;
+
     // Predictor step graphs: pg[i] reads slot i, writes slot 1 - i and P.
     ggml_context *        pg_ctx[2] = { nullptr, nullptr };
     ggml_backend_buffer_t pg_buf[2] = { nullptr, nullptr };
@@ -1438,6 +1444,9 @@ struct ParakeetDeviceDecoder {
 
     ~ParakeetDeviceDecoder() {
         free_capacity();
+        if (col_event != nullptr) {
+            ggml_backend_event_free(col_event);
+        }
         if (host_buf != nullptr) {
             safe_buffer_free(host_buf);
         }
@@ -1675,12 +1684,12 @@ bool device_pred(ParakeetDeviceDecoder & d, int last_token) {
     return ggml_backend_graph_compute_async(d.backend, d.pg[d.committed]) == GGML_STATUS_SUCCESS;
 }
 
-// Joint decisions for frames step .. step + n - 1 (n = 1 or the window W;
-// frames past the end repeat the last one and are never consumed):
-// d.tok_pin[k] / d.dur_pin[k] hold frame step + k's token (-1 if every token
-// was blocked) and duration argmax until the next call. False on a compute
-// failure.
-bool device_joint(ParakeetDeviceDecoder & d, int step, int n) {
+// Queue the joint decisions for frames step .. step + n - 1 (n = 1 or the
+// window W; frames past the end repeat the last one and are never consumed):
+// after device_joint_wait, d.tok_pin[k] / d.dur_pin[k] hold frame step + k's
+// token (-1 if every token was blocked) and duration argmax until the next
+// launch. False on a compute failure.
+bool device_joint_launch(ParakeetDeviceDecoder & d, int step, int n) {
     for (int k = 0; k < n; ++k) {
         d.idx_pin[k] = std::min(step + k, d.T - 1);
     }
@@ -1693,19 +1702,73 @@ bool device_joint(ParakeetDeviceDecoder & d, int step, int n) {
     if (j.dur != nullptr) {
         ggml_backend_tensor_get_async(d.backend, j.dur, d.dur_pin, 0, static_cast<size_t>(n) * sizeof(int32_t));
     }
-    ggml_backend_synchronize(d.backend);
     d.last_joint = &j;
     return true;
 }
 
+// Waits for everything queued, the last device_joint_launch included: its
+// tok_pin / dur_pin are then valid.
+void device_joint_wait(ParakeetDeviceDecoder & d) {
+    ggml_backend_synchronize(d.backend);
+}
+
 // Queue the copy of column k's token logits (of the last joint call) into
-// d.col_pin, for the emitted token's confidence. No synchronize: the next
-// device_joint (or device_finish) completes it, and it reads the logits before
-// any later graph on the stream overwrites them.
+// d.col_pin, for the emitted token's confidence, and mark its end with
+// col_event. No synchronize: device_wait_token_logits (or the next
+// synchronize) completes it, and it reads the logits before any later graph on
+// the stream overwrites them.
 void device_fetch_token_logits(ParakeetDeviceDecoder & d, int k) {
     const ParakeetDeviceDecoder::Joint & j = *d.last_joint;
     ggml_backend_tensor_get_async(d.backend, j.logits, d.col_pin, static_cast<size_t>(k) * j.logits->nb[1],
                                   static_cast<size_t>(d.n_token_cls) * sizeof(float));
+    if (!d.col_event_tried) {
+        d.col_event_tried = true;
+        if (ggml_backend_dev_t dev = ggml_backend_get_device(d.backend)) {
+            d.col_event = ggml_backend_event_new(dev);
+        }
+    }
+    if (d.col_event != nullptr) {
+        ggml_backend_event_record(d.col_event, d.backend);
+    }
+}
+
+// Waits until d.col_pin holds the last fetched column. With an event this
+// waits for that copy alone, not for the steps queued after it.
+void device_wait_token_logits(ParakeetDeviceDecoder & d) {
+    if (d.col_event != nullptr) {
+        ggml_backend_event_synchronize(d.col_event);
+    } else {
+        ggml_backend_synchronize(d.backend);
+    }
+}
+
+// One joint step of the device loops, with the previous emission's confidence
+// computed while the joint runs. Launches the joint for frames step .. step + n
+// - 1 when `launch` (else the current window's outputs stay), then fills the
+// pending token's confidence from its logits copy, then waits for the joint.
+// token_confidence is a softmax plus entropy over every token class (~150 us
+// for Parakeet's 8193), and it used to run after the step's synchronize with
+// the GPU idle; the value is the same, computed off the critical path.
+bool device_joint_overlapped(ParakeetDeviceDecoder & d,
+                             int                     step,
+                             int                     n,
+                             bool                    launch,
+                             std::vector<TdtToken> & out_tokens,
+                             int &                   pending,
+                             int                     n_token_cls,
+                             std::vector<float> &    scratch_probs) {
+    if (launch && !device_joint_launch(d, step, n)) {
+        return false;
+    }
+    if (pending >= 0) {
+        device_wait_token_logits(d);
+        out_tokens[static_cast<size_t>(pending)].p = token_confidence(d.col_pin, n_token_cls, scratch_probs);
+        pending                                    = -1;
+    }
+    if (launch) {
+        device_joint_wait(d);
+    }
+    return true;
 }
 
 // Joint window width for the device loops: the CPU default, unless
@@ -1800,22 +1863,21 @@ transcribe_status decode_tdt_greedy_device(const HostDecoderWeights &      w,
             predictor_dirty = false;
         }
 
-        int col = 0;  // this frame's column in the joint output
+        int  col    = 0;  // this frame's column in the joint output
+        int  n      = 1;
+        bool launch = true;
         if (batch_W > 1) {
-            if (!win_valid || step < win_base || step >= win_base + batch_W) {
-                if (!device_joint(d, step, batch_W)) {
-                    return TRANSCRIBE_ERR_BACKEND;
-                }
+            n      = batch_W;
+            launch = !win_valid || step < win_base || step >= win_base + batch_W;
+            if (launch) {
                 win_base  = step;
                 win_valid = true;
             }
             col = step - win_base;
-        } else if (!device_joint(d, step, 1)) {
-            return TRANSCRIBE_ERR_BACKEND;
         }
-        if (pending >= 0) {  // the previous emission's logits arrived with that synchronize
-            out_tokens[static_cast<size_t>(pending)].p = token_confidence(d.col_pin, n_token_cls, scratch_probs);
-            pending                                    = -1;
+        // The previous emission's confidence is computed while this joint runs.
+        if (!device_joint_overlapped(d, step, n, launch, out_tokens, pending, n_token_cls, scratch_probs)) {
+            return TRANSCRIBE_ERR_BACKEND;
         }
 
         // Every token blocked (-1) is argmax_range_masked's plain-argmax
@@ -1941,23 +2003,21 @@ transcribe_status decode_rnnt_greedy_device(const HostDecoderWeights &      w,
             predictor_dirty = false;
         }
 
-        int col = 0;  // this frame's column in the joint output
+        int  col    = 0;  // this frame's column in the joint output
+        int  n      = 1;
+        bool launch = true;
         if (batch_W > 1) {
-            if (!win_valid || step < win_base || step >= win_base + batch_W) {
-                if (!device_joint(d, step, batch_W)) {
-                    return TRANSCRIBE_ERR_BACKEND;
-                }
+            n      = batch_W;
+            launch = !win_valid || step < win_base || step >= win_base + batch_W;
+            if (launch) {
                 win_base  = step;
                 win_valid = true;
             }
             col = step - win_base;
-        } else if (!device_joint(d, step, 1)) {
-            return TRANSCRIBE_ERR_BACKEND;
         }
-
-        if (pending >= 0) {  // the previous emission's logits arrived with that synchronize
-            out_tokens[static_cast<size_t>(pending)].p = token_confidence(d.col_pin, n_token_cls, scratch_probs);
-            pending                                    = -1;
+        // The previous emission's confidence is computed while this joint runs.
+        if (!device_joint_overlapped(d, step, n, launch, out_tokens, pending, n_token_cls, scratch_probs)) {
+            return TRANSCRIBE_ERR_BACKEND;
         }
         int pred_token = d.tok_pin[col];
         if (pred_token < 0) {

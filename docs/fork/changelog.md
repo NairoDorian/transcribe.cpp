@@ -5,6 +5,19 @@ the commits that carry the detail; `git show <sha>` has the measurements. Most
 upstream merges are not listed (`git log --merges upstream/main..HEAD`); the
 ones listed carry fork-side merge decisions. Overview: [README.md](README.md).
 
+## 2026-11-28 — GPU decoder speed (Parakeet family, Nemotron)
+
+- The Parakeet device decoder (TDT and RNN-T loops, offline and streaming)
+  computes an emitted token's confidence while the next joint step runs. That
+  confidence is a softmax plus entropy over every token class (8193 for the
+  multilingual models, ~150 us), and it used to run after each step's
+  synchronize with the GPU idle. An event marks the end of the logits copy, so
+  the host waits for that copy alone. Same values, off the critical path.
+  Decode on CUDA, `dots`: Parakeet Ultra 125.5 -> 69.7 ms, Nemotron 3.5 Q8_0
+  166.1 -> 104.8 ms, Parakeet v3 85.7 -> 61.5 ms (`jfk` 23-35% too); Vulkan
+  Ultra 130 -> 92 ms. Every token's id, time and confidence is unchanged
+  (8 clips x 3 models on CUDA, 4 clips x 2 on Vulkan).
+
 ## 2026-11-26 — audit follow-ups
 
 Continues [audit-2026-11-25.md](audit-2026-11-25.md) (items 14-19 and the CUDA A/B there):

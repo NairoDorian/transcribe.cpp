@@ -127,7 +127,9 @@ non-empty list there is
 
 - Parakeet's predictor and joint run on the device: F32 weight copies, argmax
   on the device, pinned staging. Decode is 2.7x (v3) to 5.2x (Nemotron) faster
-  on CUDA.
+  on CUDA. Each emitted token's confidence is computed while the next step
+  runs, not with the GPU idle: decode another 28-44% faster on longer audio
+  (Ultra `dots` 125 -> 70 ms), output identical.
 - `causal_lm::StepPipeline` overlaps greedy steps. The GPU gap between tokens
   drops from about 0.8 ms to about 13 us on Windows CUDA.
 - R2T2 decode is about 1.29x faster: KV trim and MMVQ rows (patch `0103`),

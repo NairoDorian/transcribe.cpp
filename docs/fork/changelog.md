@@ -17,6 +17,12 @@ ones listed carry fork-side merge decisions. Overview: [README.md](README.md).
   166.1 -> 104.8 ms, Parakeet v3 85.7 -> 61.5 ms (`jfk` 23-35% too); Vulkan
   Ultra 130 -> 92 ms. Every token's id, time and confidence is unchanged
   (8 clips x 3 models on CUDA, 4 clips x 2 on Vulkan).
+- Cache-aware Parakeet streaming (Nemotron 3.5): the per-layer cache rotation
+  after every encoder step (K, V and conv caches, 72 copies for 24 layers)
+  is queued as device-to-device copies with one synchronize, instead of a
+  synchronize per copy. A `dots` stream at 160 ms chunks makes 3601 -> 1329
+  stream synchronizations; partials, final text and every token's time and
+  confidence are unchanged (6 clips on CUDA, 3 on Vulkan).
 
 ## 2026-11-26 — audit follow-ups
 

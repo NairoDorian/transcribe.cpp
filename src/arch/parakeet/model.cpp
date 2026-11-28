@@ -3119,8 +3119,16 @@ transcribe_status emit_streaming_chunk(ParakeetSession * pc,
     // last_k/last_v (channel_out is null); the recompute path rotates
     // last_channel. The time (conv) cache rotates in both. An unallocated
     // cache_out here is a builder bug.
-    const int64_t t_cache_rot_start = ggml_time_us();
-    const bool    kv_mode           = !cache_io.k_out.empty();
+    const int64_t        t_cache_rot_start = ggml_time_us();
+    const bool           kv_mode           = !cache_io.k_out.empty();
+    // Queued on the primary backend's stream, in order after the graph that
+    // wrote them, with one synchronize at the end: ggml_backend_tensor_copy
+    // synchronizes after every copy on CUDA, and this loop makes 2-3 per layer
+    // (72 for a 24-layer Nemotron) at every encoder step.
+    const ggml_backend_t rot_be            = pm->plan.primary;
+    auto                 rotate            = [rot_be](ggml_tensor * src, ggml_tensor * dst) {
+        ggml_backend_tensor_copy_async(rot_be, rot_be, src, dst);
+    };
     for (int i = 0; i < n_layers; ++i) {
         ggml_tensor * ch      = cache_io.channel_out[i];
         ggml_tensor * tm      = cache_io.time_out[i];
@@ -3137,13 +3145,14 @@ transcribe_status emit_streaming_chunk(ParakeetSession * pc,
             return TRANSCRIBE_ERR_BACKEND;
         }
         if (kv_mode) {
-            ggml_backend_tensor_copy(ko, pc->stream_caches.last_k[i]);
-            ggml_backend_tensor_copy(vo, pc->stream_caches.last_v[i]);
+            rotate(ko, pc->stream_caches.last_k[i]);
+            rotate(vo, pc->stream_caches.last_v[i]);
         } else {
-            ggml_backend_tensor_copy(ch, pc->stream_caches.last_channel[i]);
+            rotate(ch, pc->stream_caches.last_channel[i]);
         }
-        ggml_backend_tensor_copy(tm, pc->stream_caches.last_time[i]);
+        rotate(tm, pc->stream_caches.last_time[i]);
     }
+    ggml_backend_synchronize(rot_be);
     pc->stream_caches.channel_len = std::min(T_cache, pc->stream_caches.channel_len + T_q_new);
     const int64_t t_cache_rot_us  = ggml_time_us() - t_cache_rot_start;
 

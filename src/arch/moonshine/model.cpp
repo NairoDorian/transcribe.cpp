@@ -106,11 +106,12 @@ bool kv_cache_init(MoonshineKvCache & cache,
         return false;
     }
 
-    // The cross cache holds each layer's K/V per head with the head size
-    // padded for attention ([head_dim_pad, T_enc, n_heads], cross_d =
-    // n_heads * head_dim_pad), written once per utterance by
-    // build_cross_kv_graph; the decoder steps only view it.
-    const int64_t self_elements  = static_cast<int64_t>(d_model) * n_layer * n_ctx;
+    // Both caches store K/V with every head padded for attention (cross_d =
+    // n_heads * head_dim_pad): self rows of cross_d per position, written as
+    // tokens decode; cross [head_dim_pad, T_enc, n_heads] per layer, written
+    // once per utterance by build_cross_kv_graph. The decoder steps only view
+    // them.
+    const int64_t self_elements  = static_cast<int64_t>(cross_d) * n_layer * n_ctx;
     const int64_t cross_elements = static_cast<int64_t>(cross_d) * n_layer * T_enc;
 
     cache.self_k  = ggml_new_tensor_1d(cache.ctx, kv_type, self_elements);
@@ -168,7 +169,7 @@ bool kv_cache_init_batched(MoonshineKvCache & cache,
         return false;
     }
 
-    const int64_t self_elements  = static_cast<int64_t>(d_model) * n_layer * n_ctx * n_batch;
+    const int64_t self_elements  = static_cast<int64_t>(cross_d) * n_layer * n_ctx * n_batch;
     const int64_t cross_elements = static_cast<int64_t>(cross_d) * n_layer * T_enc * n_batch;
     cache.self_k                 = ggml_new_tensor_1d(cache.ctx, kv_type, self_elements);
     cache.self_v                 = ggml_new_tensor_1d(cache.ctx, kv_type, self_elements);

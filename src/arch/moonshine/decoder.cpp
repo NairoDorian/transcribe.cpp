@@ -116,9 +116,11 @@ ggml_tensor * ffn_decoder_swiglu(ggml_context * ctx,
 //           or nullptr when n_tokens == 1 and no padding.
 // Returns:  [d_model, n_tokens]
 //
-// Cache layout: per-layer slab of [d_model, n_ctx]. New K/V written to
-// rows [n_past, n_past+n_tokens) at offset il*n_ctx*d_model + n_past*d_model
-// (in elements). Read full [0..n_kv) for attention.
+// Cache layout: per-layer slab of [row, n_ctx], row = n_heads * head_dim_pad:
+// each position holds every head's K (or V) with the head size already padded
+// for attention. New K/V go to rows [n_past, n_past+n_tokens); attention reads
+// [0..n_kv) through a strided per-head view, so no step re-copies or re-pads
+// the cache (flash attention reads views through their strides).
 ggml_tensor * mha_self_cached(ggml_context *           ctx,
                               ggml_cgraph *            gf,
                               ggml_tensor *            x,
@@ -165,39 +167,39 @@ ggml_tensor * mha_self_cached(ggml_context *           ctx,
     // reshape + (optional) RoPE, so they're written straight to the cache.
     ggml_tensor * Q_unpad = ggml_cont(ctx, ggml_permute(ctx, Q_rope, 0, 2, 1, 3));
 
-    // Write K_rope / Vcur into the cache. The cache stores
-    // [d_model, n_ctx] per layer; offset for (il, n_past) is
-    //   il * n_ctx * d_model + n_past * d_model  (in elements)
+    // Write K_rope / Vcur into the cache, each head padded: rows of
+    //   row = n_heads * head_dim_pad,  offset il * n_ctx * row + n_past * row.
+    const int64_t row = static_cast<int64_t>(n_heads) * head_dim_pad;
     {
         const size_t k_elem = ggml_element_size(kv_cache.self_k);
         const size_t v_elem = ggml_element_size(kv_cache.self_v);
 
-        ggml_tensor * k_dst = ggml_view_1d(ctx, kv_cache.self_k, static_cast<int64_t>(n_tokens) * d_model,
-                                           k_elem * static_cast<size_t>(static_cast<int64_t>(il) * n_ctx * d_model +
-                                                                        static_cast<int64_t>(n_past) * d_model));
-        ggml_tensor * v_dst = ggml_view_1d(ctx, kv_cache.self_v, static_cast<int64_t>(n_tokens) * d_model,
-                                           v_elem * static_cast<size_t>(static_cast<int64_t>(il) * n_ctx * d_model +
-                                                                        static_cast<int64_t>(n_past) * d_model));
+        ggml_tensor * k_dst = ggml_view_1d(ctx, kv_cache.self_k, static_cast<int64_t>(n_tokens) * row,
+                                           k_elem * static_cast<size_t>(il * n_ctx * row + n_past * row));
+        ggml_tensor * v_dst = ggml_view_1d(ctx, kv_cache.self_v, static_cast<int64_t>(n_tokens) * row,
+                                           v_elem * static_cast<size_t>(il * n_ctx * row + n_past * row));
 
-        ggml_build_forward_expand(gf, ggml_cpy(ctx, K_rope, k_dst));
-        ggml_build_forward_expand(gf, ggml_cpy(ctx, Vcur, v_dst));
+        ggml_build_forward_expand(gf, ggml_cpy(ctx, pad_head_dim(ctx, K_rope, pad), k_dst));
+        ggml_build_forward_expand(gf, ggml_cpy(ctx, pad_head_dim(ctx, Vcur, pad), v_dst));
     }
 
-    // Read [head_dim, n_kv, n_heads] views over the cache for attention.
+    // Read [head_dim_pad, n_kv, n_heads] views over the cache for attention.
     const size_t  k_elem = ggml_element_size(kv_cache.self_k);
-    ggml_tensor * K      = ggml_view_3d(ctx, kv_cache.self_k, head_dim, n_kv, n_heads,
-                                        k_elem * d_model,   // nb1: stride between positions (full d_model row)
-                                        k_elem * head_dim,  // nb2: stride between heads inside a position
-                                        k_elem * static_cast<size_t>(static_cast<int64_t>(il) * n_ctx * d_model));
+    ggml_tensor * K      = ggml_view_3d(ctx, kv_cache.self_k, head_dim_pad, n_kv, n_heads,
+                                        k_elem * row,           // nb1: stride between positions (one cache row)
+                                        k_elem * head_dim_pad,  // nb2: stride between heads inside a position
+                                        k_elem * static_cast<size_t>(il * n_ctx * row));
 
     const size_t  v_elem = ggml_element_size(kv_cache.self_v);
-    ggml_tensor * V = ggml_view_3d(ctx, kv_cache.self_v, head_dim, n_kv, n_heads, v_elem * d_model, v_elem * head_dim,
-                                   v_elem * static_cast<size_t>(static_cast<int64_t>(il) * n_ctx * d_model));
+    ggml_tensor * V      = ggml_view_3d(ctx, kv_cache.self_v, head_dim_pad, n_kv, n_heads, v_elem * row,
+                                        v_elem * head_dim_pad, v_elem * static_cast<size_t>(il * n_ctx * row));
 
-    // Pad head_dim on Q, K, V before attention (HF behavior).
+    // Pad head_dim on Q before attention (HF behavior); K and V are stored
+    // padded. Flash attention reads the views as they are; the manual path
+    // wants them contiguous.
     ggml_tensor * Q   = pad_head_dim(ctx, Q_unpad, pad);
-    ggml_tensor * K_p = pad_head_dim(ctx, ggml_cont(ctx, K), pad);
-    ggml_tensor * V_p = pad_head_dim(ctx, ggml_cont(ctx, V), pad);
+    ggml_tensor * K_p = use_flash ? K : ggml_cont(ctx, K);
+    ggml_tensor * V_p = use_flash ? V : ggml_cont(ctx, V);
 
     ggml_tensor * o;
     if (use_flash) {
@@ -276,21 +278,24 @@ ggml_tensor * mha_self_step(ggml_context *           ctx,
     // Q for attention: [head_dim, 1, n_heads, 1]
     ggml_tensor * Q_unpad = ggml_cont(ctx, ggml_permute(ctx, Q_rope, 0, 2, 1, 3));
 
-    // KV cache write via ggml_set_rows. Per-layer view spans [d_model, n_ctx];
-    // we write one [d_model, 1] row at the kv_idx position. K_rope is the
-    // post-RoPE K; V is the unrotated projection.
+    // KV cache write via ggml_set_rows. Per-layer view spans [row, n_ctx]
+    // (row = n_heads * head_dim_pad, every head padded); we write one row at
+    // the kv_idx position. K_rope is the post-RoPE K; V is the unrotated
+    // projection.
+    const int64_t row = static_cast<int64_t>(n_heads) * head_dim_pad;
     {
         const size_t k_elem      = ggml_element_size(kv_cache.self_k);
         const size_t v_elem      = ggml_element_size(kv_cache.self_v);
-        const size_t layer_off_k = k_elem * static_cast<size_t>(static_cast<int64_t>(il) * n_ctx * d_model);
-        const size_t layer_off_v = v_elem * static_cast<size_t>(static_cast<int64_t>(il) * n_ctx * d_model);
+        const size_t layer_off_k = k_elem * static_cast<size_t>(il * n_ctx * row);
+        const size_t layer_off_v = v_elem * static_cast<size_t>(il * n_ctx * row);
 
-        ggml_tensor * k_layer = ggml_view_2d(ctx, kv_cache.self_k, d_model, n_ctx, k_elem * d_model, layer_off_k);
-        ggml_tensor * v_layer = ggml_view_2d(ctx, kv_cache.self_v, d_model, n_ctx, v_elem * d_model, layer_off_v);
+        ggml_tensor * k_layer = ggml_view_2d(ctx, kv_cache.self_k, row, n_ctx, k_elem * row, layer_off_k);
+        ggml_tensor * v_layer = ggml_view_2d(ctx, kv_cache.self_v, row, n_ctx, v_elem * row, layer_off_v);
 
-        // K_rope is [head_dim, n_heads, 1, 1] contiguous → reshape to [d_model, 1].
-        ggml_tensor * K_row = ggml_reshape_2d(ctx, ggml_cont(ctx, K_rope), d_model, 1);
-        ggml_tensor * V_row = ggml_reshape_2d(ctx, Vcur, d_model, 1);
+        // [head_dim, n_heads, 1] per K / V, each head padded, as one [row, 1] row.
+        ggml_tensor * K_row = ggml_reshape_2d(ctx, pad_head_dim(ctx, ggml_cont(ctx, K_rope), pad), row, 1);
+        ggml_tensor * V_row =
+            ggml_reshape_2d(ctx, pad_head_dim(ctx, ggml_reshape_3d(ctx, Vcur, head_dim, n_heads, 1), pad), row, 1);
 
         ggml_build_forward_expand(gf, ggml_set_rows(ctx, k_layer, K_row, kv_idx));
         ggml_build_forward_expand(gf, ggml_set_rows(ctx, v_layer, V_row, kv_idx));
@@ -299,19 +304,19 @@ ggml_tensor * mha_self_step(ggml_context *           ctx,
     // Static read across [0, max_n_kv); mask zeros valid positions and
     // -inf's the rest, so flash-attn ignores empty/future slots.
     const size_t  k_elem = ggml_element_size(kv_cache.self_k);
-    ggml_tensor * K =
-        ggml_view_3d(ctx, kv_cache.self_k, head_dim, max_n_kv, n_heads, k_elem * d_model, k_elem * head_dim,
-                     k_elem * static_cast<size_t>(static_cast<int64_t>(il) * n_ctx * d_model));
+    ggml_tensor * K      = ggml_view_3d(ctx, kv_cache.self_k, head_dim_pad, max_n_kv, n_heads, k_elem * row,
+                                        k_elem * head_dim_pad, k_elem * static_cast<size_t>(il * n_ctx * row));
 
     const size_t  v_elem = ggml_element_size(kv_cache.self_v);
-    ggml_tensor * V =
-        ggml_view_3d(ctx, kv_cache.self_v, head_dim, max_n_kv, n_heads, v_elem * d_model, v_elem * head_dim,
-                     v_elem * static_cast<size_t>(static_cast<int64_t>(il) * n_ctx * d_model));
+    ggml_tensor * V      = ggml_view_3d(ctx, kv_cache.self_v, head_dim_pad, max_n_kv, n_heads, v_elem * row,
+                                        v_elem * head_dim_pad, v_elem * static_cast<size_t>(il * n_ctx * row));
 
-    // Pad head_dim on Q, K, V before attention (HF behavior).
+    // Pad head_dim on Q before attention (HF behavior); K and V are stored
+    // padded. Flash attention reads the views as they are; the manual path
+    // wants them contiguous.
     ggml_tensor * Q   = pad_head_dim(ctx, Q_unpad, pad);
-    ggml_tensor * K_p = pad_head_dim(ctx, ggml_cont(ctx, K), pad);
-    ggml_tensor * V_p = pad_head_dim(ctx, ggml_cont(ctx, V), pad);
+    ggml_tensor * K_p = use_flash ? K : ggml_cont(ctx, K);
+    ggml_tensor * V_p = use_flash ? V : ggml_cont(ctx, V);
 
     ggml_tensor * o;
     if (use_flash) {
@@ -763,32 +768,33 @@ ggml_tensor * mha_self_step_batched(ggml_context *           ctx,
     Q = apply_partial_rope(ctx, Q, pos_ids, hp, head_dim_rot);
     K = apply_partial_rope(ctx, K, pos_ids, hp, head_dim_rot);
 
-    // Batched KV write: slab [d_model, n_ctx, B].
+    // Batched KV write: slab [row, n_ctx, B], row = n_heads * head_dim_pad
+    // (every head padded, as in mha_self_step).
+    const int64_t row   = static_cast<int64_t>(n_heads) * head_dim_pad;
+    const size_t  off_k = k_elem * static_cast<size_t>(il * n_ctx * row * B);
+    const size_t  off_v = v_elem * static_cast<size_t>(il * n_ctx * row * B);
     {
-        const size_t  off_k = k_elem * static_cast<size_t>(il) * n_ctx * d_model * B;
-        const size_t  off_v = v_elem * static_cast<size_t>(il) * n_ctx * d_model * B;
         ggml_tensor * k_layer =
-            ggml_view_3d(ctx, kv_cache.self_k, d_model, n_ctx, B, k_elem * d_model, k_elem * d_model * n_ctx, off_k);
+            ggml_view_3d(ctx, kv_cache.self_k, row, n_ctx, B, k_elem * row, k_elem * row * n_ctx, off_k);
         ggml_tensor * v_layer =
-            ggml_view_3d(ctx, kv_cache.self_v, d_model, n_ctx, B, v_elem * d_model, v_elem * d_model * n_ctx, off_v);
-        ggml_tensor * K_row = ggml_reshape_3d(ctx, ggml_cont(ctx, K), d_model, 1, B);
-        ggml_tensor * V_row = ggml_reshape_3d(ctx, ggml_cont(ctx, V), d_model, 1, B);
+            ggml_view_3d(ctx, kv_cache.self_v, row, n_ctx, B, v_elem * row, v_elem * row * n_ctx, off_v);
+        ggml_tensor * K_row = ggml_reshape_3d(ctx, pad_head_dim(ctx, ggml_cont(ctx, K), pad), row, 1, B);
+        ggml_tensor * V_row = ggml_reshape_3d(ctx, pad_head_dim(ctx, ggml_cont(ctx, V), pad), row, 1, B);
         ggml_build_forward_expand(gf, ggml_set_rows(ctx, k_layer, K_row, kv_idx));
         ggml_build_forward_expand(gf, ggml_set_rows(ctx, v_layer, V_row, kv_idx));
     }
 
-    const size_t  off_k = k_elem * static_cast<size_t>(il) * n_ctx * d_model * B;
-    const size_t  off_v = v_elem * static_cast<size_t>(il) * n_ctx * d_model * B;
-    ggml_tensor * K_att = ggml_view_4d(ctx, kv_cache.self_k, head_dim, max_n_kv, n_heads, B, k_elem * d_model,
-                                       k_elem * head_dim, k_elem * d_model * n_ctx, off_k);
-    ggml_tensor * V_att = ggml_view_4d(ctx, kv_cache.self_v, head_dim, max_n_kv, n_heads, B, v_elem * d_model,
-                                       v_elem * head_dim, v_elem * d_model * n_ctx, off_v);
+    ggml_tensor * K_att = ggml_view_4d(ctx, kv_cache.self_k, head_dim_pad, max_n_kv, n_heads, B, k_elem * row,
+                                       k_elem * head_dim_pad, k_elem * row * n_ctx, off_k);
+    ggml_tensor * V_att = ggml_view_4d(ctx, kv_cache.self_v, head_dim_pad, max_n_kv, n_heads, B, v_elem * row,
+                                       v_elem * head_dim_pad, v_elem * row * n_ctx, off_v);
 
     // Q for flash: [head_dim, n_heads, B] -> [head_dim, 1, n_heads, B].
     ggml_tensor * Q_att = ggml_cont(ctx, ggml_permute(ctx, Q, 0, 2, 3, 1));
     ggml_tensor * Qp    = pad_head_dim(ctx, Q_att, pad);
-    ggml_tensor * Kp    = pad_head_dim(ctx, ggml_cont(ctx, K_att), pad);
-    ggml_tensor * Vp    = pad_head_dim(ctx, ggml_cont(ctx, V_att), pad);
+    // K/V are stored padded; flash attention reads the views as they are.
+    ggml_tensor * Kp    = K_att;
+    ggml_tensor * Vp    = V_att;
 
     ggml_tensor * o = ggml_flash_attn_ext(ctx, Qp, Kp, Vp, mask, scale, 0.0f, 0.0f);
     // o = [head_dim_pad, n_heads, 1, B] -> unpad -> [head_dim, n_heads, 1, B].

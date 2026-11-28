@@ -31,12 +31,13 @@ ggml patch 0104.
   xcframework carry all eight license texts of `THIRD-PARTY-LICENSES.md`.
   They lacked cJSON, Earshot, RNNoise and (all but the default wheel)
   audio.cpp.
-- Moonshine: the cross-attention K/V cache is stored per head with the head
-  size already padded, written once per utterance, instead of being
-  re-copied and padded at every decoded token. Decode is 30-42% faster on
-  CPU and CUDA (`dots`: 451 -> 263 ms CPU, 181 -> 119 ms CUDA). Every dumped
-  tensor and all 37 test transcripts are byte-identical, single and batched,
-  on both backends.
+- Moonshine: both attention caches store K/V per head with the head size
+  already padded (cross: written once per utterance; self: each row as its
+  token decodes), and flash attention reads them through strided views
+  instead of copies re-made and re-padded at every decoded token. Decode is
+  2.3x faster on CPU and 1.6x on CUDA (`dots`: 451 -> 194 ms CPU, 181 -> 113
+  ms CUDA). Every dumped tensor and all 37 test transcripts are
+  byte-identical, single and batched, on both backends.
 - Moonshine streaming: with no head padding to apply (head size 40), flash
   attention reads the K/V cache views directly instead of a copy made at
   every decoded token. Decode 12-20% faster on CPU and CUDA (`dots`: 386 ->

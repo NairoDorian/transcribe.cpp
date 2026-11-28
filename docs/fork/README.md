@@ -171,7 +171,9 @@ Bit-exact (same transcripts as upstream):
   op is not bit-exact; `TRANSCRIBE_CONV_DIRECT_DW=1` opts them in.
 - Moonshine keeps its cross-attention K/V per head and already padded, so
   decoding no longer re-copies and pads them at every token: decode 30-42%
-  faster on CPU and CUDA, output byte-identical.
+  faster on CPU and CUDA, output byte-identical. Moonshine streaming, whose
+  heads need no padding, hands its cache views to flash attention without
+  a per-token copy: decode 12-20% faster.
 - Canary's pre-encode depthwise convolutions take the direct op on the CPU
   too (they were 13-17% of its CPU graph as im2col): encode 7-12% faster,
   every dumped tensor byte-identical. GPUs keep im2col.

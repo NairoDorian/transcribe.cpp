@@ -37,6 +37,11 @@ ggml patch 0104.
   CPU and CUDA (`dots`: 451 -> 263 ms CPU, 181 -> 119 ms CUDA). Every dumped
   tensor and all 37 test transcripts are byte-identical, single and batched,
   on both backends.
+- Moonshine streaming: with no head padding to apply (head size 40), flash
+  attention reads the K/V cache views directly instead of a copy made at
+  every decoded token. Decode 12-20% faster on CPU and CUDA (`dots`: 386 ->
+  308 ms CPU, 393 -> 324 ms CUDA); offline (batch 1 and 4) and streaming
+  output byte-identical on both backends.
 - MedASR single runs honor `n_threads`. Only its batch path applied the
   session's thread count; a single run kept the CPU backend's default, so
   encode took the same time at 1, 2 and 8 threads (now 5.3 / 2.5 / 1.4 s on

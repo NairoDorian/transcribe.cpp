@@ -41,6 +41,18 @@ ggml_tensor * pad_head_dim(ggml_context * ctx, ggml_tensor * t, int pad) {
     return ggml_pad(ctx, t, /*p0=*/pad, /*p1=*/0, /*p2=*/0, /*p3=*/0);
 }
 
+// K or V for attention, head size padded to head_dim_padded. With no padding
+// and flash attention, the cache view goes in as is: ggml_flash_attn_ext reads
+// K/V through their strides, so copying the view first cost one copy per layer
+// per decoded token for the same values and the same result. The manual
+// attention path keeps the copy.
+ggml_tensor * kv_for_attention(ggml_context * ctx, ggml_tensor * t, int pad, bool use_flash) {
+    if (pad <= 0 && use_flash) {
+        return t;
+    }
+    return pad_head_dim(ctx, ggml_cont(ctx, t), pad);
+}
+
 ggml_tensor * unpad_head_dim(ggml_context * ctx, ggml_tensor * t, int head_dim, int pad) {
     if (pad <= 0) {
         return t;
@@ -157,8 +169,8 @@ ggml_tensor * mha_self_cached(ggml_context *                    ctx,
                                    v_elem * static_cast<size_t>(static_cast<int64_t>(il) * n_ctx * d_model));
 
     ggml_tensor * Q   = pad_head_dim(ctx, Q_unpad, pad);
-    ggml_tensor * K_p = pad_head_dim(ctx, ggml_cont(ctx, K), pad);
-    ggml_tensor * V_p = pad_head_dim(ctx, ggml_cont(ctx, V), pad);
+    ggml_tensor * K_p = kv_for_attention(ctx, K, pad, use_flash);
+    ggml_tensor * V_p = kv_for_attention(ctx, V, pad, use_flash);
 
     ggml_tensor * o;
     if (use_flash) {
@@ -216,8 +228,8 @@ ggml_tensor * mha_cross_cached(ggml_context *                    ctx,
     ggml_tensor * V = ggml_view_3d(ctx, kv_cache.cross_v, head_dim, T_enc, n_heads, v_elem * d_model, v_elem * head_dim,
                                    v_elem * static_cast<size_t>(static_cast<int64_t>(il) * T_enc * d_model));
 
-    ggml_tensor * K_p = pad_head_dim(ctx, ggml_cont(ctx, K), pad);
-    ggml_tensor * V_p = pad_head_dim(ctx, ggml_cont(ctx, V), pad);
+    ggml_tensor * K_p = kv_for_attention(ctx, K, pad, use_flash);
+    ggml_tensor * V_p = kv_for_attention(ctx, V, pad, use_flash);
 
     ggml_tensor * o;
     if (use_flash) {
@@ -681,8 +693,8 @@ ggml_tensor * mha_self_step_batched(ggml_context *                    ctx,
 
     ggml_tensor * Q_att = ggml_cont(ctx, ggml_permute(ctx, Q, 0, 2, 3, 1));
     ggml_tensor * Qp    = pad_head_dim(ctx, Q_att, pad);
-    ggml_tensor * Kp    = pad_head_dim(ctx, ggml_cont(ctx, K_att), pad);
-    ggml_tensor * Vp    = pad_head_dim(ctx, ggml_cont(ctx, V_att), pad);
+    ggml_tensor * Kp    = kv_for_attention(ctx, K_att, pad, /*use_flash=*/true);
+    ggml_tensor * Vp    = kv_for_attention(ctx, V_att, pad, /*use_flash=*/true);
 
     ggml_tensor * o = ggml_flash_attn_ext(ctx, Qp, Kp, Vp, mask, scale, 0.0f, 0.0f);
     o               = ggml_cont(ctx, unpad_head_dim_4d(ctx, o, head_dim, pad));
@@ -722,8 +734,8 @@ ggml_tensor * mha_cross_step_batched(ggml_context *                    ctx,
                                        k_elem * head_dim, k_elem * d_model * T_enc_max, off_k);
     ggml_tensor * V     = ggml_view_4d(ctx, kv_cache.cross_v, head_dim, T_enc_max, n_heads, B, v_elem * d_model,
                                        v_elem * head_dim, v_elem * d_model * T_enc_max, off_v);
-    ggml_tensor * Kp    = pad_head_dim(ctx, ggml_cont(ctx, K), pad);
-    ggml_tensor * Vp    = pad_head_dim(ctx, ggml_cont(ctx, V), pad);
+    ggml_tensor * Kp    = kv_for_attention(ctx, K, pad, /*use_flash=*/true);
+    ggml_tensor * Vp    = kv_for_attention(ctx, V, pad, /*use_flash=*/true);
 
     ggml_tensor * o = ggml_flash_attn_ext(ctx, Qp, Kp, Vp, cross_mask, scale, 0.0f, 0.0f);
     o               = ggml_cont(ctx, unpad_head_dim_4d(ctx, o, head_dim, pad));

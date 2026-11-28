@@ -16,6 +16,9 @@
 #include "ggml-backend.h"
 #include "transcribe.h"
 
+#include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <vector>
 
 struct ggml_backend;
@@ -117,6 +120,30 @@ void safe_sched_free(ggml_backend_sched_t sched) noexcept;
 // transcribe_session::release_scratch and the base destructor, keeping the
 // sched / compute_ctx free order in one place. NULLs are no-ops.
 void release_compute_scratch(ggml_backend_sched_t & sched, struct ggml_context *& compute_ctx) noexcept;
+
+// Host memory for one graph's ggml metadata (its tensor and graph structs),
+// kept across runs. ggml-cuda keys a captured CUDA graph by the address of the
+// graph's first node, and a graph built in a freshly allocated context lands
+// at new addresses every run: the backend then sees a new graph, runs it once
+// without a CUDA graph, then captures and instantiates it from scratch.
+// Rebuilt in the same arena, the structs land where they were, so the next
+// run (or stream tick) finds the CUDA graph it captured last time: replayed as
+// is when every node's buffers and shapes match, re-captured and updated in
+// place (cudaGraphExecUpdate) when one moved. ggml-cuda compares every node
+// before it replays, so only the addresses carry over: init() starts an empty
+// context and every tensor is created afresh. One live context per arena:
+// free the previous one before the next init(). For a graph computed many
+// times per run (a decode step); a one-shot graph gains nothing from it.
+class GraphArena {
+  public:
+    // A no_alloc context of `bytes` over the arena (grown if smaller); nullptr
+    // if the memory cannot be had.
+    struct ggml_context * init(size_t bytes);
+
+  private:
+    std::unique_ptr<uint8_t[]> buf_;
+    size_t                     size_ = 0;
+};
 
 // --- reclaiming device memory on an allocation-failure path (A7) -------------
 //

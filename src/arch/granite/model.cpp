@@ -1424,16 +1424,11 @@ transcribe_status run(transcribe_session *          ctx_base,
     // guard the cache the bucket rounding actually gave us.
     const int max_steps = std::min({ gen_budget, max_n_kv - T_prompt, ceiling - T_prompt });
 
-    ggml_context * step_ctx = nullptr;
-    {
-        ggml_init_params ip{};
-        ip.mem_size   = 32 * 1024 * 1024;
-        ip.mem_buffer = nullptr;
-        ip.no_alloc   = true;
-        step_ctx      = ggml_init(ip);
-        if (step_ctx == nullptr) {
-            return TRANSCRIBE_ERR_OOM;
-        }
+    // Built in the session's arena, so the step graph finds the CUDA graph
+    // it captured on the previous run (transcribe::GraphArena).
+    ggml_context * step_ctx = cc->step_arena.init(32 * 1024 * 1024);
+    if (step_ctx == nullptr) {
+        return TRANSCRIBE_ERR_OOM;
     }
     // Pipelined steps on a GPU (causal_lm::StepPipeline: the next step is
     // launched while one runs; same tokens). Null pipe = the plain loop.

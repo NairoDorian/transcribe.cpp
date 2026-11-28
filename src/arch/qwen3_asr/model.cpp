@@ -1594,11 +1594,10 @@ transcribe_status run_decode_pass(transcribe_session *          session,
         cc->compute_ctx = nullptr;
     }
     {
-        ggml_init_params ip{};
-        ip.mem_size     = 8 * 1024 * 1024;
-        ip.mem_buffer   = nullptr;
-        ip.no_alloc     = true;
-        cc->compute_ctx = ggml_init(ip);
+        // Built in the session's arena, so the step and verify graphs find
+        // the CUDA graphs they captured on the previous pass
+        // (transcribe::GraphArena).
+        cc->compute_ctx = cc->step_arena.init(8 * 1024 * 1024);
         if (cc->compute_ctx == nullptr) {
             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
                                 "qwen3_asr step: compute context allocation failed — "

@@ -426,6 +426,10 @@ struct QwenAsrSession final : public transcribe_session {
     // Pipelined greedy steps (causal_lm::StepPipeline), kept across decode
     // passes: a streaming tick allocates nothing for it once the shape repeats.
     transcribe::causal_lm::StepPipeline step_pipe;
+    // The step phase's graph metadata (plain step and verify graphs), kept
+    // across decode passes so those graphs keep their CUDA graphs from run to
+    // run and tick to tick (transcribe::GraphArena).
+    transcribe::GraphArena              step_arena;
 
     // Batched KV cache for offline transcribe_run_batch (n_batch slabs).
     // Allocated/resized lazily by run_batch; freed in the destructor.

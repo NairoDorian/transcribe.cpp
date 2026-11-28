@@ -111,6 +111,9 @@ struct GraniteSession final : public transcribe_session {
     // Pipelined greedy steps (causal_lm::StepPipeline), kept across runs so a
     // run allocates nothing for it once the shape repeats.
     transcribe::causal_lm::StepPipeline step_pipe;
+    // The decode-step graph's metadata, kept across runs so the step graph
+    // keeps its CUDA graph from run to run (transcribe::GraphArena).
+    transcribe::GraphArena              step_arena;
 
     // Audio encoder output (post-projector) buffered between encode and
     // decode. Each row is one audio token in LM hidden space (2048).

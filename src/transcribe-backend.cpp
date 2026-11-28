@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <new>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
@@ -401,6 +402,21 @@ void release_compute_scratch(ggml_backend_sched_t & sched, struct ggml_context *
         ggml_free(compute_ctx);
         compute_ctx = nullptr;
     }
+}
+
+ggml_context * GraphArena::init(size_t bytes) {
+    if (size_ < bytes) {
+        buf_.reset(new (std::nothrow) uint8_t[bytes]);
+        size_ = buf_ != nullptr ? bytes : 0;
+        if (buf_ == nullptr) {
+            return nullptr;
+        }
+    }
+    ggml_init_params ip{};
+    ip.mem_size   = bytes;
+    ip.mem_buffer = buf_.get();
+    ip.no_alloc   = true;
+    return ggml_init(ip);
 }
 
 bool alloc_sched_graph(ggml_backend_sched_t sched,
